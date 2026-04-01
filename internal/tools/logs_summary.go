@@ -1,0 +1,58 @@
+package tools
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+
+	"github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
+	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
+)
+
+// LogsSummaryHandler handles the logs.summary tool.
+type LogsSummaryHandler struct {
+	client *gcpclient.Client
+}
+
+// NewLogsSummaryHandler creates a new LogsSummaryHandler.
+func NewLogsSummaryHandler(client *gcpclient.Client) *LogsSummaryHandler {
+	return &LogsSummaryHandler{client: client}
+}
+
+// Tool returns the MCP tool definition.
+func (h *LogsSummaryHandler) Tool() mcp.Tool {
+	return mcp.NewTool("logs.summary",
+		mcp.WithDescription("Get an aggregated summary of logs (based on up to 1000 sampled entries): severity distribution, top services, top errors, and sample entries. Useful for initial triage."),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithString("project_id",
+			mcp.Description("GCP project ID (uses default if not specified)"),
+		),
+		mcp.WithString("filter",
+			mcp.Description("Additional Cloud Logging filter to narrow the scope"),
+		),
+		mcp.WithNumber("lookback_minutes",
+			mcp.Description("How far back to look in minutes (default 60)"),
+		),
+	)
+}
+
+// Handle processes the logs.summary tool request.
+func (h *LogsSummaryHandler) Handle(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	project := request.GetString("project_id", h.client.Config.DefaultProject)
+	filter := request.GetString("filter", "")
+	lookbackMinutes := request.GetInt("lookback_minutes", 60)
+
+	result, err := gcpdata.SummarizeLogs(ctx, h.client.Logging, project, filter, lookbackMinutes)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to summarize logs: %v", err)), nil
+	}
+
+	data, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal result: %v", err)), nil
+	}
+
+	return mcp.NewToolResultText(string(data)), nil
+}
