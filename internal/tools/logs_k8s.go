@@ -25,8 +25,13 @@ func NewLogsK8sHandler(client *gcpclient.Client) *LogsK8sHandler {
 // Tool returns the MCP tool definition.
 func (h *LogsK8sHandler) Tool() mcp.Tool {
 	return mcp.NewTool("logs.k8s",
-		mcp.WithDescription("Query Kubernetes container logs with convenient filters. Automatically builds Cloud Logging filter for resource.type=\"k8s_container\"."),
+		mcp.WithDescription("Query Kubernetes container logs with convenient filters. "+
+			"Automatically builds Cloud Logging filter for resource.type=\"k8s_container\". "+
+			"Preferred over logs.query for K8s workloads. "+
+			"For non-K8s resources (Cloud Run, etc.), use logs.query with a custom filter."),
 		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(true),
+		mcp.WithIdempotentHintAnnotation(true),
 		mcp.WithString("namespace",
 			mcp.Description("Kubernetes namespace name"),
 		),
@@ -84,7 +89,7 @@ func (h *LogsK8sHandler) Handle(ctx context.Context, request mcp.CallToolRequest
 
 	result, err := gcpdata.QueryLogs(ctx, h.client.Logging, project, filter, limit, "desc", "")
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to query K8s logs: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to query K8s logs: %v. Verify the project_id and that K8s logging is enabled.", err)), nil
 	}
 
 	data, err := json.MarshalIndent(result, "", "  ")

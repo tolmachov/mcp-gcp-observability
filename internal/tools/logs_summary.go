@@ -24,8 +24,12 @@ func NewLogsSummaryHandler(client *gcpclient.Client) *LogsSummaryHandler {
 // Tool returns the MCP tool definition.
 func (h *LogsSummaryHandler) Tool() mcp.Tool {
 	return mcp.NewTool("logs.summary",
-		mcp.WithDescription("Get an aggregated summary of logs (based on up to 1000 sampled entries): severity distribution, top services, top errors, and sample entries. Useful for initial triage."),
+		mcp.WithDescription("Get an aggregated summary of logs (based on up to 1000 sampled entries): severity distribution, top services, top errors, and sample entries. "+
+			"Useful for initial triage before drilling down with logs.query or logs.k8s. "+
+			"Does NOT return full log entries — use logs.query for that."),
 		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(true),
+		mcp.WithIdempotentHintAnnotation(true),
 		mcp.WithString("project_id",
 			mcp.Description("GCP project ID (uses default if not specified)"),
 		),
@@ -46,7 +50,7 @@ func (h *LogsSummaryHandler) Handle(ctx context.Context, request mcp.CallToolReq
 
 	result, err := gcpdata.SummarizeLogs(ctx, h.client.Logging, project, filter, lookbackMinutes)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to summarize logs: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to summarize logs: %v. Verify the project_id and filter syntax.", err)), nil
 	}
 
 	data, err := json.MarshalIndent(result, "", "  ")

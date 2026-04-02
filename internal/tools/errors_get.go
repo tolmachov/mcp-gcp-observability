@@ -24,8 +24,11 @@ func NewErrorsGetHandler(client *gcpclient.Client) *ErrorsGetHandler {
 // Tool returns the MCP tool definition.
 func (h *ErrorsGetHandler) Tool() mcp.Tool {
 	return mcp.NewTool("errors.get",
-		mcp.WithDescription("Get details for a specific error group, including individual error events with stack traces and context."),
+		mcp.WithDescription("Get details for a specific error group, including individual error events with stack traces and context. "+
+			"Requires a group_id from errors.list results."),
 		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(true),
+		mcp.WithIdempotentHintAnnotation(true),
 		mcp.WithString("group_id",
 			mcp.Description("Error group ID (from errors.list results)"),
 			mcp.Required(),
@@ -51,7 +54,7 @@ func (h *ErrorsGetHandler) Handle(ctx context.Context, request mcp.CallToolReque
 
 	result, err := gcpdata.GetErrorGroup(ctx, h.client.Errors, project, groupID, limit)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to get error group: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to get error group: %v. Verify the group_id is valid — use errors.list to find available group IDs.", err)), nil
 	}
 
 	data, err := json.MarshalIndent(result, "", "  ")

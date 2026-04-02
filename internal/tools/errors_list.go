@@ -24,8 +24,12 @@ func NewErrorsListHandler(client *gcpclient.Client) *ErrorsListHandler {
 // Tool returns the MCP tool definition.
 func (h *ErrorsListHandler) Tool() mcp.Tool {
 	return mcp.NewTool("errors.list",
-		mcp.WithDescription("List error groups from Google Cloud Error Reporting, sorted by occurrence count. Returns aggregated errors, not individual log entries."),
+		mcp.WithDescription("List error groups from Google Cloud Error Reporting, sorted by occurrence count. "+
+			"Returns aggregated errors with group IDs, not individual log entries. "+
+			"Use errors.get with a group_id from these results to see individual error events and stack traces."),
 		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(true),
+		mcp.WithIdempotentHintAnnotation(true),
 		mcp.WithString("project_id",
 			mcp.Description("GCP project ID (uses default if not specified)"),
 		),
@@ -54,7 +58,7 @@ func (h *ErrorsListHandler) Handle(ctx context.Context, request mcp.CallToolRequ
 
 	result, err := gcpdata.ListErrors(ctx, h.client.Errors, project, timeRangeHours, limit, serviceFilter, versionFilter)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to list errors: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to list errors: %v. Verify the project_id and that Error Reporting API is enabled.", err)), nil
 	}
 
 	data, err := json.MarshalIndent(result, "", "  ")

@@ -26,6 +26,8 @@ func (h *LogsFindRequestsHandler) Tool() mcp.Tool {
 	return mcp.NewTool("logs.find_requests",
 		mcp.WithDescription("Find examples of HTTP requests by URL pattern. Returns trace_id and request_id for each request, enabling deeper investigation with logs.by_trace or logs.query."),
 		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(true),
+		mcp.WithIdempotentHintAnnotation(true),
 		mcp.WithString("url_pattern",
 			mcp.Description("URL substring to match (e.g. '/api/profile', '/v1/connect')"),
 			mcp.Required(),
@@ -63,7 +65,7 @@ func (h *LogsFindRequestsHandler) Handle(ctx context.Context, request mcp.CallTo
 
 	result, err := gcpdata.FindRequests(ctx, h.client.Logging, project, urlPattern, method, statusCode, tracedOnly, limit)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to find requests: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to find requests: %v. Verify the project_id and that the URL pattern is correct.", err)), nil
 	}
 
 	data, err := json.MarshalIndent(result, "", "  ")

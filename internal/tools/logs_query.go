@@ -24,8 +24,13 @@ func NewLogsQueryHandler(client *gcpclient.Client) *LogsQueryHandler {
 // Tool returns the MCP tool definition.
 func (h *LogsQueryHandler) Tool() mcp.Tool {
 	return mcp.NewTool("logs.query",
-		mcp.WithDescription("Execute an arbitrary Cloud Logging query with filter syntax. Use Cloud Logging filter language (e.g. severity>=ERROR, resource.type=\"k8s_container\")."),
+		mcp.WithDescription("Execute an arbitrary Cloud Logging query with full filter syntax. "+
+			"Use Cloud Logging filter language (e.g. severity>=ERROR, resource.type=\"k8s_container\"). "+
+			"For Kubernetes logs, prefer logs.k8s which builds filters automatically. "+
+			"For initial triage, use logs.summary instead."),
 		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(true),
+		mcp.WithIdempotentHintAnnotation(true),
 		mcp.WithString("project_id",
 			mcp.Description("GCP project ID (uses default if not specified)"),
 		),
@@ -37,7 +42,8 @@ func (h *LogsQueryHandler) Tool() mcp.Tool {
 			mcp.Description("Maximum number of entries to return (default 100)"),
 		),
 		mcp.WithString("order",
-			mcp.Description("Sort order: 'asc' or 'desc' (default 'desc')"),
+			mcp.Description("Sort order by timestamp (default 'desc')"),
+			mcp.Enum("asc", "desc"),
 		),
 		mcp.WithString("page_token",
 			mcp.Description("Page token for pagination"),
@@ -59,7 +65,7 @@ func (h *LogsQueryHandler) Handle(ctx context.Context, request mcp.CallToolReque
 
 	result, err := gcpdata.QueryLogs(ctx, h.client.Logging, project, filter, limit, order, pageToken)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to query logs: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to query logs: %v. Verify the project_id and filter syntax.", err)), nil
 	}
 
 	data, err := json.MarshalIndent(result, "", "  ")

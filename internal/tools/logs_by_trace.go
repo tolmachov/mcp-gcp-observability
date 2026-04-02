@@ -24,8 +24,12 @@ func NewLogsByTraceHandler(client *gcpclient.Client) *LogsByTraceHandler {
 // Tool returns the MCP tool definition.
 func (h *LogsByTraceHandler) Tool() mcp.Tool {
 	return mcp.NewTool("logs.by_trace",
-		mcp.WithDescription("Find all log entries associated with a specific trace ID. Returns logs sorted by timestamp ascending to show the request flow."),
+		mcp.WithDescription("Find all log entries associated with a specific trace ID. "+
+			"Returns logs sorted by timestamp ascending to show the request flow. "+
+			"Get trace IDs from logs.find_requests results or from the trace field in logs.query output."),
 		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(true),
+		mcp.WithIdempotentHintAnnotation(true),
 		mcp.WithString("trace_id",
 			mcp.Description("The trace ID (just the hex ID, not the full resource path)"),
 			mcp.Required(),
@@ -51,7 +55,7 @@ func (h *LogsByTraceHandler) Handle(ctx context.Context, request mcp.CallToolReq
 
 	result, err := gcpdata.QueryLogsByTrace(ctx, h.client.Logging, project, traceID, limit)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to query logs by trace: %v", err)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to query logs by trace: %v. Verify the trace_id format (hex string, not full resource path). Use logs.find_requests to discover valid trace IDs.", err)), nil
 	}
 
 	data, err := json.MarshalIndent(result, "", "  ")

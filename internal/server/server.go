@@ -29,6 +29,13 @@ func New(cfg *gcpclient.Config, version string, stdin io.Reader, stdout, errOut 
 		server.WithToolCapabilities(true),
 		server.WithRecovery(),
 		server.WithLogging(),
+		server.WithInstructions("Recommended workflow: "+
+			"1) logs.services — discover available services. "+
+			"2) logs.summary — get severity distribution, top errors, and top services for initial triage. "+
+			"3) errors.list — list error groups sorted by count. "+
+			"4) logs.query or logs.k8s — investigate specific logs with filters. "+
+			"5) logs.by_trace — follow a single request across services using a trace ID from logs.find_requests or logs.query results. "+
+			"Always prefer logs.k8s over logs.query when investigating Kubernetes workloads."),
 	)
 
 	return &Server{
