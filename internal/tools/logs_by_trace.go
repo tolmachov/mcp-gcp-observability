@@ -23,7 +23,7 @@ func NewLogsByTraceHandler(client *gcpclient.Client) *LogsByTraceHandler {
 
 // Tool returns the MCP tool definition.
 func (h *LogsByTraceHandler) Tool() mcp.Tool {
-	return mcp.NewTool("logs.by_trace",
+	return newToolWithTimeFilter("logs.by_trace",
 		mcp.WithDescription("Find all log entries associated with a specific trace ID. "+
 			"Returns logs sorted by timestamp ascending to show the request flow. "+
 			"Get trace IDs from logs.find_requests results or from the trace field in logs.query output. "+
@@ -54,7 +54,12 @@ func (h *LogsByTraceHandler) Handle(ctx context.Context, request mcp.CallToolReq
 	project := request.GetString("project_id", h.client.Config.DefaultProject)
 	limit := clampLimit(request.GetInt("limit", 100), 100, h.client.Config.LogsMaxLimit)
 
-	result, err := gcpdata.QueryLogsByTrace(ctx, h.client.Logging, project, traceID, limit)
+	timeFilter, err := buildTimeFilter(request)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	result, err := gcpdata.QueryLogsByTrace(ctx, h.client.Logging, project, traceID, timeFilter, limit)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to query logs by trace: %v. Verify the trace_id format (hex string, not full resource path). Use logs.find_requests to discover valid trace IDs.", err)), nil
 	}

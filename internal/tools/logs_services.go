@@ -23,8 +23,8 @@ func NewLogsServicesHandler(client *gcpclient.Client) *LogsServicesHandler {
 
 // Tool returns the MCP tool definition.
 func (h *LogsServicesHandler) Tool() mcp.Tool {
-	return mcp.NewTool("logs.services",
-		mcp.WithDescription("List available services and resources in the project by scanning recent logs (last 24h). "+
+	return newToolWithTimeFilter("logs.services",
+		mcp.WithDescription("List available services and resources in the project by scanning recent logs. "+
 			"Useful as a first step to discover K8s and Cloud Run services before querying their logs. "+
 			"Returns service names you can use as filters in logs.k8s or logs.query."),
 		mcp.WithReadOnlyHintAnnotation(true),
@@ -40,7 +40,12 @@ func (h *LogsServicesHandler) Tool() mcp.Tool {
 func (h *LogsServicesHandler) Handle(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	project := request.GetString("project_id", h.client.Config.DefaultProject)
 
-	result, err := gcpdata.ListServices(ctx, h.client.Logging, project)
+	timeFilter, err := buildTimeFilter(request)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	result, err := gcpdata.ListServices(ctx, h.client.Logging, project, timeFilter)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to list services: %v. Verify the project_id and that Cloud Logging API is enabled.", err)), nil
 	}

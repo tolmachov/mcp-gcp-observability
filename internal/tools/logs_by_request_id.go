@@ -23,7 +23,7 @@ func NewLogsByRequestIDHandler(client *gcpclient.Client) *LogsByRequestIDHandler
 
 // Tool returns the MCP tool definition.
 func (h *LogsByRequestIDHandler) Tool() mcp.Tool {
-	return mcp.NewTool("logs.by_request_id",
+	return newToolWithTimeFilter("logs.by_request_id",
 		mcp.WithDescription("Find all log entries associated with a specific request ID (jsonPayload.request_id). "+
 			"Returns logs sorted by timestamp ascending to show the full request lifecycle. "+
 			"Get request IDs from logs.find_requests results. "+
@@ -54,7 +54,12 @@ func (h *LogsByRequestIDHandler) Handle(ctx context.Context, request mcp.CallToo
 	project := request.GetString("project_id", h.client.Config.DefaultProject)
 	limit := clampLimit(request.GetInt("limit", 100), 100, h.client.Config.LogsMaxLimit)
 
-	result, err := gcpdata.QueryLogsByRequestID(ctx, h.client.Logging, project, requestID, limit)
+	timeFilter, err := buildTimeFilter(request)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	result, err := gcpdata.QueryLogsByRequestID(ctx, h.client.Logging, project, requestID, timeFilter, limit)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to query logs by request ID: %v. Verify the request_id is correct. Use logs.find_requests to discover valid request IDs.", err)), nil
 	}

@@ -23,7 +23,7 @@ func NewLogsSummaryHandler(client *gcpclient.Client) *LogsSummaryHandler {
 
 // Tool returns the MCP tool definition.
 func (h *LogsSummaryHandler) Tool() mcp.Tool {
-	return mcp.NewTool("logs.summary",
+	return newToolWithTimeFilter("logs.summary",
 		mcp.WithDescription("Get an aggregated summary of logs (based on up to 1000 sampled entries): severity distribution, top services, top errors, and sample entries. "+
 			"Useful for initial triage before drilling down with logs.query or logs.k8s. "+
 			"Does NOT return full log entries — use logs.query for that."),
@@ -36,9 +36,6 @@ func (h *LogsSummaryHandler) Tool() mcp.Tool {
 		mcp.WithString("filter",
 			mcp.Description("Additional Cloud Logging filter to narrow the scope"),
 		),
-		mcp.WithNumber("lookback_minutes",
-			mcp.Description("How far back to look in minutes (default 60)"),
-		),
 	)
 }
 
@@ -46,9 +43,14 @@ func (h *LogsSummaryHandler) Tool() mcp.Tool {
 func (h *LogsSummaryHandler) Handle(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	project := request.GetString("project_id", h.client.Config.DefaultProject)
 	filter := request.GetString("filter", "")
-	lookbackMinutes := request.GetInt("lookback_minutes", 60)
 
-	result, err := gcpdata.SummarizeLogs(ctx, h.client.Logging, project, filter, lookbackMinutes)
+	timeFilter, err := buildTimeFilter(request)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	filter = appendFilter(filter, timeFilter)
+
+	result, err := gcpdata.SummarizeLogs(ctx, h.client.Logging, project, filter)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to summarize logs: %v. Verify the project_id and filter syntax.", err)), nil
 	}

@@ -655,9 +655,7 @@ func TestLogsSummary(t *testing.T) {
 	result, err := c.CallTool(ctx, mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
 			Name: "logs.summary",
-			Arguments: map[string]any{
-				"lookback_minutes": 30,
-			},
+			Arguments: map[string]any{},
 		},
 	})
 	if err != nil {

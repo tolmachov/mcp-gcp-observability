@@ -24,7 +24,7 @@ func NewLogsK8sHandler(client *gcpclient.Client) *LogsK8sHandler {
 
 // Tool returns the MCP tool definition.
 func (h *LogsK8sHandler) Tool() mcp.Tool {
-	return mcp.NewTool("logs.k8s",
+	return newToolWithTimeFilter("logs.k8s",
 		mcp.WithDescription("Query Kubernetes container logs with convenient filters. "+
 			"Automatically builds Cloud Logging filter for resource.type=\"k8s_container\". "+
 			"Preferred over logs.query for K8s workloads. "+
@@ -86,6 +86,12 @@ func (h *LogsK8sHandler) Handle(ctx context.Context, request mcp.CallToolRequest
 	}
 
 	filter := strings.Join(parts, "\n")
+
+	timeFilter, err := buildTimeFilter(request)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	filter = appendFilter(filter, timeFilter)
 
 	result, err := gcpdata.QueryLogs(ctx, h.client.Logging, project, filter, limit, "desc", "")
 	if err != nil {

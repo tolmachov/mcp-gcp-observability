@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"google.golang.org/api/iterator"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -36,8 +35,11 @@ func QueryLogs(ctx context.Context, client *logging.Client, project, filter stri
 }
 
 // QueryLogsByTrace retrieves all logs for a given trace ID.
-func QueryLogsByTrace(ctx context.Context, client *logging.Client, project, traceID string, limit int) (*LogQueryResult, error) {
+func QueryLogsByTrace(ctx context.Context, client *logging.Client, project, traceID, timeFilter string, limit int) (*LogQueryResult, error) {
 	filter := fmt.Sprintf(`trace="projects/%s/traces/%s"`, project, EscapeFilterValue(traceID))
+	if timeFilter != "" {
+		filter = filter + "\n" + timeFilter
+	}
 
 	req := &loggingpb.ListLogEntriesRequest{
 		ResourceNames: []string{fmt.Sprintf("projects/%s", project)},
@@ -50,8 +52,11 @@ func QueryLogsByTrace(ctx context.Context, client *logging.Client, project, trac
 }
 
 // QueryLogsByRequestID retrieves all logs for a given request ID.
-func QueryLogsByRequestID(ctx context.Context, client *logging.Client, project, requestID string, limit int) (*LogQueryResult, error) {
+func QueryLogsByRequestID(ctx context.Context, client *logging.Client, project, requestID, timeFilter string, limit int) (*LogQueryResult, error) {
 	filter := fmt.Sprintf(`jsonPayload.request_id="%s"`, EscapeFilterValue(requestID))
+	if timeFilter != "" {
+		filter = filter + "\n" + timeFilter
+	}
 
 	req := &loggingpb.ListLogEntriesRequest{
 		ResourceNames: []string{fmt.Sprintf("projects/%s", project)},
@@ -64,7 +69,7 @@ func QueryLogsByRequestID(ctx context.Context, client *logging.Client, project, 
 }
 
 // FindRequests finds HTTP requests matching the given URL pattern.
-func FindRequests(ctx context.Context, client *logging.Client, project, urlPattern, method string, statusCode int, tracedOnly bool, limit int) (*RequestList, error) {
+func FindRequests(ctx context.Context, client *logging.Client, project, urlPattern, method string, statusCode int, tracedOnly bool, timeFilter string, limit int) (*RequestList, error) {
 	parts := []string{
 		fmt.Sprintf(`httpRequest.requestUrl:"%s"`, EscapeFilterValue(urlPattern)),
 	}
@@ -79,6 +84,9 @@ func FindRequests(ctx context.Context, client *logging.Client, project, urlPatte
 	}
 
 	filter := strings.Join(parts, " AND ")
+	if timeFilter != "" {
+		filter = filter + "\n" + timeFilter
+	}
 
 	// Request more entries than limit to account for entries without httpRequest
 	pageSize := limit * 3
@@ -176,18 +184,17 @@ func fetchLogEntries(ctx context.Context, client *logging.Client, req *loggingpb
 }
 
 // ListServices discovers unique services in the project by querying recent logs.
-func ListServices(ctx context.Context, client *logging.Client, project string) (*ServiceList, error) {
-	// Limit to last 24 hours to avoid scanning very old entries
-	startTime := time.Now().Add(-24 * time.Hour)
+func ListServices(ctx context.Context, client *logging.Client, project, timeFilter string) (*ServiceList, error) {
+	filter := `(resource.type="k8s_container" OR resource.type="cloud_run_revision")`
+	if timeFilter != "" {
+		filter = filter + "\n" + timeFilter
+	}
 
 	req := &loggingpb.ListLogEntriesRequest{
 		ResourceNames: []string{fmt.Sprintf("projects/%s", project)},
-		Filter: fmt.Sprintf(
-			`(resource.type="k8s_container" OR resource.type="cloud_run_revision") AND timestamp>="%s"`,
-			startTime.Format(time.RFC3339),
-		),
-		OrderBy:  "timestamp desc",
-		PageSize: 1000,
+		Filter:        filter,
+		OrderBy:       "timestamp desc",
+		PageSize:      1000,
 	}
 
 	it := client.ListLogEntries(ctx, req)
@@ -250,21 +257,12 @@ func ListServices(ctx context.Context, client *logging.Client, project string) (
 }
 
 // SummarizeLogs aggregates log statistics over a time window.
-func SummarizeLogs(ctx context.Context, client *logging.Client, project, filter string, lookbackMinutes int) (*LogsSummary, error) {
-	startTime := time.Now().Add(-time.Duration(lookbackMinutes) * time.Minute)
-
-	filterParts := []string{
-		fmt.Sprintf(`timestamp>="%s"`, startTime.Format(time.RFC3339)),
-	}
-	if filter != "" {
-		filterParts = append(filterParts, filter)
-	}
-
+func SummarizeLogs(ctx context.Context, client *logging.Client, project, filter string) (*LogsSummary, error) {
 	const maxScan = 1000
 
 	req := &loggingpb.ListLogEntriesRequest{
 		ResourceNames: []string{fmt.Sprintf("projects/%s", project)},
-		Filter:        strings.Join(filterParts, "\n"),
+		Filter:        filter,
 		OrderBy:       "timestamp desc",
 		PageSize:      maxScan,
 	}

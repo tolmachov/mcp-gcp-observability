@@ -23,7 +23,7 @@ func NewLogsQueryHandler(client *gcpclient.Client) *LogsQueryHandler {
 
 // Tool returns the MCP tool definition.
 func (h *LogsQueryHandler) Tool() mcp.Tool {
-	return mcp.NewTool("logs.query",
+	return newToolWithTimeFilter("logs.query",
 		mcp.WithDescription("Execute an arbitrary Cloud Logging query with full filter syntax. "+
 			"Use Cloud Logging filter language (e.g. severity>=ERROR, resource.type=\"k8s_container\"). "+
 			"For Kubernetes logs, prefer logs.k8s which builds filters automatically. "+
@@ -62,6 +62,12 @@ func (h *LogsQueryHandler) Handle(ctx context.Context, request mcp.CallToolReque
 	limit := clampLimit(request.GetInt("limit", 100), 100, h.client.Config.LogsMaxLimit)
 	order := request.GetString("order", "desc")
 	pageToken := request.GetString("page_token", "")
+
+	timeFilter, err := buildTimeFilter(request)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	filter = appendFilter(filter, timeFilter)
 
 	result, err := gcpdata.QueryLogs(ctx, h.client.Logging, project, filter, limit, order, pageToken)
 	if err != nil {
