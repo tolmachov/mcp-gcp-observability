@@ -49,6 +49,20 @@ func QueryLogsByTrace(ctx context.Context, client *logging.Client, project, trac
 	return fetchLogEntries(ctx, client, req, limit)
 }
 
+// QueryLogsByRequestID retrieves all logs for a given request ID.
+func QueryLogsByRequestID(ctx context.Context, client *logging.Client, project, requestID string, limit int) (*LogQueryResult, error) {
+	filter := fmt.Sprintf(`jsonPayload.request_id="%s"`, EscapeFilterValue(requestID))
+
+	req := &loggingpb.ListLogEntriesRequest{
+		ResourceNames: []string{fmt.Sprintf("projects/%s", project)},
+		Filter:        filter,
+		OrderBy:       "timestamp asc",
+		PageSize:      safeInt32(limit),
+	}
+
+	return fetchLogEntries(ctx, client, req, limit)
+}
+
 // FindRequests finds HTTP requests matching the given URL pattern.
 func FindRequests(ctx context.Context, client *logging.Client, project, urlPattern, method string, statusCode int, tracedOnly bool, limit int) (*RequestList, error) {
 	parts := []string{

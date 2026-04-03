@@ -132,3 +132,22 @@ type ErrorSample struct {
 	Message string `json:"message"`
 	Count   int    `json:"count"`
 }
+
+// TraceSpan represents a single span within a trace, with nested children.
+type TraceSpan struct {
+	SpanID    string            `json:"span_id"`
+	Name      string            `json:"name"`
+	Kind      string            `json:"kind,omitempty"`
+	StartTime string            `json:"start_time"`
+	EndTime   string            `json:"end_time"`
+	Duration  string            `json:"duration"`
+	Labels    map[string]string `json:"labels,omitempty"`
+	Children  []TraceSpan       `json:"children,omitempty"`
+}
+
+// TraceDetail is the response for trace.get.
+type TraceDetail struct {
+	TraceID string      `json:"trace_id"`
+	Count   int         `json:"span_count"`
+	Spans   []TraceSpan `json:"spans"`
+}

@@ -26,7 +26,8 @@ func (h *LogsByTraceHandler) Tool() mcp.Tool {
 	return mcp.NewTool("logs.by_trace",
 		mcp.WithDescription("Find all log entries associated with a specific trace ID. "+
 			"Returns logs sorted by timestamp ascending to show the request flow. "+
-			"Get trace IDs from logs.find_requests results or from the trace field in logs.query output."),
+			"Get trace IDs from logs.find_requests results or from the trace field in logs.query output. "+
+			"If you have a request_id instead of a trace_id, use logs.by_request_id."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithOpenWorldHintAnnotation(true),
 		mcp.WithIdempotentHintAnnotation(true),

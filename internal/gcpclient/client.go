@@ -12,12 +12,14 @@ import (
 
 	errorreporting "cloud.google.com/go/errorreporting/apiv1beta1"
 	logging "cloud.google.com/go/logging/apiv2"
+	cloudtrace "cloud.google.com/go/trace/apiv1"
 )
 
-// Client wraps GCP API clients for Logging and Error Reporting.
+// Client wraps GCP API clients for Logging, Error Reporting, and Cloud Trace.
 type Client struct {
 	Logging *logging.Client
 	Errors  *errorreporting.ErrorStatsClient
+	Trace   *cloudtrace.Client
 	Config  *Config
 }
 
@@ -36,9 +38,17 @@ func New(ctx context.Context, cfg *Config) (*Client, error) {
 		return nil, fmt.Errorf("creating error stats client: %w", err)
 	}
 
+	traceClient, err := cloudtrace.NewClient(ctx, opts...)
+	if err != nil {
+		_ = loggingClient.Close()
+		_ = errorsClient.Close()
+		return nil, fmt.Errorf("creating trace client: %w", err)
+	}
+
 	return &Client{
 		Logging: loggingClient,
 		Errors:  errorsClient,
+		Trace:   traceClient,
 		Config:  cfg,
 	}, nil
 }
@@ -48,6 +58,7 @@ func (c *Client) Close() error {
 	return errors.Join(
 		c.Logging.Close(),
 		c.Errors.Close(),
+		c.Trace.Close(),
 	)
 }
 

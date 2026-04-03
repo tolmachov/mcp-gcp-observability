@@ -123,11 +123,13 @@ func TestListTools(t *testing.T) {
 		"logs.query",
 		"logs.k8s",
 		"logs.by_trace",
+		"logs.by_request_id",
 		"logs.find_requests",
 		"logs.summary",
 		"logs.services",
 		"errors.list",
 		"errors.get",
+		"trace.get",
 	}
 
 	toolNames := make(map[string]bool)
@@ -282,6 +284,105 @@ func TestLogsK8s(t *testing.T) {
 
 	text := result.Content[0].(mcp.TextContent).Text
 	t.Logf("logs.k8s result: %s", text[:min(len(text), 500)])
+}
+
+func TestLogsByRequestID(t *testing.T) {
+	requestID := os.Getenv("TEST_REQUEST_ID")
+	if requestID == "" {
+		// Find a request with request_id
+		c, ctx, cleanup := setupClient(t)
+		defer cleanup()
+
+		findResult, err := c.CallTool(ctx, mcp.CallToolRequest{
+			Params: mcp.CallToolParams{
+				Name: "logs.find_requests",
+				Arguments: map[string]any{
+					"url_pattern": "/",
+					"limit":       5,
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("failed to find requests: %v", err)
+		}
+
+		text := findResult.Content[0].(mcp.TextContent).Text
+
+		var requests struct {
+			Requests []struct {
+				RequestID string `json:"request_id"`
+			} `json:"requests"`
+		}
+		if err := json.Unmarshal([]byte(text), &requests); err != nil {
+			t.Fatalf("failed to parse find_requests result: %v", err)
+		}
+
+		for _, r := range requests.Requests {
+			if r.RequestID != "" {
+				requestID = r.RequestID
+				break
+			}
+		}
+		if requestID == "" {
+			t.Skip("no requests with request_id found, skipping logs.by_request_id test")
+		}
+
+		result, err := c.CallTool(ctx, mcp.CallToolRequest{
+			Params: mcp.CallToolParams{
+				Name: "logs.by_request_id",
+				Arguments: map[string]any{
+					"request_id": requestID,
+					"limit":      10,
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("failed to call logs.by_request_id: %v", err)
+		}
+
+		if len(result.Content) == 0 {
+			t.Fatal("expected non-empty result")
+		}
+
+		resultText := result.Content[0].(mcp.TextContent).Text
+		t.Logf("logs.by_request_id result (request_id=%s): %s", requestID, resultText[:min(len(resultText), 500)])
+
+		var logResult struct {
+			Count int `json:"count"`
+		}
+		if err := json.Unmarshal([]byte(resultText), &logResult); err != nil {
+			t.Fatalf("failed to parse result: %v", err)
+		}
+
+		if logResult.Count == 0 {
+			t.Error("expected at least one log entry for the request_id")
+		}
+		return
+	}
+
+	// Use provided request ID
+	c, ctx, cleanup := setupClient(t)
+	defer cleanup()
+
+	result, err := c.CallTool(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name: "logs.by_request_id",
+			Arguments: map[string]any{
+				"request_id": requestID,
+				"limit":      10,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to call logs.by_request_id: %v", err)
+	}
+
+	if len(result.Content) == 0 {
+		t.Fatal("expected non-empty result")
+	}
+
+	text := result.Content[0].(mcp.TextContent).Text
+	t.Logf("logs.by_request_id result: %s", text[:min(len(text), 500)])
 }
 
 func TestLogsByTrace(t *testing.T) {
@@ -449,6 +550,102 @@ func TestErrorsGet(t *testing.T) {
 
 	text := result.Content[0].(mcp.TextContent).Text
 	t.Logf("errors.get result: %s", text[:min(len(text), 500)])
+}
+
+func TestTraceGet(t *testing.T) {
+	traceID := os.Getenv("TEST_TRACE_ID")
+	if traceID == "" {
+		// Find a traced request to get a real trace ID
+		c, ctx, cleanup := setupClient(t)
+		defer cleanup()
+
+		findResult, err := c.CallTool(ctx, mcp.CallToolRequest{
+			Params: mcp.CallToolParams{
+				Name: "logs.find_requests",
+				Arguments: map[string]any{
+					"traced_only": true,
+					"limit":       1,
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("failed to find traced request: %v", err)
+		}
+
+		text := findResult.Content[0].(mcp.TextContent).Text
+
+		var requests struct {
+			Requests []struct {
+				TraceID string `json:"trace_id"`
+			} `json:"requests"`
+		}
+		if err := json.Unmarshal([]byte(text), &requests); err != nil {
+			t.Fatalf("failed to parse find_requests result: %v", err)
+		}
+
+		if len(requests.Requests) == 0 || requests.Requests[0].TraceID == "" {
+			t.Skip("no traced requests found, skipping trace.get test")
+		}
+		traceID = requests.Requests[0].TraceID
+
+		result, err := c.CallTool(ctx, mcp.CallToolRequest{
+			Params: mcp.CallToolParams{
+				Name: "trace.get",
+				Arguments: map[string]any{
+					"trace_id": traceID,
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("failed to call trace.get: %v", err)
+		}
+
+		if len(result.Content) == 0 {
+			t.Fatal("expected non-empty result")
+		}
+
+		traceText := result.Content[0].(mcp.TextContent).Text
+		t.Logf("trace.get result (trace_id=%s): %s", traceID, traceText[:min(len(traceText), 500)])
+
+		var traceDetail struct {
+			TraceID   string `json:"trace_id"`
+			SpanCount int    `json:"span_count"`
+		}
+		if err := json.Unmarshal([]byte(traceText), &traceDetail); err != nil {
+			t.Fatalf("failed to parse trace.get result: %v", err)
+		}
+
+		if traceDetail.TraceID == "" {
+			t.Error("expected non-empty trace_id in response")
+		}
+		if traceDetail.SpanCount == 0 {
+			t.Log("warning: trace has no spans")
+		}
+		return
+	}
+
+	// Use provided trace ID
+	c, ctx, cleanup := setupClient(t)
+	defer cleanup()
+
+	result, err := c.CallTool(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name: "trace.get",
+			Arguments: map[string]any{
+				"trace_id": traceID,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to call trace.get: %v", err)
+	}
+
+	if len(result.Content) == 0 {
+		t.Fatal("expected non-empty result")
+	}
+
+	text := result.Content[0].(mcp.TextContent).Text
+	t.Logf("trace.get result: %s", text[:min(len(text), 500)])
 }
 
 func TestLogsSummary(t *testing.T) {

@@ -35,6 +35,7 @@ func New(cfg *gcpclient.Config, version string, stdin io.Reader, stdout, errOut 
 			"3) errors.list — list error groups sorted by count. "+
 			"4) logs.query or logs.k8s — investigate specific logs with filters. "+
 			"5) logs.by_trace — follow a single request across services using a trace ID from logs.find_requests or logs.query results. "+
+			"6) trace.get — get detailed span tree for a trace to understand request timing and dependencies. "+
 			"Always prefer logs.k8s over logs.query when investigating Kubernetes workloads."),
 	)
 
@@ -64,6 +65,7 @@ func (s *Server) Run(ctx context.Context) error {
 		// Phase 1
 		tools.NewLogsQueryHandler(client),
 		tools.NewLogsByTraceHandler(client),
+		tools.NewLogsByRequestIDHandler(client),
 		tools.NewLogsFindRequestsHandler(client),
 		tools.NewErrorsListHandler(client),
 		// Phase 2
@@ -72,6 +74,8 @@ func (s *Server) Run(ctx context.Context) error {
 		tools.NewLogsServicesHandler(client),
 		// Phase 3
 		tools.NewLogsSummaryHandler(client),
+		// Traces
+		tools.NewTraceGetHandler(client),
 	})
 
 	errLogger := log.New(s.errOut, "[mcp-gcp-observability] ", log.LstdFlags)
