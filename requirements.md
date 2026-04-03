@@ -1,6 +1,8 @@
 # GCP Logs & Error Reporting MCP Server  
 ## Technical Specification
 
+> **Note:** This is the original design specification. The implementation has diverged significantly — additional tools and Cloud Trace support were added, and the directory structure differs. Refer to the README and source code for the current state.
+
 ---
 
 ## 1. Objective
@@ -426,8 +428,3 @@ gcp-mcp/
 	•	config examples
 	•	tests
 
----
-
-Если нужно — могу следующим шагом:
-- накидать **готовый Go MCP server skeleton**
-- или сразу **рабочий минимальный прототип под твой проект**

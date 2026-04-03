@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -18,7 +17,7 @@ type LogsByRequestIDHandler struct {
 
 // NewLogsByRequestIDHandler creates a new LogsByRequestIDHandler.
 func NewLogsByRequestIDHandler(client *gcpclient.Client) *LogsByRequestIDHandler {
-	return &LogsByRequestIDHandler{client: client}
+	return &LogsByRequestIDHandler{client: requireClient(client)}
 }
 
 // Tool returns the MCP tool definition.
@@ -39,7 +38,11 @@ func (h *LogsByRequestIDHandler) Tool() mcp.Tool {
 			mcp.Description("GCP project ID (uses default if not specified)"),
 		),
 		mcp.WithNumber("limit",
-			mcp.Description("Maximum number of entries to return (default 100)"),
+			mcp.Description("Maximum number of log entries to return (default 100, server max applies)"),
+			mcp.Min(1),
+		),
+		mcp.WithString("page_token",
+			mcp.Description("Page token for pagination (from previous response's next_page_token)"),
 		),
 	)
 }
@@ -51,23 +54,23 @@ func (h *LogsByRequestIDHandler) Handle(ctx context.Context, request mcp.CallToo
 		return mcp.NewToolResultError("request_id is required"), nil
 	}
 
-	project := request.GetString("project_id", h.client.Config.DefaultProject)
-	limit := clampLimit(request.GetInt("limit", 100), 100, h.client.Config.LogsMaxLimit)
+	project, errResult := requireProject(request, h.client.Config().DefaultProject)
+	if errResult != nil {
+		return errResult, nil
+	}
+	limit := clampLimit(request.GetInt("limit", 100), 100, h.client.Config().LogsMaxLimit)
 
 	timeFilter, err := buildTimeFilter(request)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	result, err := gcpdata.QueryLogsByRequestID(ctx, h.client.Logging, project, requestID, timeFilter, limit)
+	pageToken := request.GetString("page_token", "")
+
+	result, err := gcpdata.QueryLogsByRequestID(ctx, h.client.LoggingClient(), project, requestID, timeFilter, limit, pageToken)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to query logs by request ID: %v. Verify the request_id is correct. Use logs.find_requests to discover valid request IDs.", err)), nil
 	}
 
-	data, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal result: %v", err)), nil
-	}
-
-	return mcp.NewToolResultText(string(data)), nil
+	return jsonResult(result)
 }

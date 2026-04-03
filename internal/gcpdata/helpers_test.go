@@ -1,6 +1,7 @@
 package gcpdata
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -10,6 +11,51 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+func TestSafeInt32(t *testing.T) {
+	tests := []struct {
+		name string
+		in   int
+		want int32
+	}{
+		{"positive", 100, 100},
+		{"zero", 0, 0},
+		{"negative", -5, 0},
+		{"max int32", math.MaxInt32, math.MaxInt32},
+		{"over max int32", math.MaxInt32 + 1, math.MaxInt32},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := safeInt32(tt.in)
+			if got != tt.want {
+				t.Errorf("safeInt32(%d) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatDuration(t *testing.T) {
+	tests := []struct {
+		name string
+		dur  time.Duration
+		want string
+	}{
+		{"milliseconds", 150 * time.Millisecond, "150.000ms"},
+		{"sub-millisecond", 500 * time.Microsecond, "0.500ms"},
+		{"seconds", 2500 * time.Millisecond, "2.500s"},
+		{"exactly one second", time.Second, "1.000s"},
+		{"zero", 0, "0.000ms"},
+		{"negative treated as zero", -500 * time.Millisecond, "0.000ms"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatDuration(tt.dur)
+			if got != tt.want {
+				t.Errorf("formatDuration(%v) = %q, want %q", tt.dur, got, tt.want)
+			}
+		})
+	}
+}
 
 func TestEscapeFilterValue(t *testing.T) {
 	tests := []struct {
@@ -72,7 +118,7 @@ func TestFormatLatency(t *testing.T) {
 		want string
 	}{
 		{"nil", nil, ""},
-		{"milliseconds", durationpb.New(150 * time.Millisecond), "150.0ms"},
+		{"milliseconds", durationpb.New(150 * time.Millisecond), "150.000ms"},
 		{"seconds", durationpb.New(2500 * time.Millisecond), "2.500s"},
 	}
 	for _, tt := range tests {
@@ -205,6 +251,28 @@ func TestStructToMap(t *testing.T) {
 			t.Errorf("list = %v, want [a, b]", m["list"])
 		}
 	})
+}
+
+func TestAppendFilter(t *testing.T) {
+	tests := []struct {
+		name string
+		base string
+		part string
+		want string
+	}{
+		{"both empty", "", "", ""},
+		{"empty base", "", "part", "part"},
+		{"empty part", "base", "", "base"},
+		{"both set", "base", "part", "base\npart"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := AppendFilter(tt.base, tt.part)
+			if got != tt.want {
+				t.Errorf("AppendFilter(%q, %q) = %q, want %q", tt.base, tt.part, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestTopN(t *testing.T) {

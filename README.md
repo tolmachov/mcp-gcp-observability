@@ -1,21 +1,22 @@
 # MCP GCP Observability
 
-MCP server for querying Google Cloud Logging and Error Reporting without the web UI.
+MCP server for querying Google Cloud Logging, Error Reporting, and Cloud Trace without the web UI.
 
 ## Features
 
 - Query Cloud Logging with full filter syntax
 - Kubernetes-aware log queries
-- Trace-based log correlation
+- Trace-based log correlation (by trace ID or request ID)
 - HTTP request discovery with trace/request ID extraction
 - Error Reporting integration (grouped errors, stack traces)
+- Cloud Trace integration (span trees, latency analysis)
 - Service discovery
 - Log aggregation and summaries
 
 ## Prerequisites
 
 - Go 1.22+
-- GCP project with Cloud Logging and Error Reporting APIs enabled
+- GCP project with Cloud Logging, Error Reporting, and Cloud Trace APIs enabled
 - Application Default Credentials configured:
   ```bash
   gcloud auth application-default login
@@ -24,6 +25,7 @@ MCP server for querying Google Cloud Logging and Error Reporting without the web
   - `logging.logEntries.list`
   - `errorreporting.groupMetadata.list`
   - `errorreporting.events.list`
+  - `cloudtrace.traces.get`
 
 ## Installation
 
@@ -89,7 +91,9 @@ go build -o mcp-gcp-observability .
 | `logs.summary` | Aggregated log statistics (severity, top services, top errors) |
 | `logs.services` | Discover available services and resources in the project |
 | `errors.list` | List error groups from Error Reporting, sorted by count |
+| `logs.by_request_id` | Find all logs associated with a request ID |
 | `errors.get` | Get error group details with individual events |
+| `trace.get` | Get trace details with span tree by trace ID |
 
 ## Prompt Examples
 
@@ -116,6 +120,7 @@ go build -o mcp-gcp-observability .
 | `GCP_DEFAULT_PROJECT` | (required) | Default GCP project ID |
 | `LOGS_MAX_LIMIT` | `1000` | Maximum log entries per request |
 | `ERRORS_MAX_LIMIT` | `100` | Maximum error groups per request |
+| `DNS_SERVER` | (none) | Custom DNS server for GCP API resolution |
 
 ## License
 

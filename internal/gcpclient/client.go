@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"google.golang.org/api/option"
@@ -17,14 +18,36 @@ import (
 
 // Client wraps GCP API clients for Logging, Error Reporting, and Cloud Trace.
 type Client struct {
-	Logging *logging.Client
-	Errors  *errorreporting.ErrorStatsClient
-	Trace   *cloudtrace.Client
-	Config  *Config
+	logging   *logging.Client
+	errors    *errorreporting.ErrorStatsClient
+	trace     *cloudtrace.Client
+	config    *Config
+	closeOnce sync.Once
+	closeErr  error
 }
 
-// New creates a new GCP client using Application Default Credentials.
+// LoggingClient returns the Cloud Logging API client.
+func (c *Client) LoggingClient() *logging.Client { return c.logging }
+
+// ErrorsClient returns the Error Reporting API client.
+func (c *Client) ErrorsClient() *errorreporting.ErrorStatsClient { return c.errors }
+
+// TraceClient returns the Cloud Trace API client.
+func (c *Client) TraceClient() *cloudtrace.Client { return c.trace }
+
+// Config returns a copy of the client configuration.
+func (c *Client) Config() Config { return *c.config }
+
+// New creates a new GCP client with Logging, Error Reporting, and Cloud Trace API clients.
+// Optionally configures a custom DNS resolver from Config.DNSServer.
 func New(ctx context.Context, cfg *Config) (*Client, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("config must not be nil")
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+
 	opts := clientOptions(cfg)
 
 	loggingClient, err := logging.NewClient(ctx, opts...)
@@ -34,35 +57,42 @@ func New(ctx context.Context, cfg *Config) (*Client, error) {
 
 	errorsClient, err := errorreporting.NewErrorStatsClient(ctx, opts...)
 	if err != nil {
-		_ = loggingClient.Close()
-		return nil, fmt.Errorf("creating error stats client: %w", err)
+		return nil, errors.Join(fmt.Errorf("creating error stats client: %w", err), loggingClient.Close())
 	}
 
 	traceClient, err := cloudtrace.NewClient(ctx, opts...)
 	if err != nil {
-		_ = loggingClient.Close()
-		_ = errorsClient.Close()
-		return nil, fmt.Errorf("creating trace client: %w", err)
+		return nil, errors.Join(fmt.Errorf("creating trace client: %w", err), loggingClient.Close(), errorsClient.Close())
 	}
 
+	cfgCopy := *cfg
 	return &Client{
-		Logging: loggingClient,
-		Errors:  errorsClient,
-		Trace:   traceClient,
-		Config:  cfg,
+		logging: loggingClient,
+		errors:  errorsClient,
+		trace:   traceClient,
+		config:  &cfgCopy,
 	}, nil
 }
 
-// Close closes all GCP API clients.
+// Close closes all GCP API clients. It is safe to call multiple times.
 func (c *Client) Close() error {
-	return errors.Join(
-		c.Logging.Close(),
-		c.Errors.Close(),
-		c.Trace.Close(),
-	)
+	c.closeOnce.Do(func() {
+		var errs []error
+		if c.logging != nil {
+			errs = append(errs, c.logging.Close())
+		}
+		if c.errors != nil {
+			errs = append(errs, c.errors.Close())
+		}
+		if c.trace != nil {
+			errs = append(errs, c.trace.Close())
+		}
+		c.closeErr = errors.Join(errs...)
+	})
+	return c.closeErr
 }
 
-// clientOptions builds Google API client options from config.
+// clientOptions returns Google API client options that configure a custom DNS resolver, or nil if no custom DNS server is configured.
 func clientOptions(cfg *Config) []option.ClientOption {
 	if cfg.DNSServer == "" {
 		return nil

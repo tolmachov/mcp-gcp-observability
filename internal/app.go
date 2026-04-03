@@ -20,7 +20,7 @@ func New(in io.Reader, out, errOut io.Writer) *cli.Command {
 	return &cli.Command{
 		Name:      serviceName,
 		Version:   Version,
-		Usage:     "MCP server for GCP Logging and Error Reporting",
+		Usage:     "MCP server for GCP Cloud Logging, Error Reporting, and Cloud Trace",
 		Reader:    in,
 		Writer:    out,
 		ErrWriter: errOut,

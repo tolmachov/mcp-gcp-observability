@@ -1,6 +1,8 @@
 package gcpdata
 
 // LogEntry represents a normalized log entry for LLM consumption.
+// Either TextPayload or JSONPayload is set, never both.
+// All timestamps are UTC strings with millisecond precision (e.g. "2006-01-02T15:04:05.000Z").
 type LogEntry struct {
 	Timestamp   string            `json:"timestamp"`
 	Severity    string            `json:"severity"`
@@ -40,6 +42,7 @@ type OperationInfo struct {
 }
 
 // LogQueryResult is the response for log queries.
+// Count always equals len(Entries).
 type LogQueryResult struct {
 	Count         int        `json:"count"`
 	Entries       []LogEntry `json:"entries"`
@@ -60,6 +63,7 @@ type RequestInfo struct {
 }
 
 // RequestList is the response for logs.find_requests.
+// Count always equals len(Requests).
 type RequestList struct {
 	Count    int           `json:"count"`
 	Requests []RequestInfo `json:"requests"`
@@ -77,6 +81,7 @@ type ErrorGroup struct {
 }
 
 // ErrorGroupList is the response for errors.list.
+// Count always equals len(Groups).
 type ErrorGroupList struct {
 	Count  int          `json:"count"`
 	Groups []ErrorGroup `json:"groups"`
@@ -91,6 +96,7 @@ type ErrorInstance struct {
 }
 
 // ErrorGroupDetail is the response for errors.get.
+// Instances is guaranteed non-empty. Message and Service are derived from the first instance.
 type ErrorGroupDetail struct {
 	GroupID   string          `json:"group_id"`
 	Message   string          `json:"message"`
@@ -106,12 +112,16 @@ type ServiceInfo struct {
 }
 
 // ServiceList is the response for logs.services.
+// Count always equals len(Services).
 type ServiceList struct {
-	Count    int           `json:"count"`
-	Services []ServiceInfo `json:"services"`
+	Count          int           `json:"count"`
+	Services       []ServiceInfo `json:"services"`
+	Truncated      bool          `json:"truncated,omitempty"`
+	TruncationHint string        `json:"truncation_hint,omitempty"`
 }
 
 // LogsSummary is the response for logs.summary.
+// TruncationHint is non-empty only when Truncated is true.
 type LogsSummary struct {
 	TotalEntries         int            `json:"total_entries"`
 	SeverityDistribution map[string]int `json:"severity_distribution"`
@@ -119,6 +129,7 @@ type LogsSummary struct {
 	TopErrors            []ErrorSample  `json:"top_errors"`
 	SampleEntries        []LogEntry     `json:"sample_entries"`
 	Truncated            bool           `json:"truncated"`
+	TruncationHint       string         `json:"truncation_hint,omitempty"`
 }
 
 // ServiceCount is a service with its log entry count.
@@ -134,6 +145,8 @@ type ErrorSample struct {
 }
 
 // TraceSpan represents a single span within a trace, with nested children.
+// Children form a tree (no cycles) sorted by StartTime.
+// Duration is a human-readable string like "1.234s" or "150.000ms".
 type TraceSpan struct {
 	SpanID    string            `json:"span_id"`
 	Name      string            `json:"name"`
@@ -146,6 +159,7 @@ type TraceSpan struct {
 }
 
 // TraceDetail is the response for trace.get.
+// Count is the total number of spans across the entire tree (not just len(Spans), which counts only roots).
 type TraceDetail struct {
 	TraceID string      `json:"trace_id"`
 	Count   int         `json:"span_count"`

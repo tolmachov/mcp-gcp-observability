@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -19,7 +18,7 @@ type LogsK8sHandler struct {
 
 // NewLogsK8sHandler creates a new LogsK8sHandler.
 func NewLogsK8sHandler(client *gcpclient.Client) *LogsK8sHandler {
-	return &LogsK8sHandler{client: client}
+	return &LogsK8sHandler{client: requireClient(client)}
 }
 
 // Tool returns the MCP tool definition.
@@ -27,8 +26,7 @@ func (h *LogsK8sHandler) Tool() mcp.Tool {
 	return newToolWithTimeFilter("logs.k8s",
 		mcp.WithDescription("Query Kubernetes container logs with convenient filters. "+
 			"Automatically builds Cloud Logging filter for resource.type=\"k8s_container\". "+
-			"Preferred over logs.query for K8s workloads. "+
-			"For non-K8s resources (Cloud Run, etc.), use logs.query with a custom filter."),
+			"Preferred over logs.query for K8s workloads. Results default to newest-first (use order parameter to change)."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithOpenWorldHintAnnotation(true),
 		mcp.WithIdempotentHintAnnotation(true),
@@ -42,7 +40,8 @@ func (h *LogsK8sHandler) Tool() mcp.Tool {
 			mcp.Description("Container name"),
 		),
 		mcp.WithString("severity",
-			mcp.Description("Minimum severity: DEFAULT, DEBUG, INFO, NOTICE, WARNING, ERROR, CRITICAL, ALERT, EMERGENCY"),
+			mcp.Description("Minimum log severity level to return"),
+			mcp.Enum("DEFAULT", "DEBUG", "INFO", "NOTICE", "WARNING", "ERROR", "CRITICAL", "ALERT", "EMERGENCY"),
 		),
 		mcp.WithString("text_search",
 			mcp.Description("Text to search for in log payloads"),
@@ -51,15 +50,26 @@ func (h *LogsK8sHandler) Tool() mcp.Tool {
 			mcp.Description("GCP project ID (uses default if not specified)"),
 		),
 		mcp.WithNumber("limit",
-			mcp.Description("Maximum number of entries to return (default 100)"),
+			mcp.Description("Maximum number of log entries to return (default 100, server max applies)"),
+			mcp.Min(1),
+		),
+		mcp.WithString("order",
+			mcp.Description("Sort order by timestamp (default 'desc')"),
+			mcp.Enum("asc", "desc"),
+		),
+		mcp.WithString("page_token",
+			mcp.Description("Page token for pagination (from previous response's next_page_token)"),
 		),
 	)
 }
 
 // Handle processes the logs.k8s tool request.
 func (h *LogsK8sHandler) Handle(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	project := request.GetString("project_id", h.client.Config.DefaultProject)
-	limit := clampLimit(request.GetInt("limit", 100), 100, h.client.Config.LogsMaxLimit)
+	project, errResult := requireProject(request, h.client.Config().DefaultProject)
+	if errResult != nil {
+		return errResult, nil
+	}
+	limit := clampLimit(request.GetInt("limit", 100), 100, h.client.Config().LogsMaxLimit)
 
 	// Build K8s-specific filter
 	parts := []string{`resource.type="k8s_container"`}
@@ -91,17 +101,18 @@ func (h *LogsK8sHandler) Handle(ctx context.Context, request mcp.CallToolRequest
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	filter = appendFilter(filter, timeFilter)
+	filter = gcpdata.AppendFilter(filter, timeFilter)
 
-	result, err := gcpdata.QueryLogs(ctx, h.client.Logging, project, filter, limit, "desc", "")
+	order := request.GetString("order", "desc")
+	if order != "asc" && order != "desc" {
+		return mcp.NewToolResultError(fmt.Sprintf("invalid order %q: must be \"asc\" or \"desc\"", order)), nil
+	}
+	pageToken := request.GetString("page_token", "")
+
+	result, err := gcpdata.QueryLogs(ctx, h.client.LoggingClient(), project, filter, limit, order, pageToken)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to query K8s logs: %v. Verify the project_id and that K8s logging is enabled.", err)), nil
 	}
 
-	data, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal result: %v", err)), nil
-	}
-
-	return mcp.NewToolResultText(string(data)), nil
+	return jsonResult(result)
 }

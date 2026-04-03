@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"google.golang.org/api/iterator"
@@ -14,7 +15,7 @@ import (
 
 const errorReportingTimeout = 30 * time.Second
 
-// timeRangePeriod maps hours to the closest Error Reporting query time range period.
+// timeRangePeriod rounds up to the smallest Error Reporting query period that fully covers the requested range.
 func timeRangePeriod(hours int) errorreportingpb.QueryTimeRange_Period {
 	switch {
 	case hours <= 1:
@@ -85,6 +86,7 @@ func ListErrors(ctx context.Context, client *errorreporting.ErrorStatsClient, pr
 			for v := range versions {
 				g.AffectedVersions = append(g.AffectedVersions, v)
 			}
+			sort.Strings(g.AffectedVersions)
 		}
 
 		// Extract message from representative event
@@ -147,6 +149,10 @@ func GetErrorGroup(ctx context.Context, client *errorreporting.ErrorStatsClient,
 		}
 
 		instances = append(instances, inst)
+	}
+
+	if len(instances) == 0 {
+		return nil, fmt.Errorf("no events found for error group %q in the current time window: the group may have been resolved or events may have aged out of retention", groupID)
 	}
 
 	detail.Instances = instances

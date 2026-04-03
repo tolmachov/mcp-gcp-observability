@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -18,7 +17,7 @@ type LogsQueryHandler struct {
 
 // NewLogsQueryHandler creates a new LogsQueryHandler.
 func NewLogsQueryHandler(client *gcpclient.Client) *LogsQueryHandler {
-	return &LogsQueryHandler{client: client}
+	return &LogsQueryHandler{client: requireClient(client)}
 }
 
 // Tool returns the MCP tool definition.
@@ -39,7 +38,8 @@ func (h *LogsQueryHandler) Tool() mcp.Tool {
 			mcp.Required(),
 		),
 		mcp.WithNumber("limit",
-			mcp.Description("Maximum number of entries to return (default 100)"),
+			mcp.Description("Maximum number of log entries to return (default 100, server max applies)"),
+			mcp.Min(1),
 		),
 		mcp.WithString("order",
 			mcp.Description("Sort order by timestamp (default 'desc')"),
@@ -58,26 +58,27 @@ func (h *LogsQueryHandler) Handle(ctx context.Context, request mcp.CallToolReque
 		return mcp.NewToolResultError("filter is required"), nil
 	}
 
-	project := request.GetString("project_id", h.client.Config.DefaultProject)
-	limit := clampLimit(request.GetInt("limit", 100), 100, h.client.Config.LogsMaxLimit)
+	project, errResult := requireProject(request, h.client.Config().DefaultProject)
+	if errResult != nil {
+		return errResult, nil
+	}
+	limit := clampLimit(request.GetInt("limit", 100), 100, h.client.Config().LogsMaxLimit)
 	order := request.GetString("order", "desc")
+	if order != "asc" && order != "desc" {
+		return mcp.NewToolResultError(fmt.Sprintf("invalid order %q: must be \"asc\" or \"desc\"", order)), nil
+	}
 	pageToken := request.GetString("page_token", "")
 
 	timeFilter, err := buildTimeFilter(request)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	filter = appendFilter(filter, timeFilter)
+	filter = gcpdata.AppendFilter(filter, timeFilter)
 
-	result, err := gcpdata.QueryLogs(ctx, h.client.Logging, project, filter, limit, order, pageToken)
+	result, err := gcpdata.QueryLogs(ctx, h.client.LoggingClient(), project, filter, limit, order, pageToken)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to query logs: %v. Verify the project_id and filter syntax.", err)), nil
 	}
 
-	data, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal result: %v", err)), nil
-	}
-
-	return mcp.NewToolResultText(string(data)), nil
+	return jsonResult(result)
 }

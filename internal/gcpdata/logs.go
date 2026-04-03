@@ -18,9 +18,14 @@ import (
 
 // QueryLogs executes an arbitrary Cloud Logging query.
 func QueryLogs(ctx context.Context, client *logging.Client, project, filter string, limit int, order, pageToken string) (*LogQueryResult, error) {
-	orderBy := "timestamp desc"
-	if order == "asc" {
+	var orderBy string
+	switch order {
+	case "asc":
 		orderBy = "timestamp asc"
+	case "desc":
+		orderBy = "timestamp desc"
+	default:
+		return nil, fmt.Errorf("invalid order %q: must be \"asc\" or \"desc\"", order)
 	}
 
 	req := &loggingpb.ListLogEntriesRequest{
@@ -35,34 +40,36 @@ func QueryLogs(ctx context.Context, client *logging.Client, project, filter stri
 }
 
 // QueryLogsByTrace retrieves all logs for a given trace ID.
-func QueryLogsByTrace(ctx context.Context, client *logging.Client, project, traceID, timeFilter string, limit int) (*LogQueryResult, error) {
-	filter := fmt.Sprintf(`trace="projects/%s/traces/%s"`, project, EscapeFilterValue(traceID))
-	if timeFilter != "" {
-		filter = filter + "\n" + timeFilter
-	}
+func QueryLogsByTrace(ctx context.Context, client *logging.Client, project, traceID, timeFilter string, limit int, pageToken string) (*LogQueryResult, error) {
+	filter := AppendFilter(
+		fmt.Sprintf(`trace="projects/%s/traces/%s"`, project, EscapeFilterValue(traceID)),
+		timeFilter,
+	)
 
 	req := &loggingpb.ListLogEntriesRequest{
 		ResourceNames: []string{fmt.Sprintf("projects/%s", project)},
 		Filter:        filter,
 		OrderBy:       "timestamp asc",
 		PageSize:      safeInt32(limit),
+		PageToken:     pageToken,
 	}
 
 	return fetchLogEntries(ctx, client, req, limit)
 }
 
 // QueryLogsByRequestID retrieves all logs for a given request ID.
-func QueryLogsByRequestID(ctx context.Context, client *logging.Client, project, requestID, timeFilter string, limit int) (*LogQueryResult, error) {
-	filter := fmt.Sprintf(`jsonPayload.request_id="%s"`, EscapeFilterValue(requestID))
-	if timeFilter != "" {
-		filter = filter + "\n" + timeFilter
-	}
+func QueryLogsByRequestID(ctx context.Context, client *logging.Client, project, requestID, timeFilter string, limit int, pageToken string) (*LogQueryResult, error) {
+	filter := AppendFilter(
+		fmt.Sprintf(`jsonPayload.request_id="%s"`, EscapeFilterValue(requestID)),
+		timeFilter,
+	)
 
 	req := &loggingpb.ListLogEntriesRequest{
 		ResourceNames: []string{fmt.Sprintf("projects/%s", project)},
 		Filter:        filter,
 		OrderBy:       "timestamp asc",
 		PageSize:      safeInt32(limit),
+		PageToken:     pageToken,
 	}
 
 	return fetchLogEntries(ctx, client, req, limit)
@@ -83,10 +90,7 @@ func FindRequests(ctx context.Context, client *logging.Client, project, urlPatte
 		parts = append(parts, `trace!=""`)
 	}
 
-	filter := strings.Join(parts, " AND ")
-	if timeFilter != "" {
-		filter = filter + "\n" + timeFilter
-	}
+	filter := AppendFilter(strings.Join(parts, " AND "), timeFilter)
 
 	// Request more entries than limit to account for entries without httpRequest
 	pageSize := limit * 3
@@ -183,24 +187,27 @@ func fetchLogEntries(ctx context.Context, client *logging.Client, req *loggingpb
 	return result, nil
 }
 
-// ListServices discovers unique services in the project by querying recent logs.
+// ListServices discovers unique services by scanning recent logs for common GCP resource types.
 func ListServices(ctx context.Context, client *logging.Client, project, timeFilter string) (*ServiceList, error) {
-	filter := `(resource.type="k8s_container" OR resource.type="cloud_run_revision")`
-	if timeFilter != "" {
-		filter = filter + "\n" + timeFilter
-	}
+	const maxServicesScan = 1000
+
+	filter := AppendFilter(
+		`(resource.type="k8s_container" OR resource.type="cloud_run_revision" OR resource.type="cloud_function" OR resource.type="gae_app" OR resource.type="gce_instance")`,
+		timeFilter,
+	)
 
 	req := &loggingpb.ListLogEntriesRequest{
 		ResourceNames: []string{fmt.Sprintf("projects/%s", project)},
 		Filter:        filter,
 		OrderBy:       "timestamp desc",
-		PageSize:      1000,
+		PageSize:      maxServicesScan,
 	}
 
 	it := client.ListLogEntries(ctx, req)
 
+	scanned := 0
 	seen := make(map[string]ServiceInfo)
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < maxServicesScan; i++ {
 		entry, err := it.Next()
 		if errors.Is(err, iterator.Done) {
 			break
@@ -208,6 +215,8 @@ func ListServices(ctx context.Context, client *logging.Client, project, timeFilt
 		if err != nil {
 			return nil, fmt.Errorf("iterating log entries: %w", err)
 		}
+
+		scanned++
 
 		if entry.Resource == nil {
 			continue
@@ -222,20 +231,45 @@ func ListServices(ctx context.Context, client *logging.Client, project, timeFilt
 		switch resType {
 		case "cloud_run_revision":
 			name := labels["service_name"]
+			if name == "" {
+				continue
+			}
 			key = "cloud_run:" + name
-			info = ServiceInfo{
-				Name:         name,
-				ResourceType: resType,
-			}
+			info = ServiceInfo{Name: name, ResourceType: resType}
 		case "k8s_container":
-			ns := labels["namespace_name"]
 			container := labels["container_name"]
-			key = "k8s:" + ns + "/" + container
-			info = ServiceInfo{
-				Name:         container,
-				ResourceType: resType,
-				Namespace:    ns,
+			if container == "" {
+				continue
 			}
+			ns := labels["namespace_name"]
+			key = "k8s:" + ns + "/" + container
+			info = ServiceInfo{Name: container, ResourceType: resType, Namespace: ns}
+		case "cloud_function":
+			name := labels["function_name"]
+			if name == "" {
+				continue
+			}
+			key = "cloud_function:" + name
+			info = ServiceInfo{Name: name, ResourceType: resType}
+		case "gae_app":
+			module := labels["module_id"]
+			if module == "" {
+				continue
+			}
+			version := labels["version_id"]
+			key = "gae_app:" + module
+			name := module
+			if version != "" {
+				name = module + "/" + version
+			}
+			info = ServiceInfo{Name: name, ResourceType: resType}
+		case "gce_instance":
+			name := labels["instance_id"]
+			if name == "" {
+				continue
+			}
+			key = "gce_instance:" + name
+			info = ServiceInfo{Name: name, ResourceType: resType}
 		default:
 			continue
 		}
@@ -249,14 +283,22 @@ func ListServices(ctx context.Context, client *logging.Client, project, timeFilt
 	for _, info := range seen {
 		services = append(services, info)
 	}
+	sort.Slice(services, func(i, j int) bool {
+		return services[i].Name < services[j].Name
+	})
 
-	return &ServiceList{
+	result := &ServiceList{
 		Count:    len(services),
 		Services: services,
-	}, nil
+	}
+	if scanned >= maxServicesScan {
+		result.Truncated = true
+		result.TruncationHint = fmt.Sprintf("Service list is based on %d sampled log entries and may be incomplete. Use logs.query with a specific resource.type filter to find services not listed here.", maxServicesScan)
+	}
+	return result, nil
 }
 
-// SummarizeLogs aggregates log statistics over a time window.
+// SummarizeLogs aggregates log statistics by scanning up to maxScan recent entries matching the filter.
 func SummarizeLogs(ctx context.Context, client *logging.Client, project, filter string) (*LogsSummary, error) {
 	const maxScan = 1000
 
@@ -309,81 +351,77 @@ func SummarizeLogs(ctx context.Context, client *logging.Client, project, filter 
 		}
 	}
 
+	truncated := total >= maxScan
 	summary := &LogsSummary{
 		TotalEntries:         total,
 		SeverityDistribution: severityDist,
 		TopServices:          topN(serviceCounts, 10),
 		TopErrors:            topNErrors(errorMessages, 10),
 		SampleEntries:        samples,
-		Truncated:            total >= maxScan,
+		Truncated:            truncated,
+	}
+	if truncated {
+		summary.TruncationHint = fmt.Sprintf("Results are based on %d sampled entries. Narrow the time range or add a filter for a more complete picture. Use logs.query for full results with pagination.", maxScan)
 	}
 
 	return summary, nil
 }
 
-// extractErrorMessage gets a short error message from a log entry.
+const maxErrorMessageLen = 200
+
+// extractErrorMessage gets a short error message from a log entry, truncated to maxErrorMessageLen.
 func extractErrorMessage(entry *loggingpb.LogEntry) string {
+	var msg string
 	switch p := entry.Payload.(type) {
 	case *loggingpb.LogEntry_TextPayload:
-		msg := p.TextPayload
-		if len(msg) > 200 {
-			msg = msg[:200]
-		}
-		return msg
+		msg = p.TextPayload
 	case *loggingpb.LogEntry_JsonPayload:
 		if p.JsonPayload != nil {
 			if v, ok := p.JsonPayload.Fields["message"]; ok {
-				msg := v.GetStringValue()
-				if len(msg) > 200 {
-					msg = msg[:200]
-				}
-				return msg
+				msg = v.GetStringValue()
 			}
 		}
 	}
-	return ""
+	if len(msg) > maxErrorMessageLen {
+		msg = msg[:maxErrorMessageLen]
+	}
+	return msg
+}
+
+// topNBy returns the top N entries from a string->int count map, sorted descending by count.
+// The convert function transforms each key-count pair into the desired result type.
+func topNBy[T any](counts map[string]int, n int, convert func(string, int) T) []T {
+	type kv struct {
+		key   string
+		count int
+	}
+	sorted := make([]kv, 0, len(counts))
+	for k, v := range counts {
+		sorted = append(sorted, kv{k, v})
+	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].count > sorted[j].count })
+	if len(sorted) > n {
+		sorted = sorted[:n]
+	}
+	result := make([]T, len(sorted))
+	for i, kv := range sorted {
+		result[i] = convert(kv.key, kv.count)
+	}
+	return result
 }
 
 // topN returns the top N services by count.
 func topN(counts map[string]int, n int) []ServiceCount {
-	type kv struct {
-		key   string
-		count int
-	}
-	sorted := make([]kv, 0, len(counts))
-	for k, v := range counts {
-		sorted = append(sorted, kv{k, v})
-	}
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].count > sorted[j].count })
-	if len(sorted) > n {
-		sorted = sorted[:n]
-	}
-	result := make([]ServiceCount, len(sorted))
-	for i, kv := range sorted {
-		result[i] = ServiceCount{Service: kv.key, Count: kv.count}
-	}
-	return result
+	return topNBy(counts, n, func(k string, c int) ServiceCount {
+		return ServiceCount{Service: k, Count: c}
+	})
 }
 
 // topNErrors returns the top N error messages by count.
 func topNErrors(counts map[string]int, n int) []ErrorSample {
-	type kv struct {
-		key   string
-		count int
-	}
-	sorted := make([]kv, 0, len(counts))
-	for k, v := range counts {
-		sorted = append(sorted, kv{k, v})
-	}
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].count > sorted[j].count })
-	if len(sorted) > n {
-		sorted = sorted[:n]
-	}
-	result := make([]ErrorSample, len(sorted))
-	for i, kv := range sorted {
-		result[i] = ErrorSample{Message: kv.key, Count: kv.count}
-	}
-	return result
+	return topNBy(counts, n, func(k string, c int) ErrorSample {
+		return ErrorSample{Message: k, Count: c}
+	})
 }
 
 // convertLogEntry converts a proto LogEntry to our normalized type.

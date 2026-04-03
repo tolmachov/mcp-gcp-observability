@@ -26,6 +26,10 @@ func GetTrace(ctx context.Context, client *cloudtrace.Client, project, traceID s
 		return nil, fmt.Errorf("getting trace: %w", err)
 	}
 
+	if len(trace.Spans) == 0 {
+		return nil, fmt.Errorf("no spans found for trace %q: the trace may not exist, spans may have aged out of retention, or the service may not be instrumented for tracing", traceID)
+	}
+
 	return &TraceDetail{
 		TraceID: trace.TraceId,
 		Count:   len(trace.Spans),
@@ -33,7 +37,8 @@ func GetTrace(ctx context.Context, client *cloudtrace.Client, project, traceID s
 	}, nil
 }
 
-// buildSpanTree converts a flat slice of proto spans into a sorted tree.
+// buildSpanTree converts a flat slice of proto spans into a tree sorted by start time.
+// Spans whose parent is not found in the slice are treated as root spans.
 func buildSpanTree(protoSpans []*tracepb.TraceSpan) []TraceSpan {
 	spans := make([]TraceSpan, len(protoSpans))
 	idToIdx := make(map[uint64]int, len(protoSpans))
@@ -101,13 +106,6 @@ func spanKindString(k tracepb.TraceSpan_SpanKind) string {
 	case tracepb.TraceSpan_RPC_CLIENT:
 		return "CLIENT"
 	default:
-		return ""
+		return "UNSPECIFIED"
 	}
-}
-
-func formatDuration(d time.Duration) string {
-	if d.Seconds() >= 1 {
-		return fmt.Sprintf("%.3fs", d.Seconds())
-	}
-	return fmt.Sprintf("%.1fms", float64(d.Milliseconds()))
 }

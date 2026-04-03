@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -18,14 +17,15 @@ type LogsServicesHandler struct {
 
 // NewLogsServicesHandler creates a new LogsServicesHandler.
 func NewLogsServicesHandler(client *gcpclient.Client) *LogsServicesHandler {
-	return &LogsServicesHandler{client: client}
+	return &LogsServicesHandler{client: requireClient(client)}
 }
 
 // Tool returns the MCP tool definition.
 func (h *LogsServicesHandler) Tool() mcp.Tool {
 	return newToolWithTimeFilter("logs.services",
 		mcp.WithDescription("List available services and resources in the project by scanning recent logs. "+
-			"Useful as a first step to discover K8s and Cloud Run services before querying their logs. "+
+			"Discovers Kubernetes containers, Cloud Run, Cloud Functions, App Engine, and Compute Engine instances. "+
+			"Useful as a first step to discover services before querying their logs. "+
 			"Returns service names you can use as filters in logs.k8s or logs.query."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithOpenWorldHintAnnotation(true),
@@ -38,22 +38,20 @@ func (h *LogsServicesHandler) Tool() mcp.Tool {
 
 // Handle processes the logs.services tool request.
 func (h *LogsServicesHandler) Handle(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	project := request.GetString("project_id", h.client.Config.DefaultProject)
+	project, errResult := requireProject(request, h.client.Config().DefaultProject)
+	if errResult != nil {
+		return errResult, nil
+	}
 
 	timeFilter, err := buildTimeFilter(request)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	result, err := gcpdata.ListServices(ctx, h.client.Logging, project, timeFilter)
+	result, err := gcpdata.ListServices(ctx, h.client.LoggingClient(), project, timeFilter)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to list services: %v. Verify the project_id and that Cloud Logging API is enabled.", err)), nil
 	}
 
-	data, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal result: %v", err)), nil
-	}
-
-	return mcp.NewToolResultText(string(data)), nil
+	return jsonResult(result)
 }

@@ -259,7 +259,7 @@ func TestErrorsList(t *testing.T) {
 func TestLogsK8s(t *testing.T) {
 	namespace := os.Getenv("TEST_K8S_NAMESPACE")
 	if namespace == "" {
-		namespace = "crypto-steam"
+		t.Skip("TEST_K8S_NAMESPACE not set, skipping K8s test")
 	}
 
 	c, ctx, cleanup := setupClient(t)
@@ -654,7 +654,7 @@ func TestLogsSummary(t *testing.T) {
 
 	result, err := c.CallTool(ctx, mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name: "logs.summary",
+			Name:      "logs.summary",
 			Arguments: map[string]any{},
 		},
 	})
