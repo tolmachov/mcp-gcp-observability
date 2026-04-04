@@ -3,7 +3,7 @@ package gcpdata
 import (
 	"testing"
 
-	errorreportingpb "cloud.google.com/go/errorreporting/apiv1beta1/errorreportingpb"
+	"cloud.google.com/go/errorreporting/apiv1beta1/errorreportingpb"
 )
 
 func TestTimeRangePeriod(t *testing.T) {

@@ -50,6 +50,7 @@ func (h *LogsServicesHandler) Handle(ctx context.Context, request mcp.CallToolRe
 
 	result, err := gcpdata.ListServices(ctx, h.client.LoggingClient(), project, timeFilter)
 	if err != nil {
+		mcpLog(ctx, mcp.LoggingLevelError, "logs.services", fmt.Sprintf("list services failed for project %s: %v", project, err))
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to list services: %v. Verify the project_id and that Cloud Logging API is enabled.", err)), nil
 	}
 

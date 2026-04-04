@@ -13,6 +13,41 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
+// sendProgress sends a progress notification if the request includes a progress token.
+func sendProgress(ctx context.Context, request mcp.CallToolRequest, progress, total float64, message string) {
+	token := progressToken(request)
+	if token == nil {
+		return
+	}
+	srv := server.ServerFromContext(ctx)
+	if srv == nil {
+		return
+	}
+	_ = srv.SendNotificationToClient(ctx, "notifications/progress", map[string]any{
+		"progressToken": token,
+		"progress":      progress,
+		"total":         total,
+		"message":       message,
+	})
+}
+
+// progressToken extracts the progress token from a request, or nil if not present.
+func progressToken(request mcp.CallToolRequest) mcp.ProgressToken {
+	if request.Params.Meta == nil {
+		return nil
+	}
+	return request.Params.Meta.ProgressToken
+}
+
+// mcpLog sends a structured log message via MCP logging notification.
+func mcpLog(ctx context.Context, level mcp.LoggingLevel, logger string, data any) {
+	srv := server.ServerFromContext(ctx)
+	if srv == nil {
+		return
+	}
+	_ = srv.SendLogMessageToClient(ctx, mcp.NewLoggingMessageNotification(level, logger, data))
+}
+
 // Handler defines the interface for MCP tool handlers.
 type Handler interface {
 	Tool() mcp.Tool

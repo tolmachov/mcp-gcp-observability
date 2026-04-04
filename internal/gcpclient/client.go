@@ -13,17 +13,19 @@ import (
 
 	errorreporting "cloud.google.com/go/errorreporting/apiv1beta1"
 	logging "cloud.google.com/go/logging/apiv2"
+	monitoring "cloud.google.com/go/monitoring/apiv3/v2"
 	cloudtrace "cloud.google.com/go/trace/apiv1"
 )
 
-// Client wraps GCP API clients for Logging, Error Reporting, and Cloud Trace.
+// Client wraps GCP API clients for Logging, Error Reporting, Cloud Trace, and Cloud Monitoring.
 type Client struct {
-	logging   *logging.Client
-	errors    *errorreporting.ErrorStatsClient
-	trace     *cloudtrace.Client
-	config    *Config
-	closeOnce sync.Once
-	closeErr  error
+	logging    *logging.Client
+	errors     *errorreporting.ErrorStatsClient
+	trace      *cloudtrace.Client
+	monitoring *monitoring.MetricClient
+	config     *Config
+	closeOnce  sync.Once
+	closeErr   error
 }
 
 // LoggingClient returns the Cloud Logging API client.
@@ -34,6 +36,9 @@ func (c *Client) ErrorsClient() *errorreporting.ErrorStatsClient { return c.erro
 
 // TraceClient returns the Cloud Trace API client.
 func (c *Client) TraceClient() *cloudtrace.Client { return c.trace }
+
+// MonitoringClient returns the Cloud Monitoring API client.
+func (c *Client) MonitoringClient() *monitoring.MetricClient { return c.monitoring }
 
 // Config returns a copy of the client configuration.
 func (c *Client) Config() Config { return *c.config }
@@ -65,12 +70,18 @@ func New(ctx context.Context, cfg *Config) (*Client, error) {
 		return nil, errors.Join(fmt.Errorf("creating trace client: %w", err), loggingClient.Close(), errorsClient.Close())
 	}
 
+	monitoringClient, err := monitoring.NewMetricClient(ctx, opts...)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("creating monitoring client: %w", err), loggingClient.Close(), errorsClient.Close(), traceClient.Close())
+	}
+
 	cfgCopy := *cfg
 	return &Client{
-		logging: loggingClient,
-		errors:  errorsClient,
-		trace:   traceClient,
-		config:  &cfgCopy,
+		logging:    loggingClient,
+		errors:     errorsClient,
+		trace:      traceClient,
+		monitoring: monitoringClient,
+		config:     &cfgCopy,
 	}, nil
 }
 
@@ -86,6 +97,9 @@ func (c *Client) Close() error {
 		}
 		if c.trace != nil {
 			errs = append(errs, c.trace.Close())
+		}
+		if c.monitoring != nil {
+			errs = append(errs, c.monitoring.Close())
 		}
 		c.closeErr = errors.Join(errs...)
 	})

@@ -12,7 +12,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 
 	logging "cloud.google.com/go/logging/apiv2"
-	loggingpb "cloud.google.com/go/logging/apiv2/loggingpb"
+	"cloud.google.com/go/logging/apiv2/loggingpb"
 	logtypepb "google.golang.org/genproto/googleapis/logging/type"
 )
 

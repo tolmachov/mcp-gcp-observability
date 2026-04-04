@@ -55,6 +55,7 @@ func (h *TraceGetHandler) Handle(ctx context.Context, request mcp.CallToolReques
 
 	result, err := gcpdata.GetTrace(ctx, h.client.TraceClient(), project, traceID)
 	if err != nil {
+		mcpLog(ctx, mcp.LoggingLevelError, "trace.get", fmt.Sprintf("get trace %s failed: %v", traceID, err))
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get trace: %v. Verify the trace_id is a valid 32-character hex string. Use logs.find_requests to discover valid trace IDs.", err)), nil
 	}
 

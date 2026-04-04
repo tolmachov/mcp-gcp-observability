@@ -10,7 +10,7 @@ import (
 	"google.golang.org/api/iterator"
 
 	errorreporting "cloud.google.com/go/errorreporting/apiv1beta1"
-	errorreportingpb "cloud.google.com/go/errorreporting/apiv1beta1/errorreportingpb"
+	"cloud.google.com/go/errorreporting/apiv1beta1/errorreportingpb"
 )
 
 const errorReportingTimeout = 30 * time.Second

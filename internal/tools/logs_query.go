@@ -77,6 +77,7 @@ func (h *LogsQueryHandler) Handle(ctx context.Context, request mcp.CallToolReque
 
 	result, err := gcpdata.QueryLogs(ctx, h.client.LoggingClient(), project, filter, limit, order, pageToken)
 	if err != nil {
+		mcpLog(ctx, mcp.LoggingLevelError, "logs.query", fmt.Sprintf("query failed for project %s: %v", project, err))
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to query logs: %v. Verify the project_id and filter syntax.", err)), nil
 	}
 

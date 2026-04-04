@@ -70,6 +70,7 @@ func (h *LogsByTraceHandler) Handle(ctx context.Context, request mcp.CallToolReq
 
 	result, err := gcpdata.QueryLogsByTrace(ctx, h.client.LoggingClient(), project, traceID, timeFilter, limit, pageToken)
 	if err != nil {
+		mcpLog(ctx, mcp.LoggingLevelError, "logs.by_trace", fmt.Sprintf("trace query failed for %s: %v", traceID, err))
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to query logs by trace: %v. Verify the trace_id format (hex string, not full resource path). Use logs.find_requests to discover valid trace IDs.", err)), nil
 	}
 

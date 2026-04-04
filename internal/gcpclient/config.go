@@ -4,10 +4,11 @@ import "fmt"
 
 // Config holds configuration for GCP API clients.
 type Config struct {
-	DefaultProject string
-	LogsMaxLimit   int
-	ErrorsMaxLimit int
-	DNSServer      string
+	DefaultProject      string
+	LogsMaxLimit        int
+	ErrorsMaxLimit      int
+	DNSServer           string
+	MetricsRegistryFile string
 }
 
 // Validate checks that DefaultProject is non-empty and that LogsMaxLimit and ErrorsMaxLimit are positive.

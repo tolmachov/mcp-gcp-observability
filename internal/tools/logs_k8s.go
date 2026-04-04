@@ -111,6 +111,7 @@ func (h *LogsK8sHandler) Handle(ctx context.Context, request mcp.CallToolRequest
 
 	result, err := gcpdata.QueryLogs(ctx, h.client.LoggingClient(), project, filter, limit, order, pageToken)
 	if err != nil {
+		mcpLog(ctx, mcp.LoggingLevelError, "logs.k8s", fmt.Sprintf("query failed for project %s: %v", project, err))
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to query K8s logs: %v. Verify the project_id and that K8s logging is enabled.", err)), nil
 	}
 

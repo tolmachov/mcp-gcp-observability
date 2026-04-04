@@ -54,6 +54,7 @@ func (h *LogsSummaryHandler) Handle(ctx context.Context, request mcp.CallToolReq
 
 	result, err := gcpdata.SummarizeLogs(ctx, h.client.LoggingClient(), project, filter)
 	if err != nil {
+		mcpLog(ctx, mcp.LoggingLevelError, "logs.summary", fmt.Sprintf("summarize failed for project %s: %v", project, err))
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to summarize logs: %v. Verify the project_id and filter syntax.", err)), nil
 	}
 

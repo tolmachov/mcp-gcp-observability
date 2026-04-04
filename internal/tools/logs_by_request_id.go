@@ -69,6 +69,7 @@ func (h *LogsByRequestIDHandler) Handle(ctx context.Context, request mcp.CallToo
 
 	result, err := gcpdata.QueryLogsByRequestID(ctx, h.client.LoggingClient(), project, requestID, timeFilter, limit, pageToken)
 	if err != nil {
+		mcpLog(ctx, mcp.LoggingLevelError, "logs.by_request_id", fmt.Sprintf("request ID query failed for %s: %v", requestID, err))
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to query logs by request ID: %v. Verify the request_id is correct. Use logs.find_requests to discover valid request IDs.", err)), nil
 	}
 

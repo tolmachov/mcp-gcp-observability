@@ -77,6 +77,7 @@ func (h *LogsFindRequestsHandler) Handle(ctx context.Context, request mcp.CallTo
 
 	result, err := gcpdata.FindRequests(ctx, h.client.LoggingClient(), project, urlPattern, method, statusCode, tracedOnly, timeFilter, limit)
 	if err != nil {
+		mcpLog(ctx, mcp.LoggingLevelError, "logs.find_requests", fmt.Sprintf("find requests failed: %v", err))
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to find requests: %v. Verify the project_id and that the URL pattern is correct.", err)), nil
 	}
 

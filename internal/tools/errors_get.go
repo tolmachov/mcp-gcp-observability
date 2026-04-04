@@ -58,6 +58,7 @@ func (h *ErrorsGetHandler) Handle(ctx context.Context, request mcp.CallToolReque
 
 	result, err := gcpdata.GetErrorGroup(ctx, h.client.ErrorsClient(), project, groupID, limit)
 	if err != nil {
+		mcpLog(ctx, mcp.LoggingLevelError, "errors.get", fmt.Sprintf("get error group %s failed: %v", groupID, err))
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to get error group: %v. Verify the group_id is valid — use errors.list to find available group IDs.", err)), nil
 	}
 

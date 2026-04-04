@@ -1,22 +1,22 @@
 # MCP GCP Observability
 
-MCP server for querying Google Cloud Logging, Error Reporting, and Cloud Trace without the web UI.
+MCP server for querying Google Cloud Logging, Error Reporting, Cloud Trace, and Cloud Monitoring without the web UI.
 
 ## Features
 
-- Query Cloud Logging with full filter syntax
-- Kubernetes-aware log queries
-- Trace-based log correlation (by trace ID or request ID)
-- HTTP request discovery with trace/request ID extraction
-- Error Reporting integration (grouped errors, stack traces)
-- Cloud Trace integration (span trees, latency analysis)
-- Service discovery
-- Log aggregation and summaries
+- **Cloud Logging** — query with full filter syntax, Kubernetes-aware queries, log summaries and service discovery
+- **Error Reporting** — grouped errors sorted by count, individual events with stack traces
+- **Cloud Trace** — span trees, latency analysis, trace-based log correlation
+- **Cloud Monitoring** — metric discovery, semantic snapshots with baseline comparison, anomaly classification, contributor drill-down, and arbitrary window comparison
 
 ## Prerequisites
 
 - Go 1.22+
-- GCP project with Cloud Logging, Error Reporting, and Cloud Trace APIs enabled
+- GCP project with the following APIs enabled:
+  - Cloud Logging
+  - Error Reporting
+  - Cloud Trace
+  - Cloud Monitoring
 - Application Default Credentials configured:
   ```bash
   gcloud auth application-default login
@@ -26,6 +26,8 @@ MCP server for querying Google Cloud Logging, Error Reporting, and Cloud Trace w
   - `errorreporting.groupMetadata.list`
   - `errorreporting.events.list`
   - `cloudtrace.traces.get`
+  - `monitoring.timeSeries.list`
+  - `monitoring.metricDescriptors.list`
 
 ## Installation
 
@@ -38,7 +40,7 @@ Or build from source:
 ```bash
 git clone https://github.com/tolmachov/mcp-gcp-observability.git
 cd mcp-gcp-observability
-go build -o mcp-gcp-observability .
+make build
 ```
 
 ## Setup
@@ -82,45 +84,112 @@ go build -o mcp-gcp-observability .
 
 ## Available Tools
 
+### Logs
+
 | Tool | Description |
 |------|-------------|
 | `logs.query` | Execute arbitrary Cloud Logging queries with filter syntax |
 | `logs.k8s` | Query Kubernetes container logs with convenient filters |
 | `logs.by_trace` | Find all logs associated with a trace ID |
-| `logs.find_requests` | Find HTTP requests by URL pattern, returns trace/request IDs |
-| `logs.summary` | Aggregated log statistics (severity, top services, top errors) |
-| `logs.services` | Discover available services and resources in the project |
-| `errors.list` | List error groups from Error Reporting, sorted by count |
 | `logs.by_request_id` | Find all logs associated with a request ID |
-| `errors.get` | Get error group details with individual events |
-| `trace.get` | Get trace details with span tree by trace ID |
+| `logs.find_requests` | Discover HTTP requests by URL pattern, returns trace/request IDs |
+| `logs.services` | Discover available services and resources in the project |
+| `logs.summary` | Aggregated log statistics: severity distribution, top services, top errors |
 
-## Prompt Examples
+### Error Reporting
 
-**Initial triage:**
-- "What services are running in the project?"
-- "Show me a summary of logs from the last hour"
-- "What are the top errors in the last 24 hours?"
+| Tool | Description |
+|------|-------------|
+| `errors.list` | List error groups sorted by count |
+| `errors.get` | Get error group details with individual events and stack traces |
 
-**Debugging:**
-- "Show me ERROR logs from the crypto-steam namespace"
-- "Find recent requests to /api/profile that returned 500"
-- "Get all logs for trace ID abc123def456"
-- "Show stack traces for error group XYZ"
+### Tracing
 
-**Investigation:**
-- "Why is payment-service failing? Check errors and recent logs"
-- "Find slow requests to /v1/connect/balance"
-- "Show me traced requests to /api/profile so I can investigate latency"
+| Tool | Description |
+|------|-------------|
+| `trace.get` | Get trace details with complete span tree by trace ID |
+
+### Metrics
+
+| Tool | Description |
+|------|-------------|
+| `metrics.list` | Discover available metrics from Cloud Monitoring |
+| `metrics.snapshot` | Semantic snapshot with baseline comparison, trend detection, and anomaly classification |
+| `metrics.top_contributors` | Break down metric by label dimension to find top contributors to an anomaly |
+| `metrics.related` | Check all related metrics for correlated anomalies |
+| `metrics.compare` | Compare two arbitrary time windows (before/after deploy, incident diff) |
+
+## Recommended Workflow
+
+### Logs & Errors
+
+1. `logs.services` — discover available services
+2. `logs.summary` — get severity distribution, top errors, top services
+3. `errors.list` — list error groups sorted by count
+4. `logs.query` or `logs.k8s` — investigate specific logs with filters
+5. `logs.by_trace` — follow a single request across services
+6. `trace.get` — get detailed span tree for latency analysis
+
+### Metrics
+
+1. `metrics.list` — discover available metrics, filter by kind
+2. `metrics.snapshot` — get semantic snapshot with baseline comparison
+3. `metrics.top_contributors` — drill down by dimension to find root cause
+4. `metrics.related` — check correlated metrics for broader context
+5. `metrics.compare` — compare before/after windows for deploy or incident analysis
+
+## Built-in Prompts
+
+The server provides pre-built investigation workflows:
+
+| Prompt | Description |
+|--------|-------------|
+| `investigate-errors` | Investigate top errors, get details, find related logs |
+| `trace-request` | Trace HTTP request end-to-end: find by URL, follow trace, analyze spans |
+| `investigate-metrics` | Metric anomaly investigation: discover, snapshot, drill down, check related |
+| `service-health` | Check health of services: discover, summarize logs, identify issues |
 
 ## Configuration
 
-| Environment Variable | Default | Description |
-|---------------------|---------|-------------|
-| `GCP_DEFAULT_PROJECT` | (required) | Default GCP project ID |
-| `LOGS_MAX_LIMIT` | `1000` | Maximum log entries per request |
-| `ERRORS_MAX_LIMIT` | `100` | Maximum error groups per request |
-| `DNS_SERVER` | (none) | Custom DNS server for GCP API resolution |
+| Flag | Env Var | Default | Description |
+|------|---------|---------|-------------|
+| `--gcp-default-project` | `GCP_DEFAULT_PROJECT` | (required) | Default GCP project ID |
+| `--logs-max-limit` | `LOGS_MAX_LIMIT` | `1000` | Maximum log entries per request |
+| `--errors-max-limit` | `ERRORS_MAX_LIMIT` | `100` | Maximum error groups per request |
+| `--dns-server` | `DNS_SERVER` | (none) | Custom DNS server for GCP API resolution |
+| `--metrics-registry` | `METRICS_REGISTRY_FILE` | (none) | Path to metrics semantic registry YAML file |
+
+## Metrics Semantic Registry
+
+Optionally provide a YAML file (`--metrics-registry`) to enrich metric analysis with domain knowledge:
+
+```yaml
+metrics:
+  custom.googleapis.com/http/request_latency:
+    kind: latency
+    unit: ms
+    better_direction: down
+    slo_threshold: 500
+    related_metrics:
+      - custom.googleapis.com/http/request_count
+      - custom.googleapis.com/http/error_rate
+
+  custom.googleapis.com/http/error_rate:
+    kind: error_rate
+    unit: ratio
+    better_direction: down
+    slo_threshold: 0.01
+
+  compute.googleapis.com/instance/cpu/utilization:
+    kind: resource_utilization
+    unit: ratio
+    better_direction: down
+    saturation_cap: 1.0
+```
+
+Without a registry, metric kinds are auto-detected from naming conventions (e.g. `latency` in name → latency kind).
+
+Supported metric kinds: `latency`, `throughput`, `error_rate`, `resource_utilization`, `saturation`, `availability`, `business_kpi`.
 
 ## License
 

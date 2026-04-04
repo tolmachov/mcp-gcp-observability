@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	loggingpb "cloud.google.com/go/logging/apiv2/loggingpb"
+	"cloud.google.com/go/logging/apiv2/loggingpb"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"

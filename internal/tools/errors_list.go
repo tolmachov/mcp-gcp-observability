@@ -73,6 +73,7 @@ func (h *ErrorsListHandler) Handle(ctx context.Context, request mcp.CallToolRequ
 
 	result, err := gcpdata.ListErrors(ctx, h.client.ErrorsClient(), project, timeRangeHours, limit, serviceFilter, versionFilter)
 	if err != nil {
+		mcpLog(ctx, mcp.LoggingLevelError, "errors.list", fmt.Sprintf("list errors failed for project %s: %v", project, err))
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to list errors: %v. Verify the project_id and that Error Reporting API is enabled.", err)), nil
 	}
 

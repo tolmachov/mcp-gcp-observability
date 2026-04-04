@@ -3,7 +3,7 @@ package gcpdata
 import (
 	"testing"
 
-	tracepb "cloud.google.com/go/trace/apiv1/tracepb"
+	"cloud.google.com/go/trace/apiv1/tracepb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 

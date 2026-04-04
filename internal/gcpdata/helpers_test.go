@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	loggingpb "cloud.google.com/go/logging/apiv2/loggingpb"
-	monitoredres "google.golang.org/genproto/googleapis/api/monitoredres"
+	"cloud.google.com/go/logging/apiv2/loggingpb"
+	"google.golang.org/genproto/googleapis/api/monitoredres"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"

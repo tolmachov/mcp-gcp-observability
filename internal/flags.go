@@ -7,6 +7,9 @@ const (
 	flagLogsMaxLimit      = "logs-max-limit"
 	flagErrorsMaxLimit    = "errors-max-limit"
 	flagDNSServer         = "dns-server"
+	flagMetricsRegistry   = "metrics-registry"
+	flagTransport         = "transport"
+	flagHTTPAddr          = "http-addr"
 )
 
 func gcpDefaultProjectFlag() *cli.StringFlag {
@@ -41,5 +44,31 @@ func dnsServerFlag() *cli.StringFlag {
 		Name:    flagDNSServer,
 		Usage:   "Custom DNS server for GCP API resolution (e.g. 8.8.8.8)",
 		Sources: cli.EnvVars("DNS_SERVER"),
+	}
+}
+
+func metricsRegistryFlag() *cli.StringFlag {
+	return &cli.StringFlag{
+		Name:    flagMetricsRegistry,
+		Usage:   "Path to metrics semantic registry YAML file (optional)",
+		Sources: cli.EnvVars("METRICS_REGISTRY_FILE"),
+	}
+}
+
+func transportFlag() *cli.StringFlag {
+	return &cli.StringFlag{
+		Name:    flagTransport,
+		Usage:   "Transport mode: 'stdio' (default) or 'http' (streamable HTTP)",
+		Sources: cli.EnvVars("MCP_TRANSPORT"),
+		Value:   "stdio",
+	}
+}
+
+func httpAddrFlag() *cli.StringFlag {
+	return &cli.StringFlag{
+		Name:    flagHTTPAddr,
+		Usage:   "HTTP listen address when transport is 'http' (default ':8080')",
+		Sources: cli.EnvVars("MCP_HTTP_ADDR"),
+		Value:   ":8080",
 	}
 }

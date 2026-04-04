@@ -7,7 +7,7 @@ import (
 	"time"
 
 	cloudtrace "cloud.google.com/go/trace/apiv1"
-	tracepb "cloud.google.com/go/trace/apiv1/tracepb"
+	"cloud.google.com/go/trace/apiv1/tracepb"
 )
 
 const traceQueryTimeout = 30 * time.Second

@@ -33,19 +33,25 @@ func New(in io.Reader, out, errOut io.Writer) *cli.Command {
 					logsMaxLimitFlag(),
 					errorsMaxLimitFlag(),
 					dnsServerFlag(),
+					metricsRegistryFlag(),
+					transportFlag(),
+					httpAddrFlag(),
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					cfg := &gcpclient.Config{
-						DefaultProject: cmd.String(flagGCPDefaultProject),
-						LogsMaxLimit:   cmd.Int(flagLogsMaxLimit),
-						ErrorsMaxLimit: cmd.Int(flagErrorsMaxLimit),
-						DNSServer:      cmd.String(flagDNSServer),
+						DefaultProject:      cmd.String(flagGCPDefaultProject),
+						LogsMaxLimit:        cmd.Int(flagLogsMaxLimit),
+						ErrorsMaxLimit:      cmd.Int(flagErrorsMaxLimit),
+						DNSServer:           cmd.String(flagDNSServer),
+						MetricsRegistryFile: cmd.String(flagMetricsRegistry),
 					}
 					srv, err := server.New(cfg, Version, cmd.Root().Reader, cmd.Root().Writer, cmd.Root().ErrWriter)
 					if err != nil {
 						return err
 					}
-					return srv.Run(ctx)
+					transport := server.Transport(cmd.String(flagTransport))
+					httpAddr := cmd.String(flagHTTPAddr)
+					return srv.Run(ctx, transport, httpAddr)
 				},
 			},
 		},
