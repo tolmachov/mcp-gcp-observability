@@ -6,8 +6,33 @@ import (
 	"time"
 )
 
-// Process computes all statistical features for the given points relative to a baseline.
-func Process(points, baselinePoints []Point, meta MetricMeta, stepSeconds int) SignalFeatures {
+// minPointsForSpikeDetection: minimum sample size for z-score spike detection (~3.0 threshold).
+const minPointsForSpikeDetection = 10
+
+// minBaselinePoints is the absolute floor below which a baseline is never
+// considered reliable, regardless of the expected point count.
+const minBaselinePoints = 7
+
+// minCurrentWindowPoints is the absolute floor for a current window to be
+// considered reliable. Without this, expected/2 with expected==1 reduces to
+// 0 via integer division (1/2==0), making a single-point window always
+// "reliable" and enabling false regression classifications.
+const minCurrentWindowPoints = 3
+
+// nearZeroEpsilon: floors |Mean| in CV to avoid false noisy classification
+// for metrics oscillating near zero (e.g., error_rate when healthy).
+const nearZeroEpsilon = 1e-6
+
+// Process computes statistical features relative to a raw baseline.
+// expectedBaselinePoints: expected point count for reliability checks (0 if unknown).
+func Process(points, baselinePoints []Point, meta MetricMeta, stepSeconds int, expectedBaselinePoints int) SignalFeatures {
+	baseline := ComputeBaselineStats(baselinePoints, expectedBaselinePoints)
+	return ProcessWithBaselineStats(points, baseline, meta, stepSeconds)
+}
+
+// ProcessWithBaselineStats computes features using precomputed baseline stats.
+// For robust aggregation (e.g., same_weekday_hour with median/MAD).
+func ProcessWithBaselineStats(points []Point, baseline BaselineStats, meta MetricMeta, stepSeconds int) SignalFeatures {
 	var f SignalFeatures
 
 	if len(points) == 0 {
@@ -19,7 +44,6 @@ func Process(points, baselinePoints []Point, meta MetricMeta, stepSeconds int) S
 	copy(pts, points)
 	points = pts
 
-	// Sort by timestamp.
 	sort.Slice(points, func(i, j int) bool {
 		return points[i].Timestamp.Before(points[j].Timestamp)
 	})
@@ -30,8 +54,9 @@ func Process(points, baselinePoints []Point, meta MetricMeta, stepSeconds int) S
 	// Basic statistics.
 	f.Mean = mean(values)
 	f.Stddev = stddev(values, f.Mean)
-	if f.Mean != 0 {
-		f.CV = f.Stddev / math.Abs(f.Mean)
+	// Floor the denominator for CV so that near-zero metrics do not blow up.
+	if denom := math.Max(math.Abs(f.Mean), nearZeroEpsilon); denom > 0 {
+		f.CV = f.Stddev / denom
 	}
 
 	sorted := make([]float64, len(values))
@@ -44,64 +69,57 @@ func Process(points, baselinePoints []Point, meta MetricMeta, stepSeconds int) S
 	f.P95 = percentile(sorted, 0.95)
 	f.P99 = percentile(sorted, 0.99)
 
-	// Tail ratio (latency only).
 	if meta.Kind == KindLatency && f.P50 > 0 {
 		f.TailRatio = f.P99 / f.P50
 	}
 
-	// Baseline comparison.
-	computeBaseline(&f, baselinePoints)
-
-	// Trend via linear regression.
+	applyBaselineStats(&f, baseline)
 	computeTrend(&f, points)
-
-	// Step change detection.
-	computeStepChange(&f, points)
-
-	// Spike detection.
-	computeSpikes(&f, values)
-
-	// SLO breach.
+	computeStepChange(&f, points, meta.EffectiveThresholds())
+	computeSpikes(&f, values, meta.EffectiveThresholds().SpikeZScore)
 	computeSLOBreach(&f, points, meta, stepSeconds)
-
-	// Saturation.
 	computeSaturation(&f, values, meta)
 
-	// Data quality.
 	f.DataQuality = computeDataQuality(points, stepSeconds)
-
-	// Classification.
+	f.Confidence = deriveConfidence(&f)
 	f.Classification = Classify(&f, meta)
 
 	return f
 }
 
-func computeBaseline(f *SignalFeatures, baselinePoints []Point) {
-	if len(baselinePoints) == 0 {
+// applyBaselineStats copies precomputed baseline statistics into the features struct
+// and computes delta vs current mean.
+func applyBaselineStats(f *SignalFeatures, b BaselineStats) {
+	f.BaselinePointCount = b.PointCount
+	if b.PointCount == 0 {
 		return
 	}
-	bValues := extractValues(baselinePoints)
-	f.Baseline = mean(bValues)
-	f.BaselineStddev = stddev(bValues, f.Baseline)
-	f.BaselineReliable = len(bValues) >= 7 // Minimum for reliable percentile estimates.
+	f.Baseline = b.Mean
+	f.BaselineStddev = b.Stddev
+	f.BaselineReliable = b.Reliable
 
 	f.DeltaAbs = f.Mean - f.Baseline
-	if f.Baseline != 0 {
+	switch {
+	case f.Baseline != 0:
 		f.DeltaPct = (f.DeltaAbs / math.Abs(f.Baseline)) * 100
-	} else if f.Mean != 0 {
+	case f.Mean != 0:
 		// Baseline is zero but current is not — treat as a large deviation.
 		// Use current mean as denominator to produce a meaningful percentage.
 		f.DeltaPct = (f.DeltaAbs / math.Abs(f.Mean)) * 100
 	}
 }
 
+// computeTrend fits a linear regression across the window and normalizes the
+// slope into a "total drift across the window as a fraction of baseline".
+// This makes TrendScore and its thresholds window-length-independent: a
+// TrendScore of 0.05 means the metric drifted by ~5% of baseline across the
+// observed window, regardless of whether the window is 15 minutes or 24 hours.
 func computeTrend(f *SignalFeatures, points []Point) {
 	if len(points) < 3 {
-		f.Trend = "flat"
+		f.Trend = TrendFlat
 		return
 	}
 
-	// Linear regression: y = a + b*x, where x is minutes from first point.
 	t0 := points[0].Timestamp
 	var sumX, sumY, sumXY, sumX2 float64
 	n := float64(len(points))
@@ -115,30 +133,42 @@ func computeTrend(f *SignalFeatures, points []Point) {
 
 	denom := n*sumX2 - sumX*sumX
 	if denom == 0 {
-		f.Trend = "flat"
+		f.Trend = TrendFlat
 		return
 	}
 
 	slope := (n*sumXY - sumX*sumY) / denom
 	f.SlopePerMin = slope
 
-	if f.Baseline != 0 {
-		f.TrendScore = slope / math.Abs(f.Baseline)
-	} else if f.Mean != 0 {
-		f.TrendScore = slope / math.Abs(f.Mean)
+	windowMinutes := points[len(points)-1].Timestamp.Sub(t0).Minutes()
+	totalDrift := slope * windowMinutes
+
+	// Normalize drift against baseline (preferred) or current mean as fallback.
+	denomNorm := math.Abs(f.Baseline)
+	if denomNorm == 0 {
+		denomNorm = math.Abs(f.Mean)
+	}
+	if denomNorm > nearZeroEpsilon {
+		f.TrendScore = totalDrift / denomNorm
 	}
 
 	switch {
-	case f.TrendScore > 0.01:
-		f.Trend = "up"
-	case f.TrendScore < -0.01:
-		f.Trend = "down"
+	case f.TrendScore > TrendFlatBand:
+		f.Trend = TrendUp
+	case f.TrendScore < -TrendFlatBand:
+		f.Trend = TrendDown
 	default:
-		f.Trend = "flat"
+		f.Trend = TrendFlat
 	}
 }
 
-func computeStepChange(f *SignalFeatures, points []Point) {
+// computeStepChange detects sudden level shifts by comparing the first and
+// last thirds of the window. The threshold for what counts as a "step" scales
+// with the metric kind's significance threshold (2×), so for example an error
+// rate step of 12% (SignificantDeltaPct=5 → step threshold 10) is detected,
+// whereas a throughput step of 12% (SignificantDeltaPct=15 → step threshold 30)
+// is treated as noise.
+func computeStepChange(f *SignalFeatures, points []Point, thr ClassificationThresholds) {
 	n := len(points)
 	if n < 6 {
 		return
@@ -162,7 +192,8 @@ func computeStepChange(f *SignalFeatures, points []Point) {
 	changePct := (meanLast - meanFirst) / denom * 100
 	f.StepChangePct = changePct
 
-	if math.Abs(changePct) > 20 {
+	stepThreshold := 2 * thr.SignificantDeltaPct
+	if math.Abs(changePct) > stepThreshold {
 		f.StepChangeDetected = true
 
 		// Estimate step change time: find the midpoint crossing.
@@ -178,8 +209,12 @@ func computeStepChange(f *SignalFeatures, points []Point) {
 	}
 }
 
-func computeSpikes(f *SignalFeatures, values []float64) {
-	if len(values) < 3 {
+// computeSpikes counts outlier points by z-score. Requires a minimum sample
+// size because with small N the achievable z is mathematically bounded by
+// √(N-1); trying to detect spikes in a 5-point series is meaningless and
+// silently produces false negatives.
+func computeSpikes(f *SignalFeatures, values []float64, spikeZ float64) {
+	if len(values) < minPointsForSpikeDetection {
 		return
 	}
 
@@ -194,7 +229,7 @@ func computeSpikes(f *SignalFeatures, values []float64) {
 		if z > f.MaxZScore {
 			f.MaxZScore = z
 		}
-		if z >= 3.0 { // Fixed threshold for counting spikes (distinct from configurable SpikeZScore used in classification).
+		if z >= spikeZ {
 			f.SpikeCount++
 		}
 	}
@@ -215,6 +250,10 @@ func computeSLOBreach(f *SignalFeatures, points []Point, meta MetricMeta, stepSe
 	var breachDuration time.Duration
 	var currentStreak time.Duration
 	var streakBroken bool
+	var transitions int
+	// prevBreachState tracks the previous point's breach status for
+	// transition counting. -1 = uninitialized, 0 = not breached, 1 = breached.
+	prevBreachState := -1
 
 	// Iterate backwards from the most recent point to compute the current breach streak.
 	// The streak accumulates from the last point until the first non-breach is encountered.
@@ -231,10 +270,25 @@ func computeSLOBreach(f *SignalFeatures, points []Point, meta MetricMeta, stepSe
 		}
 	}
 
+	// Second pass forward to count boundary crossings. Done separately so
+	// the logic stays obvious: the backward pass deals with streak/duration
+	// accounting, this pass only measures oscillation.
+	for i := range points {
+		state := 0
+		if isBreach(points[i].Value, threshold, meta.BetterDirection) {
+			state = 1
+		}
+		if prevBreachState != -1 && state != prevBreachState {
+			transitions++
+		}
+		prevBreachState = state
+	}
+
 	f.SLOBreach = breachCount > 0
 	f.BreachRatio = float64(breachCount) / float64(len(points))
 	f.BreachDurationSeconds = int(breachDuration.Seconds())
 	f.CurrentBreachStreakSeconds = int(currentStreak.Seconds())
+	f.BreachTransitions = transitions
 }
 
 func isBreach(value, threshold float64, dir BetterDirection) bool {
@@ -255,10 +309,7 @@ func computeSaturation(f *SignalFeatures, values []float64, meta MetricMeta) {
 	satCap := *meta.SaturationCap
 
 	// Check mean of last 10% of points.
-	tailSize := len(values) / 10
-	if tailSize < 1 {
-		tailSize = 1
-	}
+	tailSize := max(len(values)/10, 1)
 	tail := values[len(values)-tailSize:]
 	tailMean := mean(tail)
 
@@ -290,7 +341,7 @@ func computeDataQuality(points []Point, stepSeconds int) DataQuality {
 	}
 
 	actual := len(points)
-	reliable := actual >= expected/2 && gapCount <= 3
+	reliable := actual >= minCurrentWindowPoints && actual >= expected/2 && gapCount <= 3
 
 	return DataQuality{
 		ExpectedPoints: expected,
@@ -298,6 +349,31 @@ func computeDataQuality(points []Point, stepSeconds int) DataQuality {
 		GapCount:       gapCount,
 		MaxGapSeconds:  int(maxGap.Seconds()),
 		Reliable:       reliable,
+	}
+}
+
+// deriveConfidence summarizes how much the caller should trust the classification.
+//   - high:   both window data and baseline are reliable.
+//   - medium: exactly one of the two is unreliable.
+//   - low:    neither is reliable, or no baseline was provided at all
+//     (in which case delta-based signals are meaningless regardless of
+//     how clean the current window is).
+func deriveConfidence(f *SignalFeatures) Confidence {
+	if f.BaselinePointCount == 0 {
+		// No baseline at all — delta/trend/recovery signals are all zero
+		// by construction. Caller should not treat classification as
+		// anything better than a best-effort guess from the window alone.
+		return ConfidenceLow
+	}
+	dq := f.DataQuality.Reliable
+	base := f.BaselineReliable
+	switch {
+	case dq && base:
+		return ConfidenceHigh
+	case dq || base:
+		return ConfidenceMedium
+	default:
+		return ConfidenceLow
 	}
 }
 
@@ -323,6 +399,9 @@ func mean(vals []float64) float64 {
 }
 
 // stddev computes the population standard deviation (divides by N, not N-1).
+// Kept as population stddev because small-sample bias is handled separately
+// via minPointsForSpikeDetection; using sample stddev (/(N-1)) would require
+// re-tuning every threshold in defaultThresholds.
 func stddev(vals []float64, m float64) float64 {
 	if len(vals) < 2 {
 		return 0

@@ -4,82 +4,51 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-// LogsFindRequestsHandler handles the logs.find_requests tool.
-type LogsFindRequestsHandler struct {
-	client *gcpclient.Client
-}
+func RegisterLogsFindRequests(s *mcp.Server, client *gcpclient.Client) {
+	requireClient(client)
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "logs.find_requests",
+		Description: "Find examples of HTTP requests by URL pattern. " +
+			"Returns trace_id and request_id for each request, enabling deeper investigation with logs.by_trace, logs.by_request_id, or trace.get.",
+		Annotations: &mcp.ToolAnnotations{
+			ReadOnlyHint:   true,
+			OpenWorldHint:  ptrTrue(),
+			IdempotentHint: true,
+		},
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsFindRequestsInput) (*mcp.CallToolResult, *gcpdata.RequestList, error) {
+		if in.URLPattern == "" {
+			return errResult("url_pattern is required"), nil, nil
+		}
+		if in.StatusCode != 0 && (in.StatusCode < 100 || in.StatusCode > 599) {
+			return errResult(fmt.Sprintf("invalid status_code %d: must be in range [100, 599]", in.StatusCode)), nil, nil
+		}
+		validMethods := map[string]bool{"GET": true, "POST": true, "PUT": true, "PATCH": true, "DELETE": true, "HEAD": true, "OPTIONS": true}
+		if in.Method != "" && !validMethods[in.Method] {
+			return errResult(fmt.Sprintf("invalid method %q: must be one of GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS", in.Method)), nil, nil
+		}
+		project, err := resolveProject(in.ProjectID, client.Config().DefaultProject)
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+		limit := clampLimit(in.Limit, 20, client.Config().LogsMaxLimit)
 
-// NewLogsFindRequestsHandler creates a new LogsFindRequestsHandler.
-func NewLogsFindRequestsHandler(client *gcpclient.Client) *LogsFindRequestsHandler {
-	return &LogsFindRequestsHandler{client: requireClient(client)}
-}
+		timeFilter, err := buildTimeFilter(in.TimeFilterInput)
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
 
-// Tool returns the MCP tool definition.
-func (h *LogsFindRequestsHandler) Tool() mcp.Tool {
-	return newToolWithTimeFilter("logs.find_requests",
-		mcp.WithDescription("Find examples of HTTP requests by URL pattern. "+
-			"Returns trace_id and request_id for each request, enabling deeper investigation with logs.by_trace, logs.by_request_id, or trace.get."),
-		mcp.WithReadOnlyHintAnnotation(true),
-		mcp.WithOpenWorldHintAnnotation(true),
-		mcp.WithIdempotentHintAnnotation(true),
-		mcp.WithString("url_pattern",
-			mcp.Description("URL substring to match (e.g. '/api/profile', '/v1/connect')"),
-			mcp.Required(),
-		),
-		mcp.WithString("method",
-			mcp.Description("HTTP method filter"),
-			mcp.Enum("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"),
-		),
-		mcp.WithNumber("status_code",
-			mcp.Description("HTTP status code filter (e.g. 500, 404)"),
-			mcp.Min(100),
-			mcp.Max(599),
-		),
-		mcp.WithBoolean("traced_only",
-			mcp.Description("Only return requests that have a trace_id (default false)"),
-		),
-		mcp.WithString("project_id",
-			mcp.Description("GCP project ID (uses default if not specified)"),
-		),
-		mcp.WithNumber("limit",
-			mcp.Description("Maximum number of requests to return (default 20, server max applies)"),
-			mcp.Min(1),
-		),
-	)
-}
+		result, err := gcpdata.FindRequests(ctx, client.LoggingClient(), project, in.URLPattern, in.Method, in.StatusCode, in.TracedOnly, timeFilter, limit)
+		if err != nil {
+			mcpLog(ctx, req, logLevelError, "logs.find_requests", fmt.Sprintf("find requests failed: %v", err))
+			return errResult(fmt.Sprintf("Failed to find requests: %v. Verify the project_id and that the URL pattern is correct.", err)), nil, nil
+		}
 
-// Handle processes the logs.find_requests tool request.
-func (h *LogsFindRequestsHandler) Handle(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	urlPattern, err := request.RequireString("url_pattern")
-	if err != nil {
-		return mcp.NewToolResultError("url_pattern is required"), nil
-	}
-
-	project, errResult := requireProject(request, h.client.Config().DefaultProject)
-	if errResult != nil {
-		return errResult, nil
-	}
-	method := request.GetString("method", "")
-	statusCode := request.GetInt("status_code", 0)
-	tracedOnly := request.GetBool("traced_only", false)
-	limit := clampLimit(request.GetInt("limit", 20), 20, h.client.Config().LogsMaxLimit)
-
-	timeFilter, err := buildTimeFilter(request)
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
-
-	result, err := gcpdata.FindRequests(ctx, h.client.LoggingClient(), project, urlPattern, method, statusCode, tracedOnly, timeFilter, limit)
-	if err != nil {
-		mcpLog(ctx, mcp.LoggingLevelError, "logs.find_requests", fmt.Sprintf("find requests failed: %v", err))
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to find requests: %v. Verify the project_id and that the URL pattern is correct.", err)), nil
-	}
-
-	return jsonResult(result)
+		return nil, result, nil
+	})
 }

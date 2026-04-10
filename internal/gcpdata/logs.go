@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"google.golang.org/api/iterator"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -16,8 +17,20 @@ import (
 	logtypepb "google.golang.org/genproto/googleapis/logging/type"
 )
 
+const logQueryTimeout = 30 * time.Second
+
+var requestIDFieldPaths = []string{
+	"jsonPayload.request_id",
+	"jsonPayload.requestId",
+	"labels.request_id",
+	"labels.requestId",
+}
+
 // QueryLogs executes an arbitrary Cloud Logging query.
 func QueryLogs(ctx context.Context, client *logging.Client, project, filter string, limit int, order, pageToken string) (*LogQueryResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, logQueryTimeout)
+	defer cancel()
+
 	var orderBy string
 	switch order {
 	case "asc":
@@ -41,6 +54,9 @@ func QueryLogs(ctx context.Context, client *logging.Client, project, filter stri
 
 // QueryLogsByTrace retrieves all logs for a given trace ID.
 func QueryLogsByTrace(ctx context.Context, client *logging.Client, project, traceID, timeFilter string, limit int, pageToken string) (*LogQueryResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, logQueryTimeout)
+	defer cancel()
+
 	filter := AppendFilter(
 		fmt.Sprintf(`trace="projects/%s/traces/%s"`, project, EscapeFilterValue(traceID)),
 		timeFilter,
@@ -59,10 +75,10 @@ func QueryLogsByTrace(ctx context.Context, client *logging.Client, project, trac
 
 // QueryLogsByRequestID retrieves all logs for a given request ID.
 func QueryLogsByRequestID(ctx context.Context, client *logging.Client, project, requestID, timeFilter string, limit int, pageToken string) (*LogQueryResult, error) {
-	filter := AppendFilter(
-		fmt.Sprintf(`jsonPayload.request_id="%s"`, EscapeFilterValue(requestID)),
-		timeFilter,
-	)
+	ctx, cancel := context.WithTimeout(ctx, logQueryTimeout)
+	defer cancel()
+
+	filter := AppendFilter(requestIDFilter(requestID), timeFilter)
 
 	req := &loggingpb.ListLogEntriesRequest{
 		ResourceNames: []string{fmt.Sprintf("projects/%s", project)},
@@ -77,6 +93,9 @@ func QueryLogsByRequestID(ctx context.Context, client *logging.Client, project, 
 
 // FindRequests finds HTTP requests matching the given URL pattern.
 func FindRequests(ctx context.Context, client *logging.Client, project, urlPattern, method string, statusCode int, tracedOnly bool, timeFilter string, limit int) (*RequestList, error) {
+	ctx, cancel := context.WithTimeout(ctx, logQueryTimeout)
+	defer cancel()
+
 	parts := []string{
 		fmt.Sprintf(`httpRequest.requestUrl:"%s"`, EscapeFilterValue(urlPattern)),
 	}
@@ -108,7 +127,8 @@ func FindRequests(ctx context.Context, client *logging.Client, project, urlPatte
 	it := client.ListLogEntries(ctx, req)
 
 	var requests []RequestInfo
-	for len(requests) < limit {
+	truncated := false
+	for len(requests) <= limit {
 		entry, err := it.Next()
 		if errors.Is(err, iterator.Done) {
 			break
@@ -140,23 +160,58 @@ func FindRequests(ctx context.Context, client *logging.Client, project, urlPatte
 			ri.TraceID = extractTraceID(entry.Trace)
 		}
 
-		// Extract request_id from jsonPayload
-		if jp := entry.GetJsonPayload(); jp != nil {
-			if v, ok := jp.Fields["request_id"]; ok {
-				ri.RequestID = v.GetStringValue()
-			}
-		}
+		ri.RequestID = extractRequestID(entry)
 
 		// Extract service name from resource labels
 		ri.Service = extractServiceName(entry)
 
+		if len(requests) == limit {
+			truncated = true
+			break
+		}
 		requests = append(requests, ri)
 	}
-
-	return &RequestList{
+	result := &RequestList{
 		Count:    len(requests),
 		Requests: requests,
-	}, nil
+	}
+	if truncated {
+		result.Truncated = true
+		result.TruncationHint = fmt.Sprintf("Showing the first %d matching request(s). More matches exist; narrow the time range or URL pattern for a more focused sample set.", limit)
+	}
+	return result, nil
+}
+
+func requestIDFilter(requestID string) string {
+	escaped := EscapeFilterValue(requestID)
+	parts := make([]string, 0, len(requestIDFieldPaths))
+	for _, path := range requestIDFieldPaths {
+		parts = append(parts, fmt.Sprintf(`%s="%s"`, path, escaped))
+	}
+	return "(" + strings.Join(parts, " OR ") + ")"
+}
+
+func extractRequestID(entry *loggingpb.LogEntry) string {
+	if entry == nil {
+		return ""
+	}
+	if jp := entry.GetJsonPayload(); jp != nil {
+		for _, key := range []string{"request_id", "requestId"} {
+			if v, ok := jp.Fields[key]; ok {
+				if s := v.GetStringValue(); s != "" {
+					return s
+				}
+			}
+		}
+	}
+	for _, key := range []string{"request_id", "requestId"} {
+		if entry.Labels != nil {
+			if s := entry.Labels[key]; s != "" {
+				return s
+			}
+		}
+	}
+	return ""
 }
 
 // fetchLogEntries is a shared helper for querying log entries.
@@ -189,6 +244,9 @@ func fetchLogEntries(ctx context.Context, client *logging.Client, req *loggingpb
 
 // ListServices discovers unique services by scanning recent logs for common GCP resource types.
 func ListServices(ctx context.Context, client *logging.Client, project, timeFilter string) (*ServiceList, error) {
+	ctx, cancel := context.WithTimeout(ctx, logQueryTimeout)
+	defer cancel()
+
 	const maxServicesScan = 1000
 
 	filter := AppendFilter(
@@ -298,8 +356,16 @@ func ListServices(ctx context.Context, client *logging.Client, project, timeFilt
 	return result, nil
 }
 
+// ProgressFunc is called periodically during a scan with the number of entries
+// processed so far and the scan upper bound. A nil func disables reporting.
+type ProgressFunc func(scanned, total int)
+
 // SummarizeLogs aggregates log statistics by scanning up to maxScan recent entries matching the filter.
-func SummarizeLogs(ctx context.Context, client *logging.Client, project, filter string) (*LogsSummary, error) {
+// If onProgress is non-nil, it is invoked every 100 scanned entries with (scanned, maxScan).
+func SummarizeLogs(ctx context.Context, client *logging.Client, project, filter string, onProgress ProgressFunc) (*LogsSummary, error) {
+	ctx, cancel := context.WithTimeout(ctx, logQueryTimeout)
+	defer cancel()
+
 	const maxScan = 1000
 
 	req := &loggingpb.ListLogEntriesRequest{
@@ -348,6 +414,11 @@ func SummarizeLogs(ctx context.Context, client *logging.Client, project, filter 
 		// Collect up to 5 samples
 		if len(samples) < 5 {
 			samples = append(samples, convertLogEntry(entry))
+		}
+
+		// Throttled progress reporting: every 100 entries.
+		if onProgress != nil && total%100 == 0 {
+			onProgress(total, maxScan)
 		}
 	}
 
@@ -453,11 +524,13 @@ func convertLogEntry(entry *loggingpb.LogEntry) LogEntry {
 	case *loggingpb.LogEntry_ProtoPayload:
 		jsonBytes, err := protojson.Marshal(p.ProtoPayload)
 		if err != nil {
+			le.PayloadConversionError = fmt.Sprintf("proto marshaling failed: %v", err)
 			le.TextPayload = fmt.Sprintf("[proto payload conversion failed: %v]", err)
 		} else {
 			var m map[string]any
 			if jsonErr := json.Unmarshal(jsonBytes, &m); jsonErr != nil {
-				le.TextPayload = string(jsonBytes)
+				le.PayloadConversionError = fmt.Sprintf("JSON unmarshaling failed: %v", jsonErr)
+				le.TextPayload = string(jsonBytes) // fallback to raw JSON string
 			} else {
 				le.JSONPayload = m
 			}

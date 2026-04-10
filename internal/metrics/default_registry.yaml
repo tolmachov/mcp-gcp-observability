@@ -1,0 +1,3613 @@
+# GCP metrics semantic registry — shipped default set. This file is embedded
+# into the binary via //go:embed in internal/metrics/registry.go and is the
+# single source of truth for the shipped registry. To override entries at
+# runtime, pass --metrics-registry your-overlay.yaml (field-level merge).
+#
+# This feeds metrics.snapshot / metrics.top_contributors / metrics.related /
+# metrics.compare. Metrics not listed here fall back to the registry's
+# auto-detector in internal/metrics/registry.go, which only matches on name
+# substrings and cannot set slo_threshold / saturation_cap / related_metrics.
+#
+# -------------------------------------------------------------------------
+# User overlay semantics (when passing --metrics-registry user.yaml)
+# -------------------------------------------------------------------------
+# The user file is MERGED on top of these defaults at the FIELD level:
+#
+#   - Metrics you don't mention in the user file keep their defaults here.
+#   - Metrics you do mention are merged field-by-field: only the fields
+#     you explicitly set override the embedded ones; everything you leave
+#     out survives from the default. You do NOT have to copy the whole
+#     entry to override a single slo_threshold.
+#   - related_metrics is EXTENDED, not replaced: your additions are
+#     appended to the embedded list (dedupe preserves order).
+#   - Nested thresholds are also field-level merged — overriding
+#     spike_zscore alone will not wipe the other three thresholds.
+#   - A metric that doesn't exist here at all (e.g. a custom app metric)
+#     must still provide the required fields (kind, better_direction) in
+#     the user file; partial entries for brand-new metrics are rejected.
+#
+# -------------------------------------------------------------------------
+# Fields per entry
+# -------------------------------------------------------------------------
+#   kind               — semantic kind (latency, throughput, error_rate,
+#                        resource_utilization, saturation, availability,
+#                        freshness, business_kpi). Drives default thresholds
+#                        from internal/metrics/types.go:defaultThresholds.
+#   unit               — human-readable unit. Display only; does not affect math.
+#   better_direction   — "down" (lower is better), "up" (higher is better),
+#                        or "none" (no directional preference).
+#   slo_threshold      — optional; enables SLO-breach features (breach_ratio,
+#                        step/sustained regression, recovery, flapping).
+#                        Must be in the same unit as the metric's raw values.
+#   saturation_cap     — optional; enables the `saturation` classification
+#                        when the metric mean is within 5% of the cap.
+#   related_metrics    — optional; drives metrics.related (static correlations).
+#   thresholds         — optional; per-metric override of the kind defaults
+#                        (significant_delta_pct, breach_ratio_for_regression,
+#                        cv_for_noisy, spike_zscore).
+#   aggregation        — optional; declares how snapshot/compare/related
+#                        collapse the metric's time series into a single
+#                        scalar. If omitted, DefaultAggregation() in
+#                        internal/metrics/aggregation.go picks a reducer
+#                        from the kind. Only override when the default is
+#                        wrong for this specific metric:
+#                          - ratio/hit-ratio/multiplier gauges → across_groups: mean
+#                          - "longest/peak/high-water-mark" gauges → across_groups: max
+#                          - per-entity totals where rolling-deploy pods may
+#                            briefly publish duplicates → two-stage form:
+#                              aggregation:
+#                                group_by: [metric.labels.entity_id]
+#                                within_group: max
+#                                across_groups: sum
+#                        Reducer values: mean | sum | max | min.
+#
+# !!! ACTION REQUIRED !!!
+# The SLO thresholds below are generic starting points based on common SRE
+# defaults. Tune them to YOUR workload — a 20ms disk latency SLO is fine for
+# an SSD transactional workload but wrong for an analytical batch job, and a
+# 5-minute PubSub lag SLO is too loose for realtime pipelines.
+
+metrics:
+
+  # =========================================================================
+  # COMPUTE ENGINE (gce_instance)
+  # =========================================================================
+
+  "compute.googleapis.com/instance/cpu/utilization":
+    kind: resource_utilization
+    unit: ratio
+    better_direction: down
+    keywords: [vm, gce, instance, server, hardware]
+    saturation_cap: 1.0
+    slo_threshold: 0.85
+    related_metrics:
+      - "compute.googleapis.com/instance/cpu/scheduler_wait_time"
+      - "compute.googleapis.com/instance/memory/balloon/ram_used"
+      - "compute.googleapis.com/instance/disk/average_io_latency"
+
+  "compute.googleapis.com/instance/cpu/scheduler_wait_time":
+    kind: saturation
+    unit: seconds
+    better_direction: down
+    keywords: [vm, gce, instance, server, hardware]
+    related_metrics:
+      - "compute.googleapis.com/instance/cpu/utilization"
+
+  "compute.googleapis.com/instance/memory/balloon/ram_used":
+    # Absolute bytes used; pair with ram_size (capacity denominator).
+    # E2 family only — for other families use Ops Agent memory metrics.
+    kind: resource_utilization
+    unit: bytes
+    better_direction: down
+    keywords: [vm, gce, instance, server, hardware]
+    related_metrics:
+      - "compute.googleapis.com/instance/memory/balloon/ram_size"
+      - "compute.googleapis.com/instance/memory/balloon/swap_in_bytes_count"
+      - "compute.googleapis.com/instance/memory/balloon/swap_out_bytes_count"
+
+  "compute.googleapis.com/instance/memory/balloon/swap_in_bytes_count":
+    # Any sustained swap activity is a saturation signal — the VM is being
+    # pushed beyond its resident memory.
+    kind: saturation
+    unit: bytes
+    better_direction: down
+    keywords: [vm, gce, instance, server, hardware]
+    related_metrics:
+      - "compute.googleapis.com/instance/memory/balloon/ram_used"
+
+  "compute.googleapis.com/instance/disk/read_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [vm, gce, instance, server, hardware]
+    related_metrics:
+      - "compute.googleapis.com/instance/disk/write_bytes_count"
+      - "compute.googleapis.com/instance/disk/average_io_latency"
+
+  "compute.googleapis.com/instance/disk/write_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [vm, gce, instance, server, hardware]
+    related_metrics:
+      - "compute.googleapis.com/instance/disk/read_bytes_count"
+      - "compute.googleapis.com/instance/disk/average_io_latency"
+
+  "compute.googleapis.com/instance/disk/read_ops_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [vm, gce, instance, server, hardware]
+    related_metrics:
+      - "compute.googleapis.com/instance/disk/write_ops_count"
+
+  "compute.googleapis.com/instance/disk/write_ops_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [vm, gce, instance, server, hardware]
+    related_metrics:
+      - "compute.googleapis.com/instance/disk/read_ops_count"
+
+  "compute.googleapis.com/instance/disk/average_io_latency":
+    # Default 20ms suitable for pd-ssd / pd-balanced transactional workloads.
+    # For pd-standard bump to 100ms; for local SSD drop to 2ms.
+    kind: latency
+    unit: microseconds
+    better_direction: down
+    keywords: [vm, gce, instance, server, hardware]
+    slo_threshold: 20000
+    related_metrics:
+      - "compute.googleapis.com/instance/disk/average_io_queue_depth"
+      - "compute.googleapis.com/instance/cpu/utilization"
+
+  "compute.googleapis.com/instance/disk/average_io_queue_depth":
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [vm, gce, instance, server, hardware]
+    slo_threshold: 10
+    related_metrics:
+      - "compute.googleapis.com/instance/disk/average_io_latency"
+
+  "compute.googleapis.com/instance/network/received_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [vm, gce, instance, server, hardware]
+    related_metrics:
+      - "compute.googleapis.com/instance/network/sent_bytes_count"
+
+  "compute.googleapis.com/instance/network/sent_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [vm, gce, instance, server, hardware]
+    related_metrics:
+      - "compute.googleapis.com/instance/network/received_bytes_count"
+
+  "compute.googleapis.com/instance/uptime":
+    # DELTA: seconds-up-per-minute. Non-monotonic drop → VM restart.
+    kind: availability
+    unit: seconds
+    better_direction: up
+    keywords: [vm, gce, instance, server, hardware]
+    related_metrics:
+      - "compute.googleapis.com/instance/interruption_count"
+
+  "compute.googleapis.com/instance/interruption_count":
+    # BETA: infrastructure interruptions (host failures, preemption).
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [vm, gce, instance, server, hardware]
+    related_metrics:
+      - "compute.googleapis.com/instance/uptime"
+
+  # =========================================================================
+  # CLOUD SQL (cloudsql_database)
+  # =========================================================================
+
+  "cloudsql.googleapis.com/database/cpu/utilization":
+    kind: resource_utilization
+    unit: ratio
+    better_direction: down
+    keywords: [database, rdbms, mysql, postgres, postgresql]
+    saturation_cap: 1.0
+    slo_threshold: 0.85
+    related_metrics:
+      - "cloudsql.googleapis.com/database/memory/utilization"
+      - "cloudsql.googleapis.com/database/disk/utilization"
+      - "cloudsql.googleapis.com/database/network/connections"
+
+  "cloudsql.googleapis.com/database/memory/utilization":
+    kind: resource_utilization
+    unit: ratio
+    better_direction: down
+    keywords: [database, rdbms, mysql, postgres, postgresql]
+    saturation_cap: 1.0
+    slo_threshold: 0.90
+    related_metrics:
+      - "cloudsql.googleapis.com/database/cpu/utilization"
+      - "cloudsql.googleapis.com/database/memory/total_usage"
+
+  "cloudsql.googleapis.com/database/memory/total_usage":
+    kind: resource_utilization
+    unit: bytes
+    better_direction: down
+    keywords: [database, rdbms, mysql, postgres, postgresql]
+    related_metrics:
+      - "cloudsql.googleapis.com/database/memory/utilization"
+
+  "cloudsql.googleapis.com/database/disk/utilization":
+    # Cloud SQL does NOT auto-recover from disk-full — leave headroom for
+    # auto-grow. 0.85 SLO gives time to react before the instance wedges.
+    kind: saturation
+    unit: ratio
+    better_direction: down
+    keywords: [database, rdbms, mysql, postgres, postgresql]
+    saturation_cap: 1.0
+    slo_threshold: 0.85
+    related_metrics:
+      - "cloudsql.googleapis.com/database/disk/bytes_used"
+      - "cloudsql.googleapis.com/database/disk/quota"
+
+  "cloudsql.googleapis.com/database/disk/bytes_used":
+    kind: resource_utilization
+    unit: bytes
+    better_direction: down
+    keywords: [database, rdbms, mysql, postgres, postgresql]
+    related_metrics:
+      - "cloudsql.googleapis.com/database/disk/utilization"
+      - "cloudsql.googleapis.com/database/disk/quota"
+
+  "cloudsql.googleapis.com/database/disk/quota":
+    kind: resource_utilization
+    unit: bytes
+    better_direction: none
+    keywords: [database, rdbms, mysql, postgres, postgresql]
+    related_metrics:
+      - "cloudsql.googleapis.com/database/disk/utilization"
+      - "cloudsql.googleapis.com/database/disk/bytes_used"
+
+  "cloudsql.googleapis.com/database/disk/read_ops_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [database, rdbms, mysql, postgres, postgresql]
+    related_metrics:
+      - "cloudsql.googleapis.com/database/disk/write_ops_count"
+
+  "cloudsql.googleapis.com/database/disk/write_ops_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [database, rdbms, mysql, postgres, postgresql]
+    related_metrics:
+      - "cloudsql.googleapis.com/database/disk/read_ops_count"
+
+  "cloudsql.googleapis.com/database/network/connections":
+    # Connection count — no universal cap (depends on max_connections).
+    # Override slo_threshold per instance if you want breach detection.
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [database, rdbms, mysql, postgres, postgresql]
+    related_metrics:
+      - "cloudsql.googleapis.com/database/cpu/utilization"
+      - "cloudsql.googleapis.com/database/postgresql/num_backends"
+
+  "cloudsql.googleapis.com/database/postgresql/num_backends":
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [database, rdbms, mysql, postgres, postgresql]
+    related_metrics:
+      - "cloudsql.googleapis.com/database/network/connections"
+      - "cloudsql.googleapis.com/database/postgresql/transaction_count"
+
+  "cloudsql.googleapis.com/database/postgresql/transaction_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [database, rdbms, mysql, postgres, postgresql]
+    related_metrics:
+      - "cloudsql.googleapis.com/database/postgresql/num_backends"
+      - "cloudsql.googleapis.com/database/postgresql/deadlock_count"
+
+  "cloudsql.googleapis.com/database/postgresql/deadlock_count":
+    # Any sustained non-zero deadlock rate is worth investigating.
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [database, rdbms, mysql, postgres, postgresql]
+    related_metrics:
+      - "cloudsql.googleapis.com/database/postgresql/transaction_count"
+
+  "cloudsql.googleapis.com/database/mysql/queries":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [database, rdbms, mysql, postgres, postgresql]
+    related_metrics:
+      - "cloudsql.googleapis.com/database/mysql/questions"
+      - "cloudsql.googleapis.com/database/cpu/utilization"
+
+  "cloudsql.googleapis.com/database/mysql/questions":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [database, rdbms, mysql, postgres, postgresql]
+    related_metrics:
+      - "cloudsql.googleapis.com/database/mysql/queries"
+
+  "cloudsql.googleapis.com/database/mysql/innodb_deadlocks":
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [database, rdbms, mysql, postgres, postgresql]
+    related_metrics:
+      - "cloudsql.googleapis.com/database/mysql/queries"
+
+  "cloudsql.googleapis.com/database/replication/replica_lag":
+    # Engine-agnostic replication lag. 30s default suits most OLTP replicas;
+    # tune down to 5s for read-after-write patterns, up to 300s for analytics.
+    kind: freshness
+    unit: seconds
+    better_direction: down
+    keywords: [database, rdbms, mysql, postgres, postgresql]
+    slo_threshold: 30
+    related_metrics:
+      - "cloudsql.googleapis.com/database/replication/network_lag"
+      - "cloudsql.googleapis.com/database/cpu/utilization"
+
+  "cloudsql.googleapis.com/database/replication/network_lag":
+    kind: latency
+    unit: seconds
+    better_direction: down
+    keywords: [database, rdbms, mysql, postgres, postgresql]
+    slo_threshold: 1
+    related_metrics:
+      - "cloudsql.googleapis.com/database/replication/replica_lag"
+
+  "cloudsql.googleapis.com/database/mysql/replication/seconds_behind_master":
+    kind: freshness
+    unit: seconds
+    better_direction: down
+    keywords: [database, rdbms, mysql, postgres, postgresql]
+    slo_threshold: 30
+    related_metrics:
+      - "cloudsql.googleapis.com/database/cpu/utilization"
+
+  "cloudsql.googleapis.com/database/up":
+    # BOOL: 1 if reachable, 0 otherwise. DirectionUp means "lower is bad";
+    # SLOThreshold=1 → any zero is a breach.
+    kind: availability
+    unit: bool
+    better_direction: up
+    keywords: [database, rdbms, mysql, postgres, postgresql]
+    slo_threshold: 1
+    related_metrics:
+      - "cloudsql.googleapis.com/database/available_for_failover"
+      - "cloudsql.googleapis.com/database/cpu/utilization"
+      - "cloudsql.googleapis.com/database/disk/utilization"
+
+  "cloudsql.googleapis.com/database/available_for_failover":
+    kind: availability
+    unit: bool
+    better_direction: up
+    keywords: [database, rdbms, mysql, postgres, postgresql]
+    slo_threshold: 1
+    related_metrics:
+      - "cloudsql.googleapis.com/database/up"
+      - "cloudsql.googleapis.com/database/replication/replica_lag"
+
+  "cloudsql.googleapis.com/database/backup/last_backup_status":
+    kind: availability
+    unit: bool
+    better_direction: up
+    keywords: [database, rdbms, mysql, postgres, postgresql]
+    related_metrics:
+      - "cloudsql.googleapis.com/database/up"
+      - "cloudsql.googleapis.com/database/disk/utilization"
+
+  # =========================================================================
+  # KUBERNETES ENGINE (k8s_container / k8s_pod / k8s_node)
+  # =========================================================================
+
+  "kubernetes.io/container/cpu/core_usage_time":
+    # CUMULATIVE counter — raw value grows forever. metrics.snapshot's
+    # alignment reducer converts this to a rate automatically.
+    kind: resource_utilization
+    unit: seconds
+    better_direction: none
+    keywords: [k8s, container]
+    related_metrics:
+      - "kubernetes.io/container/cpu/limit_utilization"
+      - "kubernetes.io/container/cpu/request_utilization"
+
+  "kubernetes.io/container/cpu/limit_utilization":
+    # Near 1.0 means the container is throttled (CPU limits hit).
+    kind: saturation
+    unit: ratio
+    better_direction: down
+    keywords: [k8s, container]
+    saturation_cap: 1.0
+    slo_threshold: 0.90
+    related_metrics:
+      - "kubernetes.io/container/cpu/request_utilization"
+      - "kubernetes.io/container/cpu/core_usage_time"
+
+  "kubernetes.io/container/cpu/request_utilization":
+    kind: resource_utilization
+    unit: ratio
+    better_direction: none
+    keywords: [k8s, container]
+    related_metrics:
+      - "kubernetes.io/container/cpu/limit_utilization"
+
+  "kubernetes.io/container/memory/used_bytes":
+    kind: resource_utilization
+    unit: bytes
+    better_direction: down
+    keywords: [k8s, container]
+    related_metrics:
+      - "kubernetes.io/container/memory/limit_utilization"
+      - "kubernetes.io/container/restart_count"
+
+  "kubernetes.io/container/memory/limit_utilization":
+    # Near 1.0 = OOMKill imminent. Keep SLO at 0.85 for reaction time.
+    kind: saturation
+    unit: ratio
+    better_direction: down
+    keywords: [k8s, container]
+    saturation_cap: 1.0
+    slo_threshold: 0.85
+    related_metrics:
+      - "kubernetes.io/container/memory/used_bytes"
+      - "kubernetes.io/container/restart_count"
+
+  "kubernetes.io/container/memory/request_utilization":
+    kind: resource_utilization
+    unit: ratio
+    better_direction: none
+    keywords: [k8s, container]
+    related_metrics:
+      - "kubernetes.io/container/memory/limit_utilization"
+
+  "kubernetes.io/container/restart_count":
+    # Cumulative counter — rate matters, not absolute. Any non-zero delta
+    # over a window indicates crashes/OOMKills.
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [k8s, container]
+    related_metrics:
+      - "kubernetes.io/container/memory/limit_utilization"
+      - "kubernetes.io/container/uptime"
+
+  "kubernetes.io/container/uptime":
+    kind: availability
+    unit: seconds
+    better_direction: up
+    keywords: [k8s, container]
+    related_metrics:
+      - "kubernetes.io/container/restart_count"
+
+  "kubernetes.io/container/ephemeral_storage/used_bytes":
+    kind: resource_utilization
+    unit: bytes
+    better_direction: down
+    keywords: [k8s, container]
+    related_metrics:
+      - "kubernetes.io/node/ephemeral_storage/used_bytes"
+
+  "kubernetes.io/pod/volume/utilization":
+    # Persistent volume fill ratio.
+    kind: saturation
+    unit: ratio
+    better_direction: down
+    keywords: [k8s, container]
+    saturation_cap: 1.0
+    slo_threshold: 0.85
+    related_metrics:
+      - "kubernetes.io/container/ephemeral_storage/used_bytes"
+      - "kubernetes.io/node/ephemeral_storage/used_bytes"
+
+  "kubernetes.io/pod/network/received_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [k8s, container]
+    related_metrics:
+      - "kubernetes.io/pod/network/sent_bytes_count"
+
+  "kubernetes.io/pod/network/sent_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [k8s, container]
+    related_metrics:
+      - "kubernetes.io/pod/network/received_bytes_count"
+
+  "kubernetes.io/pod/latencies/pod_first_ready":
+    # Scheduling + pull + start + readiness — this is the "cold start" SLI.
+    # 60s is a reasonable default; tight SLOs drop this to 20s.
+    kind: latency
+    unit: seconds
+    better_direction: down
+    keywords: [k8s, container]
+    slo_threshold: 60
+    related_metrics:
+      - "kubernetes.io/container/restart_count"
+      - "kubernetes.io/node/cpu/allocatable_utilization"
+      - "kubernetes.io/node/memory/allocatable_utilization"
+
+  "kubernetes.io/node/cpu/allocatable_utilization":
+    kind: saturation
+    unit: ratio
+    better_direction: down
+    keywords: [k8s, container]
+    saturation_cap: 1.0
+    slo_threshold: 0.85
+    related_metrics:
+      - "kubernetes.io/node/memory/allocatable_utilization"
+      - "kubernetes.io/node/status_condition"
+
+  "kubernetes.io/node/cpu/allocatable_cores":
+    kind: resource_utilization
+    unit: cores
+    better_direction: none
+    keywords: [k8s, container]
+    related_metrics:
+      - "kubernetes.io/node/cpu/allocatable_utilization"
+      - "kubernetes.io/node/memory/allocatable_bytes"
+
+  "kubernetes.io/node/memory/allocatable_utilization":
+    kind: saturation
+    unit: ratio
+    better_direction: down
+    keywords: [k8s, container]
+    saturation_cap: 1.0
+    slo_threshold: 0.85
+    related_metrics:
+      - "kubernetes.io/node/cpu/allocatable_utilization"
+      - "kubernetes.io/node/status_condition"
+
+  "kubernetes.io/node/memory/allocatable_bytes":
+    kind: resource_utilization
+    unit: bytes
+    better_direction: none
+    keywords: [k8s, container]
+    related_metrics:
+      - "kubernetes.io/node/memory/allocatable_utilization"
+      - "kubernetes.io/node/cpu/allocatable_cores"
+
+  "kubernetes.io/node/ephemeral_storage/used_bytes":
+    kind: saturation
+    unit: bytes
+    better_direction: down
+    keywords: [k8s, container]
+    related_metrics:
+      - "kubernetes.io/container/ephemeral_storage/used_bytes"
+
+  "kubernetes.io/node/network/received_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [k8s, container]
+    related_metrics:
+      - "kubernetes.io/pod/network/received_bytes_count"
+      - "kubernetes.io/pod/network/sent_bytes_count"
+
+  "kubernetes.io/node/status_condition":
+    # Labeled by {condition, status}. Filter condition=Ready,status=true
+    # for availability SLIs; non-Ready conditions (DiskPressure,
+    # MemoryPressure, PIDPressure, NetworkUnavailable) indicate node issues.
+    kind: availability
+    unit: bool
+    better_direction: up
+    keywords: [k8s, container]
+    related_metrics:
+      - "kubernetes.io/node/cpu/allocatable_utilization"
+      - "kubernetes.io/node/memory/allocatable_utilization"
+      - "kubernetes.io/node/ephemeral_storage/used_bytes"
+
+  "kubernetes.io/autoscaler/container/cpu/per_replica_recommended_request_cores":
+    # HPA/VPA recommended CPU — sustained growth indicates scaling pressure
+    # the current replica count isn't handling.
+    kind: saturation
+    unit: cores
+    better_direction: none
+    keywords: [k8s, container]
+    related_metrics:
+      - "kubernetes.io/container/cpu/limit_utilization"
+
+  # =========================================================================
+  # PUB/SUB (pubsub_topic / pubsub_subscription)
+  # =========================================================================
+
+  "pubsub.googleapis.com/topic/send_request_count":
+    # Grouped by response_code label — filter result=ok for throughput,
+    # result!=ok via metrics.top_contributors(dimension="metric.labels.response_code")
+    # to expose error breakdowns.
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [messaging, queue, broker]
+    related_metrics:
+      - "pubsub.googleapis.com/topic/byte_cost"
+
+  "pubsub.googleapis.com/topic/byte_cost":
+    kind: resource_utilization
+    unit: bytes
+    better_direction: none
+    keywords: [messaging, queue, broker]
+    related_metrics:
+      - "pubsub.googleapis.com/topic/send_request_count"
+      - "pubsub.googleapis.com/topic/message_sizes"
+
+  "pubsub.googleapis.com/topic/message_sizes":
+    kind: business_kpi
+    unit: bytes
+    better_direction: none
+    keywords: [messaging, queue, broker]
+    related_metrics:
+      - "pubsub.googleapis.com/topic/send_request_count"
+      - "pubsub.googleapis.com/topic/byte_cost"
+
+  "pubsub.googleapis.com/subscription/pull_request_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [messaging, queue, broker]
+    related_metrics:
+      - "pubsub.googleapis.com/subscription/sent_message_count"
+      - "pubsub.googleapis.com/subscription/ack_message_count"
+
+  "pubsub.googleapis.com/subscription/sent_message_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [messaging, queue, broker]
+    related_metrics:
+      - "pubsub.googleapis.com/subscription/ack_message_count"
+      - "pubsub.googleapis.com/subscription/num_undelivered_messages"
+
+  "pubsub.googleapis.com/subscription/ack_message_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [messaging, queue, broker]
+    related_metrics:
+      - "pubsub.googleapis.com/subscription/sent_message_count"
+      - "pubsub.googleapis.com/subscription/ack_latencies"
+
+  "pubsub.googleapis.com/subscription/ack_latencies":
+    # Time between delivery and ack. 60s default gives room for typical
+    # consumers; tighten for realtime pipelines, loosen for batch workers.
+    kind: latency
+    unit: milliseconds
+    better_direction: down
+    keywords: [messaging, queue, broker]
+    slo_threshold: 60000
+    related_metrics:
+      - "pubsub.googleapis.com/subscription/ack_message_count"
+      - "pubsub.googleapis.com/subscription/oldest_unacked_message_age"
+
+  "pubsub.googleapis.com/subscription/num_undelivered_messages":
+    # Backlog depth. 1000 is a generic default — tune to your consumer
+    # throughput and acceptable lag.
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [messaging, queue, broker]
+    slo_threshold: 1000
+    related_metrics:
+      - "pubsub.googleapis.com/subscription/oldest_unacked_message_age"
+      - "pubsub.googleapis.com/subscription/sent_message_count"
+      - "pubsub.googleapis.com/subscription/backlog_bytes"
+
+  "pubsub.googleapis.com/subscription/backlog_bytes":
+    kind: saturation
+    unit: bytes
+    better_direction: down
+    keywords: [messaging, queue, broker]
+    related_metrics:
+      - "pubsub.googleapis.com/subscription/num_undelivered_messages"
+
+  "pubsub.googleapis.com/subscription/oldest_unacked_message_age":
+    # Primary lag / staleness SLI for Pub/Sub. Auto-detected as freshness
+    # by the oldest_unacked substring match, but we set an explicit SLO here.
+    # 300s = 5 minutes is loose — tighten for realtime (30s), loosen for batch.
+    kind: freshness
+    unit: seconds
+    better_direction: down
+    keywords: [messaging, queue, broker]
+    slo_threshold: 300
+    related_metrics:
+      - "pubsub.googleapis.com/subscription/num_undelivered_messages"
+      - "pubsub.googleapis.com/subscription/ack_latencies"
+      - "pubsub.googleapis.com/subscription/sent_message_count"
+
+  "pubsub.googleapis.com/subscription/dead_letter_message_count":
+    # Any sustained non-zero rate = messages failing delivery after retries.
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [messaging, queue, broker]
+    related_metrics:
+      - "pubsub.googleapis.com/subscription/push_request_count"
+      - "pubsub.googleapis.com/subscription/ack_latencies"
+
+  "pubsub.googleapis.com/subscription/push_request_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [messaging, queue, broker]
+    related_metrics:
+      - "pubsub.googleapis.com/subscription/push_request_latencies"
+      - "pubsub.googleapis.com/subscription/dead_letter_message_count"
+
+  "pubsub.googleapis.com/subscription/push_request_latencies":
+    # Push endpoint response latency — this measures YOUR push target.
+    # Unit is microseconds (not milliseconds like ack_latencies).
+    kind: latency
+    unit: microseconds
+    better_direction: down
+    keywords: [messaging, queue, broker]
+    slo_threshold: 5000000
+    related_metrics:
+      - "pubsub.googleapis.com/subscription/push_request_count"
+      - "pubsub.googleapis.com/subscription/dead_letter_message_count"
+
+  "pubsub.googleapis.com/subscription/mod_ack_deadline_request_count":
+    # Elevated rate indicates slow consumers extending leases on in-flight
+    # messages. Correlate with ack_latencies spikes.
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [messaging, queue, broker]
+    related_metrics:
+      - "pubsub.googleapis.com/subscription/ack_latencies"
+      - "pubsub.googleapis.com/subscription/oldest_unacked_message_age"
+
+  "pubsub.googleapis.com/subscription/byte_cost":
+    kind: resource_utilization
+    unit: bytes
+    better_direction: none
+    keywords: [messaging, queue, broker]
+    related_metrics:
+      - "pubsub.googleapis.com/subscription/sent_message_count"
+      - "pubsub.googleapis.com/subscription/message_sizes"
+
+  "pubsub.googleapis.com/subscription/message_sizes":
+    kind: business_kpi
+    unit: bytes
+    better_direction: none
+    keywords: [messaging, queue, broker]
+    related_metrics:
+      - "pubsub.googleapis.com/subscription/sent_message_count"
+      - "pubsub.googleapis.com/subscription/byte_cost"
+
+  # =========================================================================
+  # COMPUTE GPU — gce_instance with GPU attached (BETA, may change)
+  # Note: all compute.googleapis.com/instance/gpu/* metrics are currently BETA.
+  # The Ops Agent publishes a different set (agent.googleapis.com/gpu/*) which
+  # covers utilization/memory traditionally — add those if you run Ops Agent.
+  # =========================================================================
+
+  "compute.googleapis.com/instance/gpu/sm_utilization":
+    kind: resource_utilization
+    unit: percent
+    better_direction: down
+    keywords: [vm, gce, instance, server, hardware]
+    saturation_cap: 100
+    slo_threshold: 90
+    related_metrics:
+      - "compute.googleapis.com/instance/gpu/temperature"
+      - "compute.googleapis.com/instance/gpu/power_consumption"
+
+  "compute.googleapis.com/instance/gpu/temperature":
+    # Thermal throttling typically kicks in around 85-90°C. Alert earlier
+    # to catch runaway thermal conditions before performance degrades.
+    kind: saturation
+    unit: celsius
+    better_direction: down
+    keywords: [vm, gce, instance, server, hardware]
+    slo_threshold: 85
+    related_metrics:
+      - "compute.googleapis.com/instance/gpu/sm_utilization"
+      - "compute.googleapis.com/instance/gpu/power_consumption"
+      - "compute.googleapis.com/instance/gpu/tlimit"
+
+  "compute.googleapis.com/instance/gpu/power_consumption":
+    kind: resource_utilization
+    unit: watts
+    better_direction: none
+    keywords: [vm, gce, instance, server, hardware]
+    related_metrics:
+      - "compute.googleapis.com/instance/gpu/sm_utilization"
+      - "compute.googleapis.com/instance/gpu/temperature"
+      - "compute.googleapis.com/instance/gpu/tlimit"
+
+  "compute.googleapis.com/instance/gpu/tlimit":
+    # Thermal margin = slowdown_threshold - current_temp. Low margin means
+    # the GPU is about to start throttling. DirectionUp: more margin is better.
+    kind: saturation
+    unit: celsius
+    better_direction: up
+    keywords: [vm, gce, instance, server, hardware]
+    slo_threshold: 5
+    related_metrics:
+      - "compute.googleapis.com/instance/gpu/temperature"
+      - "compute.googleapis.com/instance/gpu/sm_utilization"
+      - "compute.googleapis.com/instance/gpu/power_consumption"
+
+  "compute.googleapis.com/instance/gpu/infra_health":
+    kind: availability
+    unit: bool
+    better_direction: up
+    keywords: [vm, gce, instance, server, hardware]
+    slo_threshold: 1
+    related_metrics:
+      - "compute.googleapis.com/instance/gpu/dram_uncorrectable_ecc_error_count"
+      - "compute.googleapis.com/instance/gpu/nvlink_runtime_error"
+      - "compute.googleapis.com/instance/gpu/dram_row_remapping_pending"
+
+  "compute.googleapis.com/instance/gpu/dram_uncorrectable_ecc_error_count":
+    # Non-zero = hardware failing. Correctable errors are normal, uncorrectable are not.
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [vm, gce, instance, server, hardware]
+    slo_threshold: 0
+    related_metrics:
+      - "compute.googleapis.com/instance/gpu/dram_correctable_ecc_error_count"
+      - "compute.googleapis.com/instance/gpu/dram_row_remapping_pending"
+      - "compute.googleapis.com/instance/gpu/infra_health"
+
+  "compute.googleapis.com/instance/gpu/dram_correctable_ecc_error_count":
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [vm, gce, instance, server, hardware]
+    related_metrics:
+      - "compute.googleapis.com/instance/gpu/dram_uncorrectable_ecc_error_count"
+      - "compute.googleapis.com/instance/gpu/dram_row_remapping_pending"
+
+  "compute.googleapis.com/instance/gpu/dram_row_remapping_pending":
+    # Any pending rows means GPU reboot is required to complete the remap.
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [vm, gce, instance, server, hardware]
+    slo_threshold: 0
+    related_metrics:
+      - "compute.googleapis.com/instance/gpu/dram_uncorrectable_ecc_error_count"
+      - "compute.googleapis.com/instance/gpu/dram_correctable_ecc_error_count"
+      - "compute.googleapis.com/instance/gpu/infra_health"
+
+  "compute.googleapis.com/instance/gpu/nvlink_runtime_error":
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [vm, gce, instance, server, hardware]
+    slo_threshold: 0
+    related_metrics:
+      - "compute.googleapis.com/instance/gpu/throughput_rx_bytes"
+      - "compute.googleapis.com/instance/gpu/throughput_tx_bytes"
+      - "compute.googleapis.com/instance/gpu/infra_health"
+
+  "compute.googleapis.com/instance/gpu/throughput_rx_bytes":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [vm, gce, instance, server, hardware]
+    related_metrics:
+      - "compute.googleapis.com/instance/gpu/throughput_tx_bytes"
+      - "compute.googleapis.com/instance/gpu/network_rtt"
+      - "compute.googleapis.com/instance/gpu/nvlink_runtime_error"
+
+  "compute.googleapis.com/instance/gpu/throughput_tx_bytes":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [vm, gce, instance, server, hardware]
+    related_metrics:
+      - "compute.googleapis.com/instance/gpu/throughput_rx_bytes"
+      - "compute.googleapis.com/instance/gpu/network_rtt"
+      - "compute.googleapis.com/instance/gpu/nvlink_runtime_error"
+
+  "compute.googleapis.com/instance/gpu/network_rtt":
+    # GPU fabric (NVLink/NVSwitch/GPU-direct) RTT.
+    kind: latency
+    unit: microseconds
+    better_direction: down
+    keywords: [vm, gce, instance, server, hardware]
+    slo_threshold: 100
+    related_metrics:
+      - "compute.googleapis.com/instance/gpu/throughput_rx_bytes"
+      - "compute.googleapis.com/instance/gpu/throughput_tx_bytes"
+      - "compute.googleapis.com/instance/gpu/straggler_status"
+
+  "compute.googleapis.com/instance/gpu/pcie_correctable_error_count":
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [vm, gce, instance, server, hardware]
+    related_metrics:
+      - "compute.googleapis.com/instance/gpu/throughput_rx_bytes"
+      - "compute.googleapis.com/instance/gpu/throughput_tx_bytes"
+      - "compute.googleapis.com/instance/gpu/infra_health"
+
+  "compute.googleapis.com/instance/gpu/straggler_status":
+    # BOOL: 1 when this GPU is lagging others in a collective workload.
+    kind: saturation
+    unit: bool
+    better_direction: down
+    keywords: [vm, gce, instance, server, hardware]
+    slo_threshold: 0
+    related_metrics:
+      - "compute.googleapis.com/instance/gpu/sm_utilization"
+      - "compute.googleapis.com/instance/gpu/network_rtt"
+      - "compute.googleapis.com/instance/gpu/nvlink_runtime_error"
+
+  # =========================================================================
+  # CLOUD LOAD BALANCING — HTTPS / HTTP(S) LB (global + regional + internal)
+  # =========================================================================
+
+  "loadbalancing.googleapis.com/https/request_count":
+    # Top-of-funnel request rate. Use metrics.top_contributors with
+    # dimension="metric.labels.response_code_class" to expose 5xx ratios.
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [lb, balancer, load]
+    related_metrics:
+      - "loadbalancing.googleapis.com/https/total_latencies"
+      - "loadbalancing.googleapis.com/https/backend_latencies"
+      - "loadbalancing.googleapis.com/https/backend_request_count"
+
+  "loadbalancing.googleapis.com/https/total_latencies":
+    # End-to-end proxy latency (client ACK→client ACK).
+    kind: latency
+    unit: milliseconds
+    better_direction: down
+    keywords: [lb, balancer, load]
+    slo_threshold: 500
+    related_metrics:
+      - "loadbalancing.googleapis.com/https/backend_latencies"
+      - "loadbalancing.googleapis.com/https/frontend_tcp_rtt"
+
+  "loadbalancing.googleapis.com/https/backend_latencies":
+    # Latency contribution from the backend alone.
+    kind: latency
+    unit: milliseconds
+    better_direction: down
+    keywords: [lb, balancer, load]
+    slo_threshold: 300
+    related_metrics:
+      - "loadbalancing.googleapis.com/https/total_latencies"
+
+  "loadbalancing.googleapis.com/https/frontend_tcp_rtt":
+    # Client↔proxy smoothed TCP RTT — measures client network quality.
+    kind: latency
+    unit: milliseconds
+    better_direction: down
+    keywords: [lb, balancer, load]
+    slo_threshold: 150
+    related_metrics:
+      - "loadbalancing.googleapis.com/https/total_latencies"
+      - "loadbalancing.googleapis.com/https/backend_latencies"
+      - "loadbalancing.googleapis.com/https/request_count"
+
+  "loadbalancing.googleapis.com/https/request_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [lb, balancer, load]
+    related_metrics:
+      - "loadbalancing.googleapis.com/https/request_count"
+      - "loadbalancing.googleapis.com/https/response_bytes_count"
+
+  "loadbalancing.googleapis.com/https/response_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [lb, balancer, load]
+    related_metrics:
+      - "loadbalancing.googleapis.com/https/request_count"
+      - "loadbalancing.googleapis.com/https/request_bytes_count"
+
+  "loadbalancing.googleapis.com/https/backend_request_count":
+    # Requests actually sent to backends (post-CDN/cache). Useful for
+    # deriving backend-side error ratios via response_code_class.
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [lb, balancer, load]
+    related_metrics:
+      - "loadbalancing.googleapis.com/https/request_count"
+      - "loadbalancing.googleapis.com/https/backend_latencies"
+      - "loadbalancing.googleapis.com/https/backend_response_bytes_count"
+
+  "loadbalancing.googleapis.com/https/backend_request_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [lb, balancer, load]
+    related_metrics:
+      - "loadbalancing.googleapis.com/https/backend_request_count"
+      - "loadbalancing.googleapis.com/https/backend_response_bytes_count"
+
+  "loadbalancing.googleapis.com/https/backend_response_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [lb, balancer, load]
+    related_metrics:
+      - "loadbalancing.googleapis.com/https/backend_request_count"
+      - "loadbalancing.googleapis.com/https/backend_request_bytes_count"
+      - "loadbalancing.googleapis.com/https/backend_latencies"
+
+  "loadbalancing.googleapis.com/https/internal/request_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [lb, balancer, load]
+    related_metrics:
+      - "loadbalancing.googleapis.com/https/internal/total_latencies"
+      - "loadbalancing.googleapis.com/https/internal/backend_latencies"
+
+  "loadbalancing.googleapis.com/https/internal/total_latencies":
+    kind: latency
+    unit: milliseconds
+    better_direction: down
+    keywords: [lb, balancer, load]
+    slo_threshold: 200
+    related_metrics:
+      - "loadbalancing.googleapis.com/https/internal/backend_latencies"
+      - "loadbalancing.googleapis.com/https/internal/request_count"
+
+  "loadbalancing.googleapis.com/https/internal/backend_latencies":
+    kind: latency
+    unit: milliseconds
+    better_direction: down
+    keywords: [lb, balancer, load]
+    slo_threshold: 150
+    related_metrics:
+      - "loadbalancing.googleapis.com/https/internal/total_latencies"
+      - "loadbalancing.googleapis.com/https/internal/request_count"
+
+  "loadbalancing.googleapis.com/https/external/regional/request_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [lb, balancer, load]
+    related_metrics:
+      - "loadbalancing.googleapis.com/https/external/regional/total_latencies"
+
+  "loadbalancing.googleapis.com/https/external/regional/total_latencies":
+    kind: latency
+    unit: milliseconds
+    better_direction: down
+    keywords: [lb, balancer, load]
+    slo_threshold: 500
+    related_metrics:
+      - "loadbalancing.googleapis.com/https/external/regional/request_count"
+
+  # =========================================================================
+  # CLOUD LOAD BALANCING — TCP/SSL Proxy + Network LB (L3)
+  # =========================================================================
+
+  "loadbalancing.googleapis.com/tcp_ssl_proxy/open_connections":
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [lb, balancer, load]
+    related_metrics:
+      - "loadbalancing.googleapis.com/tcp_ssl_proxy/new_connections"
+      - "loadbalancing.googleapis.com/tcp_ssl_proxy/closed_connections"
+      - "loadbalancing.googleapis.com/tcp_ssl_proxy/frontend_tcp_rtt"
+
+  "loadbalancing.googleapis.com/tcp_ssl_proxy/new_connections":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [lb, balancer, load]
+    related_metrics:
+      - "loadbalancing.googleapis.com/tcp_ssl_proxy/open_connections"
+      - "loadbalancing.googleapis.com/tcp_ssl_proxy/closed_connections"
+      - "loadbalancing.googleapis.com/tcp_ssl_proxy/frontend_tcp_rtt"
+
+  "loadbalancing.googleapis.com/tcp_ssl_proxy/closed_connections":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [lb, balancer, load]
+    related_metrics:
+      - "loadbalancing.googleapis.com/tcp_ssl_proxy/new_connections"
+      - "loadbalancing.googleapis.com/tcp_ssl_proxy/open_connections"
+
+  "loadbalancing.googleapis.com/tcp_ssl_proxy/ingress_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [lb, balancer, load]
+    related_metrics:
+      - "loadbalancing.googleapis.com/tcp_ssl_proxy/egress_bytes_count"
+      - "loadbalancing.googleapis.com/tcp_ssl_proxy/open_connections"
+
+  "loadbalancing.googleapis.com/tcp_ssl_proxy/egress_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [lb, balancer, load]
+    related_metrics:
+      - "loadbalancing.googleapis.com/tcp_ssl_proxy/ingress_bytes_count"
+      - "loadbalancing.googleapis.com/tcp_ssl_proxy/open_connections"
+
+  "loadbalancing.googleapis.com/tcp_ssl_proxy/frontend_tcp_rtt":
+    kind: latency
+    unit: milliseconds
+    better_direction: down
+    keywords: [lb, balancer, load]
+    slo_threshold: 150
+    related_metrics:
+      - "loadbalancing.googleapis.com/tcp_ssl_proxy/open_connections"
+      - "loadbalancing.googleapis.com/tcp_ssl_proxy/new_connections"
+
+  "loadbalancing.googleapis.com/l3/external/ingress_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [lb, balancer, load]
+    related_metrics:
+      - "loadbalancing.googleapis.com/l3/external/egress_bytes_count"
+      - "loadbalancing.googleapis.com/l3/external/ingress_packets_count"
+      - "loadbalancing.googleapis.com/l3/external/rtt_latencies"
+
+  "loadbalancing.googleapis.com/l3/external/egress_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [lb, balancer, load]
+    related_metrics:
+      - "loadbalancing.googleapis.com/l3/external/ingress_bytes_count"
+      - "loadbalancing.googleapis.com/l3/external/rtt_latencies"
+
+  "loadbalancing.googleapis.com/l3/external/ingress_packets_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [lb, balancer, load]
+    related_metrics:
+      - "loadbalancing.googleapis.com/l3/external/ingress_bytes_count"
+      - "loadbalancing.googleapis.com/l3/external/rtt_latencies"
+
+  "loadbalancing.googleapis.com/l3/external/rtt_latencies":
+    kind: latency
+    unit: milliseconds
+    better_direction: down
+    keywords: [lb, balancer, load]
+    slo_threshold: 150
+    related_metrics:
+      - "loadbalancing.googleapis.com/l3/external/ingress_bytes_count"
+      - "loadbalancing.googleapis.com/l3/external/ingress_packets_count"
+
+  "loadbalancing.googleapis.com/l3/internal/ingress_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [lb, balancer, load]
+    related_metrics:
+      - "loadbalancing.googleapis.com/l3/internal/egress_bytes_count"
+      - "loadbalancing.googleapis.com/l3/internal/rtt_latencies"
+
+  "loadbalancing.googleapis.com/l3/internal/egress_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [lb, balancer, load]
+    related_metrics:
+      - "loadbalancing.googleapis.com/l3/internal/ingress_bytes_count"
+      - "loadbalancing.googleapis.com/l3/internal/rtt_latencies"
+
+  "loadbalancing.googleapis.com/l3/internal/rtt_latencies":
+    kind: latency
+    unit: milliseconds
+    better_direction: down
+    keywords: [lb, balancer, load]
+    slo_threshold: 100
+    related_metrics:
+      - "loadbalancing.googleapis.com/l3/internal/ingress_bytes_count"
+      - "loadbalancing.googleapis.com/l3/internal/egress_bytes_count"
+
+  # =========================================================================
+  # CLOUD NAT (nat_gateway)
+  # =========================================================================
+
+  "router.googleapis.com/nat/port_usage":
+    # Max connections from any single VM→destination (IP:port). Pub/Sub NAT
+    # has a hard 64k ceiling per endpoint — alert well before.
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [nat, router, networking, egress]
+    slo_threshold: 50000
+    related_metrics:
+      - "router.googleapis.com/nat/allocated_ports"
+      - "router.googleapis.com/nat/dropped_sent_packets_count"
+
+  "router.googleapis.com/nat/allocated_ports":
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [nat, router, networking, egress]
+    related_metrics:
+      - "router.googleapis.com/nat/port_usage"
+      - "router.googleapis.com/nat/new_connections_count"
+      - "router.googleapis.com/nat/dropped_sent_packets_count"
+
+  "router.googleapis.com/nat/nat_allocation_failed":
+    # BOOL: any true value = NAT IP allocation failure for VMs on this gateway.
+    kind: availability
+    unit: bool
+    better_direction: down
+    keywords: [nat, router, networking, egress]
+    slo_threshold: 0
+    related_metrics:
+      - "router.googleapis.com/nat/allocated_ports"
+      - "router.googleapis.com/nat/port_usage"
+      - "router.googleapis.com/nat/dropped_sent_packets_count"
+
+  "router.googleapis.com/nat/new_connections_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [nat, router, networking, egress]
+    related_metrics:
+      - "router.googleapis.com/nat/open_connections"
+      - "router.googleapis.com/nat/allocated_ports"
+      - "router.googleapis.com/nat/port_usage"
+
+  "router.googleapis.com/nat/closed_connections_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [nat, router, networking, egress]
+    related_metrics:
+      - "router.googleapis.com/nat/open_connections"
+      - "router.googleapis.com/nat/new_connections_count"
+
+  "router.googleapis.com/nat/open_connections":
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [nat, router, networking, egress]
+    related_metrics:
+      - "router.googleapis.com/nat/new_connections_count"
+      - "router.googleapis.com/nat/closed_connections_count"
+      - "router.googleapis.com/nat/port_usage"
+
+  "router.googleapis.com/nat/sent_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [nat, router, networking, egress]
+    related_metrics:
+      - "router.googleapis.com/nat/received_bytes_count"
+      - "router.googleapis.com/nat/new_connections_count"
+      - "router.googleapis.com/nat/dropped_sent_packets_count"
+
+  "router.googleapis.com/nat/received_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [nat, router, networking, egress]
+    related_metrics:
+      - "router.googleapis.com/nat/sent_bytes_count"
+      - "router.googleapis.com/nat/open_connections"
+      - "router.googleapis.com/nat/dropped_received_packets_count"
+
+  "router.googleapis.com/nat/dropped_sent_packets_count":
+    # Use dimension="metric.labels.reason" in top_contributors to see why
+    # (OUT_OF_RESOURCES, ENDPOINT_INDEPENDENCE_CONFLICT, etc.).
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [nat, router, networking, egress]
+    slo_threshold: 0
+    related_metrics:
+      - "router.googleapis.com/nat/port_usage"
+      - "router.googleapis.com/nat/allocated_ports"
+      - "router.googleapis.com/nat/nat_allocation_failed"
+
+  "router.googleapis.com/nat/dropped_received_packets_count":
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [nat, router, networking, egress]
+    slo_threshold: 0
+    related_metrics:
+      - "router.googleapis.com/nat/received_bytes_count"
+      - "router.googleapis.com/nat/open_connections"
+      - "router.googleapis.com/nat/dropped_sent_packets_count"
+
+  # =========================================================================
+  # CLOUD VPN (vpn_gateway)
+  # =========================================================================
+
+  "vpn.googleapis.com/tunnel_established":
+    # 1 if tunnel is up, 0 if down. DirectionUp + SLO 1 → any 0 = breach.
+    kind: availability
+    unit: bool
+    better_direction: up
+    keywords: [vpn, tunnel, networking]
+    slo_threshold: 1
+    related_metrics:
+      - "vpn.googleapis.com/gateway/connections"
+      - "vpn.googleapis.com/network/received_bytes_count"
+      - "vpn.googleapis.com/network/dropped_received_packets_count"
+
+  "vpn.googleapis.com/gateway/connections":
+    kind: availability
+    unit: count
+    better_direction: up
+    keywords: [vpn, tunnel, networking]
+    slo_threshold: 1
+    related_metrics:
+      - "vpn.googleapis.com/tunnel_established"
+      - "vpn.googleapis.com/network/received_bytes_count"
+
+  "vpn.googleapis.com/network/sent_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [vpn, tunnel, networking]
+    related_metrics:
+      - "vpn.googleapis.com/network/received_bytes_count"
+      - "vpn.googleapis.com/network/sent_packets_count"
+      - "vpn.googleapis.com/tunnel_established"
+
+  "vpn.googleapis.com/network/received_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [vpn, tunnel, networking]
+    related_metrics:
+      - "vpn.googleapis.com/network/sent_bytes_count"
+      - "vpn.googleapis.com/network/received_packets_count"
+      - "vpn.googleapis.com/tunnel_established"
+
+  "vpn.googleapis.com/network/sent_packets_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [vpn, tunnel, networking]
+    related_metrics:
+      - "vpn.googleapis.com/network/sent_bytes_count"
+      - "vpn.googleapis.com/network/dropped_sent_packets_count"
+      - "vpn.googleapis.com/tunnel_established"
+
+  "vpn.googleapis.com/network/received_packets_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [vpn, tunnel, networking]
+    related_metrics:
+      - "vpn.googleapis.com/network/received_bytes_count"
+      - "vpn.googleapis.com/network/dropped_received_packets_count"
+      - "vpn.googleapis.com/tunnel_established"
+
+  "vpn.googleapis.com/network/dropped_sent_packets_count":
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [vpn, tunnel, networking]
+    slo_threshold: 0
+    related_metrics:
+      - "vpn.googleapis.com/network/sent_packets_count"
+      - "vpn.googleapis.com/tunnel_established"
+      - "vpn.googleapis.com/network/dropped_received_packets_count"
+
+  "vpn.googleapis.com/network/dropped_received_packets_count":
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [vpn, tunnel, networking]
+    slo_threshold: 0
+    related_metrics:
+      - "vpn.googleapis.com/network/received_packets_count"
+      - "vpn.googleapis.com/tunnel_established"
+      - "vpn.googleapis.com/network/dropped_sent_packets_count"
+
+  # =========================================================================
+  # CLOUD INTERCONNECT (interconnect + interconnect_attachment)
+  # =========================================================================
+
+  "interconnect.googleapis.com/network/interconnect/operational":
+    kind: availability
+    unit: bool
+    better_direction: up
+    keywords: [interconnect, hybrid, networking]
+    slo_threshold: 1
+    related_metrics:
+      - "interconnect.googleapis.com/network/interconnect/link/operational"
+      - "interconnect.googleapis.com/network/interconnect/received_bytes_count"
+      - "interconnect.googleapis.com/network/interconnect/receive_errors_count"
+
+  "interconnect.googleapis.com/network/interconnect/link/operational":
+    kind: availability
+    unit: bool
+    better_direction: up
+    keywords: [interconnect, hybrid, networking]
+    slo_threshold: 1
+    related_metrics:
+      - "interconnect.googleapis.com/network/interconnect/operational"
+      - "interconnect.googleapis.com/network/interconnect/receive_errors_count"
+      - "interconnect.googleapis.com/network/interconnect/send_errors_count"
+
+  "interconnect.googleapis.com/network/interconnect/capacity":
+    kind: resource_utilization
+    unit: bytes_per_second
+    better_direction: none
+    keywords: [interconnect, hybrid, networking]
+    related_metrics:
+      - "interconnect.googleapis.com/network/interconnect/sent_bytes_count"
+      - "interconnect.googleapis.com/network/interconnect/received_bytes_count"
+
+  "interconnect.googleapis.com/network/interconnect/sent_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [interconnect, hybrid, networking]
+    related_metrics:
+      - "interconnect.googleapis.com/network/interconnect/capacity"
+      - "interconnect.googleapis.com/network/interconnect/received_bytes_count"
+      - "interconnect.googleapis.com/network/interconnect/send_errors_count"
+
+  "interconnect.googleapis.com/network/interconnect/received_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [interconnect, hybrid, networking]
+    related_metrics:
+      - "interconnect.googleapis.com/network/interconnect/capacity"
+      - "interconnect.googleapis.com/network/interconnect/sent_bytes_count"
+      - "interconnect.googleapis.com/network/interconnect/receive_errors_count"
+
+  "interconnect.googleapis.com/network/interconnect/dropped_packets_count":
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [interconnect, hybrid, networking]
+    slo_threshold: 0
+    related_metrics:
+      - "interconnect.googleapis.com/network/interconnect/link/operational"
+      - "interconnect.googleapis.com/network/interconnect/receive_errors_count"
+      - "interconnect.googleapis.com/network/interconnect/send_errors_count"
+
+  "interconnect.googleapis.com/network/interconnect/send_errors_count":
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [interconnect, hybrid, networking]
+    slo_threshold: 0
+    related_metrics:
+      - "interconnect.googleapis.com/network/interconnect/link/operational"
+      - "interconnect.googleapis.com/network/interconnect/dropped_packets_count"
+      - "interconnect.googleapis.com/network/interconnect/sent_bytes_count"
+
+  "interconnect.googleapis.com/network/interconnect/receive_errors_count":
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [interconnect, hybrid, networking]
+    slo_threshold: 0
+    related_metrics:
+      - "interconnect.googleapis.com/network/interconnect/link/operational"
+      - "interconnect.googleapis.com/network/interconnect/dropped_packets_count"
+      - "interconnect.googleapis.com/network/interconnect/received_bytes_count"
+
+  "interconnect.googleapis.com/network/attachment/capacity":
+    kind: resource_utilization
+    unit: bytes_per_second
+    better_direction: none
+    keywords: [interconnect, hybrid, networking]
+    related_metrics:
+      - "interconnect.googleapis.com/network/attachment/sent_bytes_count"
+      - "interconnect.googleapis.com/network/attachment/received_bytes_count"
+
+  "interconnect.googleapis.com/network/attachment/sent_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [interconnect, hybrid, networking]
+    related_metrics:
+      - "interconnect.googleapis.com/network/attachment/capacity"
+      - "interconnect.googleapis.com/network/attachment/received_bytes_count"
+      - "interconnect.googleapis.com/network/attachment/egress_dropped_packets_count"
+
+  "interconnect.googleapis.com/network/attachment/received_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [interconnect, hybrid, networking]
+    related_metrics:
+      - "interconnect.googleapis.com/network/attachment/capacity"
+      - "interconnect.googleapis.com/network/attachment/sent_bytes_count"
+      - "interconnect.googleapis.com/network/attachment/ingress_dropped_packets_count"
+
+  "interconnect.googleapis.com/network/attachment/egress_dropped_packets_count":
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [interconnect, hybrid, networking]
+    slo_threshold: 0
+    related_metrics:
+      - "interconnect.googleapis.com/network/attachment/sent_bytes_count"
+      - "interconnect.googleapis.com/network/attachment/capacity"
+      - "interconnect.googleapis.com/network/interconnect/link/operational"
+
+  "interconnect.googleapis.com/network/attachment/ingress_dropped_packets_count":
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [interconnect, hybrid, networking]
+    slo_threshold: 0
+    related_metrics:
+      - "interconnect.googleapis.com/network/attachment/received_bytes_count"
+      - "interconnect.googleapis.com/network/attachment/capacity"
+      - "interconnect.googleapis.com/network/interconnect/link/operational"
+
+  # =========================================================================
+  # CLOUD DNS (dnsQuery)
+  # =========================================================================
+
+  "dns.googleapis.com/query/response_count":
+    # Labeled by response_code. Filter response_code != NOERROR for errors.
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [dns, resolver, networking]
+    related_metrics:
+      - "dns.googleapis.com/query/latencies"
+
+  "dns.googleapis.com/query/latencies":
+    kind: latency
+    unit: milliseconds
+    better_direction: down
+    keywords: [dns, resolver, networking]
+    slo_threshold: 50
+    related_metrics:
+      - "dns.googleapis.com/query/response_count"
+
+  # =========================================================================
+  # CLOUD RUN (cloud_run_revision)
+  # =========================================================================
+
+  "run.googleapis.com/request_count":
+    # Grouped by response_code, response_code_class.
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [serverless, container, knative]
+    related_metrics:
+      - "run.googleapis.com/request_latencies"
+      - "run.googleapis.com/container/instance_count"
+
+  "run.googleapis.com/request_latencies":
+    # Does NOT include container cold-start latency — that's startup_latencies.
+    kind: latency
+    unit: milliseconds
+    better_direction: down
+    keywords: [serverless, container, knative]
+    slo_threshold: 1000
+    related_metrics:
+      - "run.googleapis.com/request_count"
+      - "run.googleapis.com/container/startup_latencies"
+
+  "run.googleapis.com/container/cpu/utilizations":
+    kind: resource_utilization
+    unit: ratio
+    better_direction: down
+    keywords: [serverless, container, knative]
+    saturation_cap: 1.0
+    slo_threshold: 0.80
+    related_metrics:
+      - "run.googleapis.com/container/memory/utilizations"
+      - "run.googleapis.com/request_latencies"
+      - "run.googleapis.com/container/instance_count"
+
+  "run.googleapis.com/container/memory/utilizations":
+    kind: resource_utilization
+    unit: ratio
+    better_direction: down
+    keywords: [serverless, container, knative]
+    saturation_cap: 1.0
+    slo_threshold: 0.85
+    related_metrics:
+      - "run.googleapis.com/container/cpu/utilizations"
+      - "run.googleapis.com/request_latencies"
+      - "run.googleapis.com/container/instance_count"
+
+  "run.googleapis.com/container/instance_count":
+    # Labeled by state (active/idle). Compare against max_instances setting.
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [serverless, container, knative]
+    related_metrics:
+      - "run.googleapis.com/request_count"
+      - "run.googleapis.com/container/max_request_concurrencies"
+
+  "run.googleapis.com/container/startup_latencies":
+    # Cold-start time to begin serving requests.
+    kind: latency
+    unit: milliseconds
+    better_direction: down
+    keywords: [serverless, container, knative]
+    slo_threshold: 5000
+    related_metrics:
+      - "run.googleapis.com/container/instance_count"
+      - "run.googleapis.com/request_latencies"
+      - "run.googleapis.com/request_count"
+
+  "run.googleapis.com/container/billable_instance_time":
+    # Cost proxy.
+    kind: business_kpi
+    unit: seconds
+    better_direction: none
+    keywords: [serverless, container, knative]
+    related_metrics:
+      - "run.googleapis.com/container/instance_count"
+      - "run.googleapis.com/container/cpu/allocation_time"
+      - "run.googleapis.com/request_count"
+
+  "run.googleapis.com/container/max_request_concurrencies":
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [serverless, container, knative]
+    related_metrics:
+      - "run.googleapis.com/container/instance_count"
+      - "run.googleapis.com/request_count"
+      - "run.googleapis.com/request_latencies"
+
+  "run.googleapis.com/container/cpu/allocation_time":
+    kind: business_kpi
+    unit: seconds
+    better_direction: none
+    keywords: [serverless, container, knative]
+    related_metrics:
+      - "run.googleapis.com/container/cpu/utilizations"
+      - "run.googleapis.com/container/billable_instance_time"
+      - "run.googleapis.com/container/instance_count"
+
+  "run.googleapis.com/container/network/sent_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [serverless, container, knative]
+    related_metrics:
+      - "run.googleapis.com/container/network/received_bytes_count"
+      - "run.googleapis.com/request_count"
+
+  "run.googleapis.com/container/network/received_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [serverless, container, knative]
+    related_metrics:
+      - "run.googleapis.com/container/network/sent_bytes_count"
+      - "run.googleapis.com/request_count"
+
+  # =========================================================================
+  # CLOUD FUNCTIONS (cloud_function)
+  # =========================================================================
+
+  "cloudfunctions.googleapis.com/function/execution_count":
+    # Labeled by status (ok/error/timeout/crash/out of memory/...).
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [serverless, faas]
+    related_metrics:
+      - "cloudfunctions.googleapis.com/function/execution_times"
+      - "cloudfunctions.googleapis.com/function/user_memory_bytes"
+
+  "cloudfunctions.googleapis.com/function/execution_times":
+    # NB: unit is NANOSECONDS (unique among serverless metrics).
+    kind: latency
+    unit: nanoseconds
+    better_direction: down
+    keywords: [serverless, faas]
+    slo_threshold: 3000000000
+    related_metrics:
+      - "cloudfunctions.googleapis.com/function/execution_count"
+      - "cloudfunctions.googleapis.com/function/active_instances"
+      - "cloudfunctions.googleapis.com/function/user_memory_bytes"
+
+  "cloudfunctions.googleapis.com/function/active_instances":
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [serverless, faas]
+    related_metrics:
+      - "cloudfunctions.googleapis.com/function/execution_count"
+      - "cloudfunctions.googleapis.com/function/execution_times"
+
+  "cloudfunctions.googleapis.com/function/user_memory_bytes":
+    kind: resource_utilization
+    unit: bytes
+    better_direction: down
+    keywords: [serverless, faas]
+    related_metrics:
+      - "cloudfunctions.googleapis.com/function/execution_count"
+      - "cloudfunctions.googleapis.com/function/execution_times"
+
+  "cloudfunctions.googleapis.com/function/network_egress":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [serverless, faas]
+    related_metrics:
+      - "cloudfunctions.googleapis.com/function/execution_count"
+      - "cloudfunctions.googleapis.com/function/active_instances"
+
+  # =========================================================================
+  # APP ENGINE (gae_app, gae_instance)
+  # =========================================================================
+
+  "appengine.googleapis.com/http/server/response_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [paas, gae, serverless]
+    related_metrics:
+      - "appengine.googleapis.com/http/server/response_latencies"
+
+  "appengine.googleapis.com/http/server/response_latencies":
+    kind: latency
+    unit: milliseconds
+    better_direction: down
+    keywords: [paas, gae, serverless]
+    slo_threshold: 1000
+    related_metrics:
+      - "appengine.googleapis.com/http/server/response_count"
+      - "appengine.googleapis.com/system/cpu/utilization"
+      - "appengine.googleapis.com/system/instance_count"
+
+  "appengine.googleapis.com/http/server/response_style_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [paas, gae, serverless]
+    related_metrics:
+      - "appengine.googleapis.com/http/server/response_count"
+      - "appengine.googleapis.com/http/server/response_latencies"
+
+  "appengine.googleapis.com/http/server/dos_intercept_count":
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [paas, gae, serverless]
+    slo_threshold: 0
+    related_metrics:
+      - "appengine.googleapis.com/http/server/response_count"
+      - "appengine.googleapis.com/http/server/quota_denial_count"
+
+  "appengine.googleapis.com/http/server/quota_denial_count":
+    kind: availability
+    unit: count
+    better_direction: down
+    keywords: [paas, gae, serverless]
+    slo_threshold: 0
+    related_metrics:
+      - "appengine.googleapis.com/http/server/response_count"
+      - "appengine.googleapis.com/http/server/dos_intercept_count"
+
+  "appengine.googleapis.com/system/memory/usage":
+    kind: resource_utilization
+    unit: bytes
+    better_direction: down
+    keywords: [paas, gae, serverless]
+    related_metrics:
+      - "appengine.googleapis.com/system/cpu/utilization"
+      - "appengine.googleapis.com/system/instance_count"
+      - "appengine.googleapis.com/http/server/response_count"
+
+  "appengine.googleapis.com/system/cpu/usage":
+    kind: resource_utilization
+    unit: count
+    better_direction: none
+    keywords: [paas, gae, serverless]
+    related_metrics:
+      - "appengine.googleapis.com/system/cpu/utilization"
+      - "appengine.googleapis.com/http/server/response_count"
+      - "appengine.googleapis.com/system/instance_count"
+
+  "appengine.googleapis.com/system/cpu/utilization":
+    kind: resource_utilization
+    unit: ratio
+    better_direction: down
+    keywords: [paas, gae, serverless]
+    saturation_cap: 1.0
+    slo_threshold: 0.80
+    related_metrics:
+      - "appengine.googleapis.com/system/memory/usage"
+      - "appengine.googleapis.com/system/instance_count"
+      - "appengine.googleapis.com/http/server/response_latencies"
+
+  "appengine.googleapis.com/system/instance_count":
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [paas, gae, serverless]
+    related_metrics:
+      - "appengine.googleapis.com/http/server/response_count"
+      - "appengine.googleapis.com/system/cpu/utilization"
+      - "appengine.googleapis.com/system/memory/usage"
+
+  "appengine.googleapis.com/flex/cpu/utilization":
+    kind: resource_utilization
+    unit: ratio
+    better_direction: down
+    keywords: [paas, gae, serverless]
+    saturation_cap: 1.0
+    slo_threshold: 0.80
+    related_metrics:
+      - "appengine.googleapis.com/flex/network/received_bytes_count"
+      - "appengine.googleapis.com/flex/disk/read_bytes_count"
+      - "appengine.googleapis.com/http/server/response_latencies"
+
+  "appengine.googleapis.com/flex/disk/read_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [paas, gae, serverless]
+    related_metrics:
+      - "appengine.googleapis.com/flex/disk/write_bytes_count"
+      - "appengine.googleapis.com/flex/cpu/utilization"
+
+  "appengine.googleapis.com/flex/disk/write_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [paas, gae, serverless]
+    related_metrics:
+      - "appengine.googleapis.com/flex/disk/read_bytes_count"
+      - "appengine.googleapis.com/flex/cpu/utilization"
+
+  "appengine.googleapis.com/flex/network/received_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [paas, gae, serverless]
+    related_metrics:
+      - "appengine.googleapis.com/flex/network/sent_bytes_count"
+      - "appengine.googleapis.com/flex/cpu/utilization"
+      - "appengine.googleapis.com/http/server/response_count"
+
+  "appengine.googleapis.com/flex/network/sent_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [paas, gae, serverless]
+    related_metrics:
+      - "appengine.googleapis.com/flex/network/received_bytes_count"
+      - "appengine.googleapis.com/flex/cpu/utilization"
+      - "appengine.googleapis.com/http/server/response_count"
+
+  # =========================================================================
+  # CLOUD ENDPOINTS / API GATEWAY (serviceruntime + apigateway)
+  # =========================================================================
+
+  "serviceruntime.googleapis.com/api/request_count":
+    # This is a shared cross-service counter. Filter by
+    # metric.labels.service="<api>.googleapis.com" to isolate per-API traffic.
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [gateway, api, endpoints, esp]
+    related_metrics:
+      - "serviceruntime.googleapis.com/api/request_latencies"
+      - "serviceruntime.googleapis.com/api/request_sizes"
+      - "serviceruntime.googleapis.com/api/response_sizes"
+
+  "serviceruntime.googleapis.com/api/request_latencies":
+    kind: latency
+    unit: seconds
+    better_direction: down
+    keywords: [gateway, api, endpoints, esp]
+    slo_threshold: 1
+    related_metrics:
+      - "serviceruntime.googleapis.com/api/request_count"
+
+  "serviceruntime.googleapis.com/api/request_sizes":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [gateway, api, endpoints, esp]
+    related_metrics:
+      - "serviceruntime.googleapis.com/api/request_count"
+      - "serviceruntime.googleapis.com/api/response_sizes"
+      - "serviceruntime.googleapis.com/api/request_latencies"
+
+  "serviceruntime.googleapis.com/api/response_sizes":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [gateway, api, endpoints, esp]
+    related_metrics:
+      - "serviceruntime.googleapis.com/api/request_count"
+      - "serviceruntime.googleapis.com/api/request_sizes"
+      - "serviceruntime.googleapis.com/api/request_latencies"
+
+  "apigateway.googleapis.com/proxy/request_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [gateway, api, endpoints]
+    related_metrics:
+      - "serviceruntime.googleapis.com/api/request_count"
+      - "serviceruntime.googleapis.com/api/request_latencies"
+
+  # =========================================================================
+  # CLOUD TASKS (cloudtasks_queue)
+  # =========================================================================
+
+  "cloudtasks.googleapis.com/api/request_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [queue, jobs, background]
+    related_metrics:
+      - "cloudtasks.googleapis.com/queue/task_attempt_count"
+      - "cloudtasks.googleapis.com/queue/depth"
+
+  "cloudtasks.googleapis.com/queue/depth":
+    # Backlog depth — use saturation semantics here, but the concept is
+    # identical to Pub/Sub num_undelivered_messages.
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [queue, jobs, background]
+    slo_threshold: 10000
+    related_metrics:
+      - "cloudtasks.googleapis.com/queue/task_attempt_delays"
+      - "cloudtasks.googleapis.com/queue/task_attempt_count"
+
+  "cloudtasks.googleapis.com/queue/task_attempt_count":
+    # Labeled by response_code — derive failure ratio via top_contributors.
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [queue, jobs, background]
+    related_metrics:
+      - "cloudtasks.googleapis.com/queue/depth"
+      - "cloudtasks.googleapis.com/queue/task_attempt_delays"
+
+  "cloudtasks.googleapis.com/queue/task_attempt_delays":
+    # Scheduled→actual execution delay. Staleness for a task queue.
+    kind: freshness
+    unit: milliseconds
+    better_direction: down
+    keywords: [queue, jobs, background]
+    slo_threshold: 5000
+    related_metrics:
+      - "cloudtasks.googleapis.com/queue/depth"
+      - "cloudtasks.googleapis.com/queue/task_attempt_count"
+
+  # =========================================================================
+  # CLOUD SCHEDULER (cloud_scheduler_job)
+  # =========================================================================
+
+  "cloudscheduler.googleapis.com/job/execution_count":
+    # Labeled by result (SUCCESSFUL/FAILED/NOT_ATTEMPTED/CANCELLED).
+    kind: availability
+    unit: count
+    better_direction: up
+    keywords: [cron, scheduler, scheduled, jobs]
+    related_metrics:
+      - "cloudscheduler.googleapis.com/job/attempt_deadline_exceeded_count"
+
+  "cloudscheduler.googleapis.com/job/attempt_deadline_exceeded_count":
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [cron, scheduler, scheduled, jobs]
+    slo_threshold: 0
+    related_metrics:
+      - "cloudscheduler.googleapis.com/job/execution_count"
+
+  # =========================================================================
+  # CLOUD WORKFLOWS (workflows.googleapis.com/Workflow)
+  # =========================================================================
+
+  "workflows.googleapis.com/finished_execution_count":
+    # Labeled by status — derive error ratio via top_contributors.
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [workflow, orchestration]
+    related_metrics:
+      - "workflows.googleapis.com/started_execution_count"
+      - "workflows.googleapis.com/execution_times"
+      - "workflows.googleapis.com/internal_execution_error_count"
+
+  "workflows.googleapis.com/started_execution_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [workflow, orchestration]
+    related_metrics:
+      - "workflows.googleapis.com/finished_execution_count"
+      - "workflows.googleapis.com/execution_backlog_size"
+
+  "workflows.googleapis.com/execution_times":
+    kind: latency
+    unit: milliseconds
+    better_direction: down
+    keywords: [workflow, orchestration]
+    slo_threshold: 60000
+    related_metrics:
+      - "workflows.googleapis.com/finished_execution_count"
+      - "workflows.googleapis.com/compute_slice_latencies"
+      - "workflows.googleapis.com/internal_execution_error_count"
+
+  "workflows.googleapis.com/execution_backlog_size":
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [workflow, orchestration]
+    slo_threshold: 100
+    related_metrics:
+      - "workflows.googleapis.com/started_execution_count"
+      - "workflows.googleapis.com/execution_times"
+      - "workflows.googleapis.com/compute_slice_latencies"
+
+  "workflows.googleapis.com/internal_execution_error_count":
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [workflow, orchestration]
+    slo_threshold: 0
+    related_metrics:
+      - "workflows.googleapis.com/finished_execution_count"
+      - "workflows.googleapis.com/callback_timeout_count"
+
+  "workflows.googleapis.com/compute_slice_latencies":
+    # Scheduling lag between compute slices being requested and executed.
+    kind: freshness
+    unit: milliseconds
+    better_direction: down
+    keywords: [workflow, orchestration]
+    slo_threshold: 1000
+    related_metrics:
+      - "workflows.googleapis.com/execution_times"
+      - "workflows.googleapis.com/execution_backlog_size"
+
+  "workflows.googleapis.com/callback_timeout_count":
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [workflow, orchestration]
+    slo_threshold: 0
+    related_metrics:
+      - "workflows.googleapis.com/internal_execution_error_count"
+      - "workflows.googleapis.com/finished_execution_count"
+
+  # =========================================================================
+  # CLOUD STORAGE (gcs_bucket)
+  # =========================================================================
+
+  "storage.googleapis.com/api/request_count":
+    # Labeled by method and response_code. Use metrics.top_contributors with
+    # dimension="metric.labels.response_code" to split errors.
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [gcs, bucket, object, blob]
+    related_metrics:
+      - "storage.googleapis.com/network/sent_bytes_count"
+      - "storage.googleapis.com/network/received_bytes_count"
+
+  "storage.googleapis.com/network/sent_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [gcs, bucket, object, blob]
+    related_metrics:
+      - "storage.googleapis.com/network/received_bytes_count"
+      - "storage.googleapis.com/api/request_count"
+
+  "storage.googleapis.com/network/received_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [gcs, bucket, object, blob]
+    related_metrics:
+      - "storage.googleapis.com/network/sent_bytes_count"
+      - "storage.googleapis.com/api/request_count"
+
+  "storage.googleapis.com/storage/total_bytes":
+    # Sampled daily. Growth curve is the primary signal.
+    kind: resource_utilization
+    unit: bytes
+    better_direction: none
+    keywords: [gcs, bucket, object, blob]
+    related_metrics:
+      - "storage.googleapis.com/storage/object_count"
+      - "storage.googleapis.com/storage/total_byte_seconds"
+
+  "storage.googleapis.com/storage/object_count":
+    kind: resource_utilization
+    unit: count
+    better_direction: none
+    keywords: [gcs, bucket, object, blob]
+    related_metrics:
+      - "storage.googleapis.com/storage/total_bytes"
+      - "storage.googleapis.com/api/request_count"
+
+  "storage.googleapis.com/storage/total_byte_seconds":
+    # Billing proxy.
+    kind: business_kpi
+    unit: byte_seconds
+    better_direction: none
+    keywords: [gcs, bucket, object, blob]
+    related_metrics:
+      - "storage.googleapis.com/storage/total_bytes"
+      - "storage.googleapis.com/storage/object_count"
+
+  "storage.googleapis.com/authz/acl_based_object_access_count":
+    # Security hygiene — sustained nonzero means clients rely on object ACLs
+    # instead of IAM. Any sustained rate deserves investigation.
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [gcs, bucket, object, blob]
+    slo_threshold: 0
+    related_metrics:
+      - "storage.googleapis.com/api/request_count"
+
+  # =========================================================================
+  # BIGQUERY (bigquery_project, bigquery_dataset)
+  # =========================================================================
+
+  "bigquery.googleapis.com/query/count":
+    # In-flight query concurrency.
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [warehouse, olap, analytics]
+    related_metrics:
+      - "bigquery.googleapis.com/query/execution_times"
+      - "bigquery.googleapis.com/slots/allocated"
+      - "bigquery.googleapis.com/job/num_in_flight"
+
+  "bigquery.googleapis.com/query/execution_times":
+    kind: latency
+    unit: seconds
+    better_direction: down
+    keywords: [warehouse, olap, analytics]
+    slo_threshold: 60
+    related_metrics:
+      - "bigquery.googleapis.com/slots/allocated"
+      - "bigquery.googleapis.com/query/scanned_bytes"
+      - "bigquery.googleapis.com/query/count"
+
+  "bigquery.googleapis.com/query/scanned_bytes":
+    # Billing driver when using on-demand pricing.
+    kind: business_kpi
+    unit: bytes
+    better_direction: none
+    keywords: [warehouse, olap, analytics]
+    related_metrics:
+      - "bigquery.googleapis.com/query/execution_times"
+      - "bigquery.googleapis.com/query/count"
+
+  "bigquery.googleapis.com/slots/allocated":
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [warehouse, olap, analytics]
+    related_metrics:
+      - "bigquery.googleapis.com/slots/allocated_for_project"
+      - "bigquery.googleapis.com/slots/allocated_for_reservation"
+      - "bigquery.googleapis.com/query/execution_times"
+
+  "bigquery.googleapis.com/slots/allocated_for_project":
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [warehouse, olap, analytics]
+    related_metrics:
+      - "bigquery.googleapis.com/slots/allocated"
+      - "bigquery.googleapis.com/query/count"
+
+  "bigquery.googleapis.com/slots/allocated_for_reservation":
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [warehouse, olap, analytics]
+    related_metrics:
+      - "bigquery.googleapis.com/slots/allocated"
+      - "bigquery.googleapis.com/query/execution_times"
+
+  "bigquery.googleapis.com/storage/stored_bytes":
+    kind: resource_utilization
+    unit: bytes
+    better_direction: none
+    keywords: [warehouse, olap, analytics]
+    related_metrics:
+      - "bigquery.googleapis.com/storage/uploaded_bytes_billed"
+      - "bigquery.googleapis.com/storage/table_count"
+
+  "bigquery.googleapis.com/storage/uploaded_bytes_billed":
+    kind: business_kpi
+    unit: bytes
+    better_direction: none
+    keywords: [warehouse, olap, analytics]
+    related_metrics:
+      - "bigquery.googleapis.com/storage/stored_bytes"
+      - "bigquery.googleapis.com/query/scanned_bytes"
+
+  "bigquery.googleapis.com/storage/table_count":
+    kind: resource_utilization
+    unit: count
+    better_direction: none
+    keywords: [warehouse, olap, analytics]
+    related_metrics:
+      - "bigquery.googleapis.com/storage/stored_bytes"
+
+  "bigquery.googleapis.com/job/num_in_flight":
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [warehouse, olap, analytics]
+    related_metrics:
+      - "bigquery.googleapis.com/query/count"
+      - "bigquery.googleapis.com/slots/allocated"
+      - "bigquery.googleapis.com/query/execution_times"
+
+  # =========================================================================
+  # CLOUD SPANNER (spanner_instance)
+  # =========================================================================
+
+  "spanner.googleapis.com/api/request_count":
+    # Labeled by method and status. Use top_contributors for error breakdown.
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [database, sql, distributed]
+    related_metrics:
+      - "spanner.googleapis.com/api/request_latencies"
+      - "spanner.googleapis.com/instance/cpu/utilization"
+      - "spanner.googleapis.com/instance/session_count"
+
+  "spanner.googleapis.com/api/request_latencies":
+    kind: latency
+    unit: seconds
+    better_direction: down
+    keywords: [database, sql, distributed]
+    slo_threshold: 0.1
+    related_metrics:
+      - "spanner.googleapis.com/api/request_count"
+      - "spanner.googleapis.com/instance/cpu/utilization"
+      - "spanner.googleapis.com/instance/cpu/utilization_by_priority"
+
+  "spanner.googleapis.com/instance/cpu/utilization":
+    # Spanner recommends staying below 65% (not 85%) for regional instances
+    # and 45% for multi-region. Leave more headroom than a typical VM.
+    kind: resource_utilization
+    unit: ratio
+    better_direction: down
+    keywords: [database, sql, distributed]
+    saturation_cap: 1.0
+    slo_threshold: 0.65
+    related_metrics:
+      - "spanner.googleapis.com/instance/cpu/utilization_by_priority"
+      - "spanner.googleapis.com/instance/session_count"
+
+  "spanner.googleapis.com/instance/cpu/utilization_by_priority":
+    # Grouped by HIGH/MEDIUM/LOW priority.
+    kind: resource_utilization
+    unit: ratio
+    better_direction: down
+    keywords: [database, sql, distributed]
+    related_metrics:
+      - "spanner.googleapis.com/instance/cpu/utilization"
+      - "spanner.googleapis.com/api/request_latencies"
+
+  "spanner.googleapis.com/instance/storage/used_bytes":
+    kind: saturation
+    unit: bytes
+    better_direction: down
+    keywords: [database, sql, distributed]
+    related_metrics:
+      - "spanner.googleapis.com/instance/storage/limit_bytes"
+
+  "spanner.googleapis.com/instance/storage/limit_bytes":
+    kind: resource_utilization
+    unit: bytes
+    better_direction: none
+    keywords: [database, sql, distributed]
+    related_metrics:
+      - "spanner.googleapis.com/instance/storage/used_bytes"
+      - "spanner.googleapis.com/instance/node_count"
+      - "spanner.googleapis.com/instance/processing_units"
+
+  "spanner.googleapis.com/instance/session_count":
+    # Note: metric name is session_count, not "sessions".
+    kind: resource_utilization
+    unit: count
+    better_direction: none
+    keywords: [database, sql, distributed]
+    related_metrics:
+      - "spanner.googleapis.com/instance/cpu/utilization"
+      - "spanner.googleapis.com/api/request_count"
+
+  "spanner.googleapis.com/instance/node_count":
+    kind: resource_utilization
+    unit: count
+    better_direction: none
+    keywords: [database, sql, distributed]
+    related_metrics:
+      - "spanner.googleapis.com/instance/cpu/utilization"
+      - "spanner.googleapis.com/instance/processing_units"
+      - "spanner.googleapis.com/instance/storage/limit_bytes"
+
+  "spanner.googleapis.com/instance/processing_units":
+    kind: resource_utilization
+    unit: count
+    better_direction: none
+    keywords: [database, sql, distributed]
+    related_metrics:
+      - "spanner.googleapis.com/instance/node_count"
+      - "spanner.googleapis.com/instance/cpu/utilization"
+      - "spanner.googleapis.com/instance/storage/limit_bytes"
+
+  # =========================================================================
+  # FIRESTORE (firestore.googleapis.com/Database)
+  # =========================================================================
+
+  "firestore.googleapis.com/api/request_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [database, nosql, document, firebase]
+    related_metrics:
+      - "firestore.googleapis.com/api/request_latencies"
+      - "firestore.googleapis.com/document/read_count"
+      - "firestore.googleapis.com/document/write_count"
+
+  "firestore.googleapis.com/api/request_latencies":
+    kind: latency
+    unit: seconds
+    better_direction: down
+    keywords: [database, nosql, document, firebase]
+    slo_threshold: 0.2
+    related_metrics:
+      - "firestore.googleapis.com/api/request_count"
+      - "firestore.googleapis.com/document/read_count"
+      - "firestore.googleapis.com/document/write_count"
+
+  "firestore.googleapis.com/document/read_count":
+    kind: business_kpi
+    unit: count
+    better_direction: none
+    keywords: [database, nosql, document, firebase]
+    related_metrics:
+      - "firestore.googleapis.com/document/write_count"
+      - "firestore.googleapis.com/api/request_latencies"
+      - "firestore.googleapis.com/api/request_count"
+
+  "firestore.googleapis.com/document/write_count":
+    kind: business_kpi
+    unit: count
+    better_direction: none
+    keywords: [database, nosql, document, firebase]
+    related_metrics:
+      - "firestore.googleapis.com/document/read_count"
+      - "firestore.googleapis.com/document/delete_count"
+      - "firestore.googleapis.com/api/request_latencies"
+
+  "firestore.googleapis.com/document/delete_count":
+    kind: business_kpi
+    unit: count
+    better_direction: none
+    keywords: [database, nosql, document, firebase]
+    related_metrics:
+      - "firestore.googleapis.com/document/write_count"
+      - "firestore.googleapis.com/api/request_latencies"
+
+  "firestore.googleapis.com/network/active_connections":
+    kind: resource_utilization
+    unit: count
+    better_direction: none
+    keywords: [database, nosql, document, firebase]
+    related_metrics:
+      - "firestore.googleapis.com/api/request_count"
+      - "firestore.googleapis.com/api/request_latencies"
+
+  # =========================================================================
+  # BIGTABLE (bigtable_cluster, bigtable_table)
+  # =========================================================================
+
+  "bigtable.googleapis.com/server/request_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [database, nosql, wide-column, hbase]
+    related_metrics:
+      - "bigtable.googleapis.com/server/latencies"
+      - "bigtable.googleapis.com/server/error_count"
+      - "bigtable.googleapis.com/cluster/cpu_load"
+
+  "bigtable.googleapis.com/server/error_count":
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [database, nosql, wide-column, hbase]
+    related_metrics:
+      - "bigtable.googleapis.com/server/request_count"
+      - "bigtable.googleapis.com/server/latencies"
+      - "bigtable.googleapis.com/cluster/cpu_load_hottest_node"
+
+  "bigtable.googleapis.com/server/latencies":
+    kind: latency
+    unit: milliseconds
+    better_direction: down
+    keywords: [database, nosql, wide-column, hbase]
+    slo_threshold: 50
+    related_metrics:
+      - "bigtable.googleapis.com/server/request_count"
+      - "bigtable.googleapis.com/cluster/cpu_load"
+      - "bigtable.googleapis.com/cluster/cpu_load_hottest_node"
+
+  "bigtable.googleapis.com/server/received_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [database, nosql, wide-column, hbase]
+    related_metrics:
+      - "bigtable.googleapis.com/server/sent_bytes_count"
+      - "bigtable.googleapis.com/server/request_count"
+
+  "bigtable.googleapis.com/server/sent_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [database, nosql, wide-column, hbase]
+    related_metrics:
+      - "bigtable.googleapis.com/server/received_bytes_count"
+      - "bigtable.googleapis.com/server/request_count"
+
+  "bigtable.googleapis.com/cluster/cpu_load":
+    kind: resource_utilization
+    unit: ratio
+    better_direction: down
+    keywords: [database, nosql, wide-column, hbase]
+    saturation_cap: 1.0
+    slo_threshold: 0.70
+    related_metrics:
+      - "bigtable.googleapis.com/cluster/cpu_load_hottest_node"
+      - "bigtable.googleapis.com/server/latencies"
+      - "bigtable.googleapis.com/cluster/node_count"
+
+  "bigtable.googleapis.com/cluster/cpu_load_hottest_node":
+    # Hotspotting detector — a single hot tablet can bottleneck the cluster
+    # even when cluster average looks fine.
+    kind: resource_utilization
+    unit: ratio
+    better_direction: down
+    keywords: [database, nosql, wide-column, hbase]
+    saturation_cap: 1.0
+    slo_threshold: 0.90
+    related_metrics:
+      - "bigtable.googleapis.com/cluster/cpu_load"
+      - "bigtable.googleapis.com/server/latencies"
+      - "bigtable.googleapis.com/server/error_count"
+
+  "bigtable.googleapis.com/cluster/disk_load":
+    kind: resource_utilization
+    unit: ratio
+    better_direction: down
+    keywords: [database, nosql, wide-column, hbase]
+    saturation_cap: 1.0
+    slo_threshold: 0.70
+    related_metrics:
+      - "bigtable.googleapis.com/cluster/storage_utilization"
+      - "bigtable.googleapis.com/server/latencies"
+      - "bigtable.googleapis.com/cluster/cpu_load"
+
+  "bigtable.googleapis.com/cluster/storage_utilization":
+    kind: saturation
+    unit: ratio
+    better_direction: down
+    keywords: [database, nosql, wide-column, hbase]
+    saturation_cap: 1.0
+    slo_threshold: 0.70
+    related_metrics:
+      - "bigtable.googleapis.com/cluster/disk_load"
+      - "bigtable.googleapis.com/cluster/node_count"
+
+  "bigtable.googleapis.com/cluster/node_count":
+    kind: resource_utilization
+    unit: count
+    better_direction: none
+    keywords: [database, nosql, wide-column, hbase]
+    related_metrics:
+      - "bigtable.googleapis.com/cluster/cpu_load"
+      - "bigtable.googleapis.com/cluster/storage_utilization"
+
+  "bigtable.googleapis.com/replication/latency":
+    kind: freshness
+    unit: milliseconds
+    better_direction: down
+    keywords: [database, nosql, wide-column, hbase]
+    slo_threshold: 10000
+    related_metrics:
+      - "bigtable.googleapis.com/replication/max_delay"
+      - "bigtable.googleapis.com/cluster/cpu_load"
+
+  "bigtable.googleapis.com/replication/max_delay":
+    # Upper-bound replication delay — heartbeat-style freshness signal.
+    kind: freshness
+    unit: seconds
+    better_direction: down
+    keywords: [database, nosql, wide-column, hbase]
+    slo_threshold: 60
+    related_metrics:
+      - "bigtable.googleapis.com/replication/latency"
+      - "bigtable.googleapis.com/cluster/cpu_load"
+
+  # =========================================================================
+  # FILESTORE (file.googleapis.com/Instance)
+  # =========================================================================
+
+  "file.googleapis.com/nfs/server/used_bytes_percent":
+    kind: saturation
+    unit: percent
+    better_direction: down
+    keywords: [nfs, file, filesystem, filestore]
+    saturation_cap: 100
+    slo_threshold: 80
+    related_metrics:
+      - "file.googleapis.com/nfs/server/free_bytes_percent"
+      - "file.googleapis.com/nfs/server/write_bytes_count"
+
+  "file.googleapis.com/nfs/server/free_bytes_percent":
+    kind: saturation
+    unit: percent
+    better_direction: up
+    keywords: [nfs, file, filesystem, filestore]
+    slo_threshold: 20
+    related_metrics:
+      - "file.googleapis.com/nfs/server/used_bytes_percent"
+      - "file.googleapis.com/nfs/server/write_bytes_count"
+
+  "file.googleapis.com/nfs/server/procedure_call_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [nfs, file, filesystem, filestore]
+    related_metrics:
+      - "file.googleapis.com/nfs/server/average_read_latency"
+      - "file.googleapis.com/nfs/server/average_write_latency"
+
+  "file.googleapis.com/nfs/server/average_read_latency":
+    # Filestore basic tier does NOT populate these — requires premium/enterprise.
+    kind: latency
+    unit: milliseconds
+    better_direction: down
+    keywords: [nfs, file, filesystem, filestore]
+    slo_threshold: 10
+    related_metrics:
+      - "file.googleapis.com/nfs/server/read_bytes_count"
+      - "file.googleapis.com/nfs/server/procedure_call_count"
+      - "file.googleapis.com/nfs/server/average_write_latency"
+
+  "file.googleapis.com/nfs/server/average_write_latency":
+    kind: latency
+    unit: milliseconds
+    better_direction: down
+    keywords: [nfs, file, filesystem, filestore]
+    slo_threshold: 10
+    related_metrics:
+      - "file.googleapis.com/nfs/server/write_bytes_count"
+      - "file.googleapis.com/nfs/server/procedure_call_count"
+      - "file.googleapis.com/nfs/server/average_read_latency"
+
+  "file.googleapis.com/nfs/server/read_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [nfs, file, filesystem, filestore]
+    related_metrics:
+      - "file.googleapis.com/nfs/server/average_read_latency"
+      - "file.googleapis.com/nfs/server/write_bytes_count"
+
+  "file.googleapis.com/nfs/server/write_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [nfs, file, filesystem, filestore]
+    related_metrics:
+      - "file.googleapis.com/nfs/server/average_write_latency"
+      - "file.googleapis.com/nfs/server/read_bytes_count"
+      - "file.googleapis.com/nfs/server/used_bytes_percent"
+
+  # =========================================================================
+  # DATAFLOW (dataflow_job)
+  # =========================================================================
+
+  "dataflow.googleapis.com/job/is_failed":
+    # BOOL: 1 if the job has failed.
+    kind: availability
+    unit: bool
+    better_direction: down
+    keywords: [etl, streaming, batch, pipeline, beam]
+    slo_threshold: 0
+    related_metrics:
+      - "dataflow.googleapis.com/job/system_lag"
+      - "dataflow.googleapis.com/job/data_watermark_age"
+
+  "dataflow.googleapis.com/job/data_watermark_age":
+    # Primary freshness SLI for streaming pipelines. Event-time lag.
+    kind: freshness
+    unit: seconds
+    better_direction: down
+    keywords: [etl, streaming, batch, pipeline, beam]
+    slo_threshold: 300
+    related_metrics:
+      - "dataflow.googleapis.com/job/system_lag"
+      - "dataflow.googleapis.com/job/current_num_vcpus"
+
+  "dataflow.googleapis.com/job/system_lag":
+    # Max duration an element has been in-flight.
+    kind: freshness
+    unit: seconds
+    better_direction: down
+    keywords: [etl, streaming, batch, pipeline, beam]
+    slo_threshold: 120
+    related_metrics:
+      - "dataflow.googleapis.com/job/data_watermark_age"
+      - "dataflow.googleapis.com/job/element_count"
+      - "dataflow.googleapis.com/job/current_num_vcpus"
+
+  "dataflow.googleapis.com/job/current_num_vcpus":
+    kind: resource_utilization
+    unit: count
+    better_direction: none
+    keywords: [etl, streaming, batch, pipeline, beam]
+    related_metrics:
+      - "dataflow.googleapis.com/job/system_lag"
+      - "dataflow.googleapis.com/job/element_count"
+      - "dataflow.googleapis.com/job/total_vcpu_time"
+
+  "dataflow.googleapis.com/job/total_vcpu_time":
+    kind: business_kpi
+    unit: seconds
+    better_direction: none
+    keywords: [etl, streaming, batch, pipeline, beam]
+    related_metrics:
+      - "dataflow.googleapis.com/job/current_num_vcpus"
+      - "dataflow.googleapis.com/job/element_count"
+
+  "dataflow.googleapis.com/job/billable_shuffle_data_processed":
+    kind: business_kpi
+    unit: bytes
+    better_direction: none
+    keywords: [etl, streaming, batch, pipeline, beam]
+    related_metrics:
+      - "dataflow.googleapis.com/job/element_count"
+      - "dataflow.googleapis.com/job/system_lag"
+
+  "dataflow.googleapis.com/job/elements_produced_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [etl, streaming, batch, pipeline, beam]
+    related_metrics:
+      - "dataflow.googleapis.com/job/element_count"
+      - "dataflow.googleapis.com/job/system_lag"
+      - "dataflow.googleapis.com/job/data_watermark_age"
+
+  "dataflow.googleapis.com/job/element_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [etl, streaming, batch, pipeline, beam]
+    related_metrics:
+      - "dataflow.googleapis.com/job/elements_produced_count"
+      - "dataflow.googleapis.com/job/system_lag"
+      - "dataflow.googleapis.com/job/data_watermark_age"
+
+  "dataflow.googleapis.com/job/user_counter":
+    # User-defined counters — whatever the pipeline emits.
+    kind: business_kpi
+    unit: count
+    better_direction: none
+    keywords: [etl, streaming, batch, pipeline, beam]
+    related_metrics:
+      - "dataflow.googleapis.com/job/element_count"
+      - "dataflow.googleapis.com/job/is_failed"
+
+  # =========================================================================
+  # CLOUD COMPOSER / AIRFLOW (cloud_composer_environment, workflow)
+  # =========================================================================
+
+  "composer.googleapis.com/environment/healthy":
+    kind: availability
+    unit: bool
+    better_direction: up
+    keywords: [airflow, orchestration, workflow, dag]
+    slo_threshold: 1
+    related_metrics:
+      - "composer.googleapis.com/environment/scheduler_heartbeat_count"
+      - "composer.googleapis.com/environment/worker/pod_eviction_count"
+      - "composer.googleapis.com/environment/database/cpu/utilization"
+
+  "composer.googleapis.com/environment/dag_processing/total_parse_time":
+    kind: latency
+    unit: seconds
+    better_direction: down
+    keywords: [airflow, orchestration, workflow, dag]
+    slo_threshold: 30
+    related_metrics:
+      - "composer.googleapis.com/environment/scheduler_heartbeat_count"
+      - "composer.googleapis.com/environment/database/cpu/utilization"
+
+  "composer.googleapis.com/workflow/task_instance/run_duration":
+    kind: latency
+    unit: milliseconds
+    better_direction: down
+    keywords: [airflow, orchestration, workflow, dag]
+    related_metrics:
+      - "composer.googleapis.com/workflow/dag/run_duration"
+      - "composer.googleapis.com/environment/unfinished_task_instances"
+      - "composer.googleapis.com/environment/worker/pod_eviction_count"
+
+  "composer.googleapis.com/workflow/dag/run_duration":
+    kind: latency
+    unit: milliseconds
+    better_direction: down
+    keywords: [airflow, orchestration, workflow, dag]
+    related_metrics:
+      - "composer.googleapis.com/workflow/task_instance/run_duration"
+      - "composer.googleapis.com/environment/unfinished_task_instances"
+      - "composer.googleapis.com/environment/dag_processing/total_parse_time"
+
+  "composer.googleapis.com/environment/unfinished_task_instances":
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [airflow, orchestration, workflow, dag]
+    slo_threshold: 50
+    related_metrics:
+      - "composer.googleapis.com/workflow/task_instance/run_duration"
+      - "composer.googleapis.com/environment/worker/pod_eviction_count"
+      - "composer.googleapis.com/environment/scheduler_heartbeat_count"
+
+  "composer.googleapis.com/environment/worker/pod_eviction_count":
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [airflow, orchestration, workflow, dag]
+    slo_threshold: 0
+    related_metrics:
+      - "composer.googleapis.com/environment/unfinished_task_instances"
+      - "composer.googleapis.com/environment/healthy"
+
+  "composer.googleapis.com/environment/scheduler_heartbeat_count":
+    kind: availability
+    unit: count
+    better_direction: up
+    keywords: [airflow, orchestration, workflow, dag]
+    related_metrics:
+      - "composer.googleapis.com/environment/healthy"
+      - "composer.googleapis.com/environment/dag_processing/total_parse_time"
+      - "composer.googleapis.com/environment/unfinished_task_instances"
+
+  "composer.googleapis.com/environment/database/cpu/utilization":
+    kind: resource_utilization
+    unit: ratio
+    better_direction: down
+    keywords: [airflow, orchestration, workflow, dag]
+    saturation_cap: 1.0
+    slo_threshold: 0.75
+    related_metrics:
+      - "composer.googleapis.com/environment/database/disk/bytes_used"
+      - "composer.googleapis.com/environment/healthy"
+
+  "composer.googleapis.com/environment/database/disk/bytes_used":
+    kind: saturation
+    unit: bytes
+    better_direction: down
+    keywords: [airflow, orchestration, workflow, dag]
+    related_metrics:
+      - "composer.googleapis.com/environment/database/cpu/utilization"
+      - "composer.googleapis.com/environment/healthy"
+
+  # =========================================================================
+  # MEMORYSTORE FOR REDIS (redis_instance)
+  # =========================================================================
+
+  "redis.googleapis.com/stats/memory/usage_ratio":
+    kind: saturation
+    unit: ratio
+    better_direction: down
+    keywords: [cache, kv, memorystore]
+    saturation_cap: 1.0
+    slo_threshold: 0.85
+    related_metrics:
+      - "redis.googleapis.com/stats/evicted_keys"
+      - "redis.googleapis.com/clients/connected"
+
+  "redis.googleapis.com/stats/memory/system_memory_overload_duration":
+    # Any time spent in overload mode is significant.
+    kind: saturation
+    unit: microseconds
+    better_direction: down
+    keywords: [cache, kv, memorystore]
+    slo_threshold: 0
+    related_metrics:
+      - "redis.googleapis.com/stats/memory/system_memory_usage_ratio"
+      - "redis.googleapis.com/stats/memory/usage_ratio"
+      - "redis.googleapis.com/stats/evicted_keys"
+
+  "redis.googleapis.com/stats/memory/system_memory_usage_ratio":
+    # System-level memory pressure (includes Redis + OS + background work),
+    # distinct from stats/memory/usage_ratio which is maxmemory-relative.
+    kind: resource_utilization
+    unit: ratio
+    better_direction: down
+    keywords: [cache, kv, memorystore]
+    saturation_cap: 1.0
+    slo_threshold: 0.90
+    related_metrics:
+      - "redis.googleapis.com/stats/memory/usage_ratio"
+      - "redis.googleapis.com/stats/memory/system_memory_overload_duration"
+
+  "redis.googleapis.com/stats/cpu_utilization_main_thread":
+    # CPU seconds consumed by the Redis main thread. Redis is single-threaded
+    # for most commands so this saturates before stats/memory does.
+    kind: resource_utilization
+    unit: ratio
+    better_direction: down
+    keywords: [cache, kv, memorystore]
+    saturation_cap: 1.0
+    slo_threshold: 0.80
+    related_metrics:
+      - "redis.googleapis.com/commands/calls"
+      - "redis.googleapis.com/stats/connections/total"
+      - "redis.googleapis.com/clients/connected"
+
+  "redis.googleapis.com/stats/connections/total":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [cache, kv, memorystore]
+    related_metrics:
+      - "redis.googleapis.com/clients/connected"
+      - "redis.googleapis.com/stats/reject_connections_count"
+
+  "redis.googleapis.com/stats/reject_connections_count":
+    # Connections rejected because maxclients was hit. Non-zero = scale up.
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [cache, kv, memorystore]
+    slo_threshold: 0
+    related_metrics:
+      - "redis.googleapis.com/clients/connected"
+
+  "redis.googleapis.com/clients/connected":
+    # Redis default maxclients is 65000. Alert well before.
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [cache, kv, memorystore]
+    slo_threshold: 60000
+    related_metrics:
+      - "redis.googleapis.com/stats/connections/total"
+      - "redis.googleapis.com/stats/reject_connections_count"
+      - "redis.googleapis.com/clients/blocked"
+
+  "redis.googleapis.com/clients/blocked":
+    # Clients blocked on BLPOP/BRPOP/BLMOVE/etc. Growing = consumer backlog.
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [cache, kv, memorystore]
+    related_metrics:
+      - "redis.googleapis.com/clients/connected"
+      - "redis.googleapis.com/commands/calls"
+
+  "redis.googleapis.com/stats/cache_hit_ratio":
+    # Below 0.90 usually means cache is undersized or query patterns shifted.
+    kind: business_kpi
+    unit: ratio
+    better_direction: up
+    keywords: [cache, kv, memorystore]
+    slo_threshold: 0.90
+    related_metrics:
+      - "redis.googleapis.com/stats/keyspace_hits"
+      - "redis.googleapis.com/stats/keyspace_misses"
+      - "redis.googleapis.com/stats/evicted_keys"
+    # Ratio metric: the business_kpi default is sum, but summing hit ratios
+    # across replicas/shards produces values >1 which are meaningless.
+    aggregation:
+      across_groups: mean
+
+  "redis.googleapis.com/stats/evicted_keys":
+    # Sustained non-zero = memory pressure forcing evictions.
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [cache, kv, memorystore]
+    slo_threshold: 0
+    related_metrics:
+      - "redis.googleapis.com/stats/memory/usage_ratio"
+
+  "redis.googleapis.com/stats/expired_keys":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [cache, kv, memorystore]
+    related_metrics:
+      - "redis.googleapis.com/stats/evicted_keys"
+      - "redis.googleapis.com/stats/memory/usage_ratio"
+
+  "redis.googleapis.com/stats/keyspace_hits":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [cache, kv, memorystore]
+    related_metrics:
+      - "redis.googleapis.com/stats/keyspace_misses"
+      - "redis.googleapis.com/stats/cache_hit_ratio"
+      - "redis.googleapis.com/commands/calls"
+
+  "redis.googleapis.com/stats/keyspace_misses":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [cache, kv, memorystore]
+    related_metrics:
+      - "redis.googleapis.com/stats/keyspace_hits"
+      - "redis.googleapis.com/stats/cache_hit_ratio"
+      - "redis.googleapis.com/stats/evicted_keys"
+
+  "redis.googleapis.com/commands/calls":
+    # Per-command counters — use top_contributors with metric.labels.cmd.
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [cache, kv, memorystore]
+    related_metrics:
+      - "redis.googleapis.com/stats/cpu_utilization_main_thread"
+      - "redis.googleapis.com/stats/keyspace_hits"
+      - "redis.googleapis.com/stats/keyspace_misses"
+
+  "redis.googleapis.com/replication/offset_diff":
+    # Bytes the replica is behind the primary. Use as a freshness signal.
+    kind: freshness
+    unit: bytes
+    better_direction: down
+    keywords: [cache, kv, memorystore]
+    slo_threshold: 10485760
+    related_metrics:
+      - "redis.googleapis.com/replication/master/slaves/lag"
+      - "redis.googleapis.com/stats/cpu_utilization_main_thread"
+
+  "redis.googleapis.com/replication/master/slaves/lag":
+    kind: freshness
+    unit: seconds
+    better_direction: down
+    keywords: [cache, kv, memorystore]
+    slo_threshold: 10
+    related_metrics:
+      - "redis.googleapis.com/replication/offset_diff"
+      - "redis.googleapis.com/stats/cpu_utilization_main_thread"
+
+  "redis.googleapis.com/server/uptime":
+    kind: availability
+    unit: seconds
+    better_direction: up
+    keywords: [cache, kv, memorystore]
+    related_metrics:
+      - "redis.googleapis.com/stats/memory/usage_ratio"
+      - "redis.googleapis.com/stats/memory/system_memory_overload_duration"
+
+  # =========================================================================
+  # MEMORYSTORE FOR MEMCACHED (memcache_node)
+  # =========================================================================
+
+  "memcache.googleapis.com/node/cpu/utilization":
+    kind: resource_utilization
+    unit: ratio
+    better_direction: down
+    keywords: [cache, kv, memorystore]
+    saturation_cap: 1.0
+    slo_threshold: 0.80
+    related_metrics:
+      - "memcache.googleapis.com/node/operation_count"
+      - "memcache.googleapis.com/node/active_connections"
+      - "memcache.googleapis.com/node/cpu/usage_time"
+
+  "memcache.googleapis.com/node/cpu/usage_time":
+    # CPU seconds by user/kernel mode. Cumulative view of CPU pressure.
+    kind: resource_utilization
+    unit: seconds
+    better_direction: none
+    keywords: [cache, kv, memorystore]
+    related_metrics:
+      - "memcache.googleapis.com/node/cpu/utilization"
+      - "memcache.googleapis.com/node/operation_count"
+
+  "memcache.googleapis.com/node/memory/utilization":
+    kind: resource_utilization
+    unit: ratio
+    better_direction: down
+    keywords: [cache, kv, memorystore]
+    saturation_cap: 1.0
+    slo_threshold: 0.85
+    related_metrics:
+      - "memcache.googleapis.com/node/cache_memory"
+      - "memcache.googleapis.com/node/eviction_count"
+      - "memcache.googleapis.com/node/items"
+
+  "memcache.googleapis.com/node/hit_ratio":
+    kind: business_kpi
+    unit: ratio
+    better_direction: up
+    keywords: [cache, kv, memorystore]
+    slo_threshold: 0.90
+    related_metrics:
+      - "memcache.googleapis.com/node/eviction_count"
+      - "memcache.googleapis.com/node/memory/utilization"
+      - "memcache.googleapis.com/node/operation_count"
+    # Ratio metric: see cache_hit_ratio above — summing hit ratios across
+    # nodes is meaningless. Override business_kpi default (sum) with mean.
+    aggregation:
+      across_groups: mean
+
+  "memcache.googleapis.com/node/cache_memory":
+    kind: saturation
+    unit: bytes
+    better_direction: down
+    keywords: [cache, kv, memorystore]
+    related_metrics:
+      - "memcache.googleapis.com/node/memory/utilization"
+      - "memcache.googleapis.com/node/items"
+      - "memcache.googleapis.com/node/eviction_count"
+
+  "memcache.googleapis.com/node/items":
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [cache, kv, memorystore]
+    related_metrics:
+      - "memcache.googleapis.com/node/cache_memory"
+      - "memcache.googleapis.com/node/memory/utilization"
+      - "memcache.googleapis.com/node/eviction_count"
+
+  "memcache.googleapis.com/node/eviction_count":
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [cache, kv, memorystore]
+    slo_threshold: 0
+    related_metrics:
+      - "memcache.googleapis.com/node/memory/utilization"
+      - "memcache.googleapis.com/node/hit_ratio"
+      - "memcache.googleapis.com/node/cache_memory"
+
+  "memcache.googleapis.com/node/active_connections":
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [cache, kv, memorystore]
+    related_metrics:
+      - "memcache.googleapis.com/node/operation_count"
+      - "memcache.googleapis.com/node/cpu/utilization"
+
+  "memcache.googleapis.com/node/operation_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [cache, kv, memorystore]
+    related_metrics:
+      - "memcache.googleapis.com/node/cpu/utilization"
+      - "memcache.googleapis.com/node/hit_ratio"
+      - "memcache.googleapis.com/node/active_connections"
+
+  "memcache.googleapis.com/node/received_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [cache, kv, memorystore]
+    related_metrics:
+      - "memcache.googleapis.com/node/sent_bytes_count"
+      - "memcache.googleapis.com/node/operation_count"
+
+  "memcache.googleapis.com/node/sent_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [cache, kv, memorystore]
+    related_metrics:
+      - "memcache.googleapis.com/node/received_bytes_count"
+      - "memcache.googleapis.com/node/operation_count"
+
+  "memcache.googleapis.com/node/uptime":
+    kind: availability
+    unit: seconds
+    better_direction: up
+    keywords: [cache, kv, memorystore]
+    related_metrics:
+      - "memcache.googleapis.com/node/cpu/utilization"
+      - "memcache.googleapis.com/node/memory/utilization"
+
+  # =========================================================================
+  # CLOUD KMS (cloudkms.googleapis.com/CryptoKey + quota)
+  # Most KMS traffic shows under serviceruntime/api/request_count filtered
+  # by service="cloudkms.googleapis.com". Direct KMS metrics are limited.
+  # =========================================================================
+
+  "cloudkms.googleapis.com/peak_qps":
+    # Project-wide peak crypto ops per second. Default KMS quota is 60k qps.
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [encryption, keys, crypto, kms]
+    slo_threshold: 30000
+    related_metrics:
+      - "cloudkms.googleapis.com/quota/hsm_multiregion_symmetric_requests/exceeded"
+      - "cloudkms.googleapis.com/quota/hsm_multiregion_asymmetric_requests/exceeded"
+
+  "cloudkms.googleapis.com/ekm/external/request_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [encryption, keys, crypto, kms]
+    related_metrics:
+      - "cloudkms.googleapis.com/ekm/external/request_latencies"
+      - "cloudkms.googleapis.com/quota/external_kms_multiregion_requests/exceeded"
+
+  "cloudkms.googleapis.com/ekm/external/request_latencies":
+    kind: latency
+    unit: milliseconds
+    better_direction: down
+    keywords: [encryption, keys, crypto, kms]
+    slo_threshold: 500
+    related_metrics:
+      - "cloudkms.googleapis.com/ekm/external/request_count"
+      - "cloudkms.googleapis.com/quota/external_kms_multiregion_requests/exceeded"
+
+  "cloudkms.googleapis.com/quota/hsm_multiregion_symmetric_requests/exceeded":
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [encryption, keys, crypto, kms]
+    slo_threshold: 0
+    related_metrics:
+      - "cloudkms.googleapis.com/peak_qps"
+      - "cloudkms.googleapis.com/quota/hsm_multiregion_asymmetric_requests/exceeded"
+
+  "cloudkms.googleapis.com/quota/hsm_multiregion_asymmetric_requests/exceeded":
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [encryption, keys, crypto, kms]
+    slo_threshold: 0
+    related_metrics:
+      - "cloudkms.googleapis.com/peak_qps"
+      - "cloudkms.googleapis.com/quota/hsm_multiregion_symmetric_requests/exceeded"
+
+  "cloudkms.googleapis.com/quota/external_kms_multiregion_requests/exceeded":
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [encryption, keys, crypto, kms]
+    slo_threshold: 0
+    related_metrics:
+      - "cloudkms.googleapis.com/ekm/external/request_count"
+      - "cloudkms.googleapis.com/ekm/external/request_latencies"
+
+  # =========================================================================
+  # CLOUD BUILD (cloudbuild.googleapis.com/Location + quota)
+  # Note: Cloud Build does NOT publish build count/duration as monitoring
+  # metrics. Build telemetry has to come from audit logs or the Cloud Build
+  # API. Only quota metrics are exposed directly.
+  # =========================================================================
+
+  "cloudbuild.googleapis.com/quota/concurrent_public_pool_build_cpus/usage":
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [ci, cd, build, pipeline]
+    related_metrics:
+      - "cloudbuild.googleapis.com/quota/concurrent_public_pool_build_cpus/limit"
+      - "cloudbuild.googleapis.com/quota/concurrent_public_pool_build_cpus/exceeded"
+
+  "cloudbuild.googleapis.com/quota/concurrent_public_pool_build_cpus/limit":
+    kind: resource_utilization
+    unit: count
+    better_direction: none
+    keywords: [ci, cd, build, pipeline]
+    related_metrics:
+      - "cloudbuild.googleapis.com/quota/concurrent_public_pool_build_cpus/usage"
+      - "cloudbuild.googleapis.com/quota/concurrent_public_pool_build_cpus/exceeded"
+
+  "cloudbuild.googleapis.com/quota/concurrent_public_pool_build_cpus/exceeded":
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [ci, cd, build, pipeline]
+    slo_threshold: 0
+    related_metrics:
+      - "cloudbuild.googleapis.com/quota/concurrent_public_pool_build_cpus/usage"
+      - "cloudbuild.googleapis.com/quota/concurrent_public_pool_build_cpus/limit"
+
+  "cloudbuild.googleapis.com/quota/concurrent_private_pool_build_cpus/usage":
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [ci, cd, build, pipeline]
+    related_metrics:
+      - "cloudbuild.googleapis.com/quota/concurrent_private_pool_build_cpus/exceeded"
+
+  "cloudbuild.googleapis.com/quota/concurrent_private_pool_build_cpus/exceeded":
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [ci, cd, build, pipeline]
+    slo_threshold: 0
+    related_metrics:
+      - "cloudbuild.googleapis.com/quota/concurrent_private_pool_build_cpus/usage"
+
+  # =========================================================================
+  # ARTIFACT REGISTRY (artifactregistry.googleapis.com/Repository)
+  # =========================================================================
+
+  "artifactregistry.googleapis.com/repository/size":
+    kind: saturation
+    unit: bytes
+    better_direction: down
+    keywords: [registry, artifacts, packages, docker, images]
+    related_metrics:
+      - "artifactregistry.googleapis.com/repository/request_count"
+
+  "artifactregistry.googleapis.com/project/request_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [registry, artifacts, packages, docker, images]
+    related_metrics:
+      - "artifactregistry.googleapis.com/project/request_latencies"
+      - "artifactregistry.googleapis.com/project/api/request_count"
+
+  "artifactregistry.googleapis.com/project/request_latencies":
+    # Note: unit is microseconds, not ms.
+    kind: latency
+    unit: microseconds
+    better_direction: down
+    keywords: [registry, artifacts, packages, docker, images]
+    slo_threshold: 2000000
+    related_metrics:
+      - "artifactregistry.googleapis.com/project/request_count"
+      - "artifactregistry.googleapis.com/project/api/request_latencies"
+
+  "artifactregistry.googleapis.com/project/api/request_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [registry, artifacts, packages, docker, images]
+    related_metrics:
+      - "artifactregistry.googleapis.com/project/api/request_latencies"
+      - "artifactregistry.googleapis.com/project/request_count"
+
+  "artifactregistry.googleapis.com/project/api/request_latencies":
+    kind: latency
+    unit: microseconds
+    better_direction: down
+    keywords: [registry, artifacts, packages, docker, images]
+    slo_threshold: 500000
+    related_metrics:
+      - "artifactregistry.googleapis.com/project/api/request_count"
+      - "artifactregistry.googleapis.com/project/request_latencies"
+
+  "artifactregistry.googleapis.com/repository/request_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [registry, artifacts, packages, docker, images]
+    related_metrics:
+      - "artifactregistry.googleapis.com/repository/request_latencies"
+      - "artifactregistry.googleapis.com/repository/size"
+
+  "artifactregistry.googleapis.com/repository/request_latencies":
+    kind: latency
+    unit: microseconds
+    better_direction: down
+    keywords: [registry, artifacts, packages, docker, images]
+    slo_threshold: 2000000
+    related_metrics:
+      - "artifactregistry.googleapis.com/repository/request_count"
+      - "artifactregistry.googleapis.com/project/request_latencies"
+
+  # =========================================================================
+  # VERTEX AI (aiplatform.googleapis.com/Endpoint + PublisherModel)
+  # =========================================================================
+
+  "aiplatform.googleapis.com/prediction/online/prediction_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [ml, ai, vertex, model, inference]
+    related_metrics:
+      - "aiplatform.googleapis.com/prediction/online/error_count"
+      - "aiplatform.googleapis.com/prediction/online/prediction_latencies"
+
+  "aiplatform.googleapis.com/prediction/online/error_count":
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [ml, ai, vertex, model, inference]
+    related_metrics:
+      - "aiplatform.googleapis.com/prediction/online/prediction_count"
+      - "aiplatform.googleapis.com/prediction/online/prediction_latencies"
+      - "aiplatform.googleapis.com/prediction/online/response_count"
+
+  "aiplatform.googleapis.com/prediction/online/prediction_latencies":
+    kind: latency
+    unit: milliseconds
+    better_direction: down
+    keywords: [ml, ai, vertex, model, inference]
+    slo_threshold: 1000
+    related_metrics:
+      - "aiplatform.googleapis.com/prediction/online/prediction_count"
+      - "aiplatform.googleapis.com/prediction/online/cpu/utilization"
+      - "aiplatform.googleapis.com/prediction/online/replicas"
+
+  "aiplatform.googleapis.com/prediction/online/response_count":
+    # Labeled by response_code.
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [ml, ai, vertex, model, inference]
+    related_metrics:
+      - "aiplatform.googleapis.com/prediction/online/prediction_count"
+      - "aiplatform.googleapis.com/prediction/online/error_count"
+
+  "aiplatform.googleapis.com/prediction/online/replicas":
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [ml, ai, vertex, model, inference]
+    related_metrics:
+      - "aiplatform.googleapis.com/prediction/online/target_replicas"
+      - "aiplatform.googleapis.com/prediction/online/cpu/utilization"
+      - "aiplatform.googleapis.com/prediction/online/prediction_count"
+
+  "aiplatform.googleapis.com/prediction/online/target_replicas":
+    kind: saturation
+    unit: count
+    better_direction: down
+    keywords: [ml, ai, vertex, model, inference]
+    related_metrics:
+      - "aiplatform.googleapis.com/prediction/online/replicas"
+      - "aiplatform.googleapis.com/prediction/online/cpu/utilization"
+
+  "aiplatform.googleapis.com/prediction/online/cpu/utilization":
+    kind: resource_utilization
+    unit: ratio
+    better_direction: down
+    keywords: [ml, ai, vertex, model, inference]
+    saturation_cap: 1.0
+    slo_threshold: 0.80
+    related_metrics:
+      - "aiplatform.googleapis.com/prediction/online/memory/bytes_used"
+      - "aiplatform.googleapis.com/prediction/online/replicas"
+      - "aiplatform.googleapis.com/prediction/online/prediction_latencies"
+
+  "aiplatform.googleapis.com/prediction/online/memory/bytes_used":
+    kind: resource_utilization
+    unit: bytes
+    better_direction: none
+    keywords: [ml, ai, vertex, model, inference]
+    related_metrics:
+      - "aiplatform.googleapis.com/prediction/online/cpu/utilization"
+      - "aiplatform.googleapis.com/prediction/online/replicas"
+
+  "aiplatform.googleapis.com/prediction/online/accelerator/duty_cycle":
+    kind: resource_utilization
+    unit: ratio
+    better_direction: down
+    keywords: [ml, ai, vertex, model, inference]
+    saturation_cap: 1.0
+    slo_threshold: 0.90
+    related_metrics:
+      - "aiplatform.googleapis.com/prediction/online/prediction_count"
+      - "aiplatform.googleapis.com/prediction/online/prediction_latencies"
+      - "aiplatform.googleapis.com/prediction/online/replicas"
+
+  "aiplatform.googleapis.com/prediction/online/network/received_bytes_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [ml, ai, vertex, model, inference]
+    related_metrics:
+      - "aiplatform.googleapis.com/prediction/online/prediction_count"
+      - "aiplatform.googleapis.com/prediction/online/response_count"
+
+  "aiplatform.googleapis.com/publisher/online_serving/model_invocation_count":
+    # Publisher models = Gemini, PaLM, etc.
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [ml, ai, vertex, model, inference]
+    related_metrics:
+      - "aiplatform.googleapis.com/publisher/online_serving/model_invocation_latencies"
+      - "aiplatform.googleapis.com/publisher/online_serving/token_count"
+      - "aiplatform.googleapis.com/publisher/online_serving/first_token_latencies"
+
+  "aiplatform.googleapis.com/publisher/online_serving/model_invocation_latencies":
+    kind: latency
+    unit: milliseconds
+    better_direction: down
+    keywords: [ml, ai, vertex, model, inference]
+    slo_threshold: 5000
+    related_metrics:
+      - "aiplatform.googleapis.com/publisher/online_serving/model_invocation_count"
+      - "aiplatform.googleapis.com/publisher/online_serving/first_token_latencies"
+      - "aiplatform.googleapis.com/publisher/online_serving/token_count"
+
+  "aiplatform.googleapis.com/publisher/online_serving/first_token_latencies":
+    # Time-to-first-token — critical SLI for streaming LLM serving.
+    kind: latency
+    unit: milliseconds
+    better_direction: down
+    keywords: [ml, ai, vertex, model, inference]
+    slo_threshold: 1500
+    related_metrics:
+      - "aiplatform.googleapis.com/publisher/online_serving/model_invocation_latencies"
+      - "aiplatform.googleapis.com/publisher/online_serving/model_invocation_count"
+
+  "aiplatform.googleapis.com/publisher/online_serving/token_count":
+    kind: business_kpi
+    unit: count
+    better_direction: none
+    keywords: [ml, ai, vertex, model, inference]
+    related_metrics:
+      - "aiplatform.googleapis.com/publisher/online_serving/model_invocation_count"
+      - "aiplatform.googleapis.com/publisher/online_serving/model_invocation_latencies"
+
+  # =========================================================================
+  # CLOUD LOGGING (logging.googleapis.com — billing, ingestion, exports)
+  # =========================================================================
+
+  "logging.googleapis.com/billing/bytes_ingested":
+    # Cost proxy. 10 GiB/day threshold is a starter — adjust for your scale.
+    kind: business_kpi
+    unit: bytes
+    better_direction: down
+    keywords: [logs, observability]
+    related_metrics:
+      - "logging.googleapis.com/log_entry_count"
+      - "logging.googleapis.com/byte_count"
+      - "logging.googleapis.com/billing/monthly_bytes_ingested"
+
+  "logging.googleapis.com/billing/monthly_bytes_ingested":
+    kind: business_kpi
+    unit: bytes
+    better_direction: down
+    keywords: [logs, observability]
+    related_metrics:
+      - "logging.googleapis.com/billing/bytes_ingested"
+      - "logging.googleapis.com/billing/bytes_stored"
+
+  "logging.googleapis.com/billing/log_bucket_bytes_ingested":
+    kind: business_kpi
+    unit: bytes
+    better_direction: none
+    keywords: [logs, observability]
+    related_metrics:
+      - "logging.googleapis.com/billing/log_bucket_monthly_bytes_ingested"
+      - "logging.googleapis.com/billing/bytes_ingested"
+
+  "logging.googleapis.com/billing/log_bucket_monthly_bytes_ingested":
+    kind: business_kpi
+    unit: bytes
+    better_direction: none
+    keywords: [logs, observability]
+    related_metrics:
+      - "logging.googleapis.com/billing/log_bucket_bytes_ingested"
+      - "logging.googleapis.com/billing/bytes_stored"
+
+  "logging.googleapis.com/billing/bytes_stored":
+    kind: business_kpi
+    unit: bytes
+    better_direction: none
+    keywords: [logs, observability]
+    related_metrics:
+      - "logging.googleapis.com/billing/monthly_bytes_ingested"
+      - "logging.googleapis.com/billing/bytes_ingested"
+
+  "logging.googleapis.com/byte_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [logs, observability]
+    related_metrics:
+      - "logging.googleapis.com/log_entry_count"
+      - "logging.googleapis.com/billing/bytes_ingested"
+      - "logging.googleapis.com/exports/byte_count"
+
+  "logging.googleapis.com/log_entry_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [logs, observability]
+    related_metrics:
+      - "logging.googleapis.com/byte_count"
+      - "logging.googleapis.com/exports/log_entry_count"
+      - "logging.googleapis.com/billing/bytes_ingested"
+
+  "logging.googleapis.com/exports/byte_count":
+    kind: throughput
+    unit: bytes
+    better_direction: none
+    keywords: [logs, observability]
+    related_metrics:
+      - "logging.googleapis.com/exports/log_entry_count"
+      - "logging.googleapis.com/exports/error_count"
+      - "logging.googleapis.com/byte_count"
+
+  "logging.googleapis.com/exports/log_entry_count":
+    kind: throughput
+    unit: count
+    better_direction: none
+    keywords: [logs, observability]
+    related_metrics:
+      - "logging.googleapis.com/exports/byte_count"
+      - "logging.googleapis.com/exports/error_count"
+      - "logging.googleapis.com/log_entry_count"
+
+  "logging.googleapis.com/exports/error_count":
+    # Sink export failures — silent data loss risk.
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [logs, observability]
+    slo_threshold: 0
+    related_metrics:
+      - "logging.googleapis.com/exports/byte_count"
+      - "logging.googleapis.com/exports/log_entry_count"
+
+  "logging.googleapis.com/logs_based_metrics_error_count":
+    kind: error_rate
+    unit: count
+    better_direction: down
+    keywords: [logs, observability]
+    slo_threshold: 0
+    related_metrics:
+      - "logging.googleapis.com/metric_throttled"
+      - "logging.googleapis.com/log_entry_count"
+
+  "logging.googleapis.com/metric_throttled":
+    # BOOL: 1 when logs-based metric is throttled due to cardinality.
+    kind: saturation
+    unit: bool
+    better_direction: down
+    keywords: [logs, observability]
+    slo_threshold: 0
+    related_metrics:
+      - "logging.googleapis.com/logs_based_metrics_error_count"
+      - "logging.googleapis.com/log_entry_count"

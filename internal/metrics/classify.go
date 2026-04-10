@@ -2,10 +2,8 @@ package metrics
 
 import "math"
 
-// Classification represents a metric behavior classification.
 type Classification string
 
-// Classification constants.
 const (
 	ClassStable              Classification = "stable"
 	ClassNoisy               Classification = "noisy"
@@ -14,36 +12,111 @@ const (
 	ClassSustainedRegression Classification = "sustained_regression"
 	ClassRecovery            Classification = "recovery"
 	ClassSaturation          Classification = "saturation"
+	// ClassImprovement: favorable delta continuing to improve (post-deploy signal).
+	ClassImprovement Classification = "improvement"
+	// ClassFlapping: repeatedly crosses SLO threshold back and forth.
+	ClassFlapping Classification = "flapping"
+	// ClassInsufficientData: too sparse or unreliable baseline; cannot classify.
+	ClassInsufficientData Classification = "insufficient_data"
+	// ClassNotComputed is the zero value for Classification, returned when
+	// ProcessWithBaselineStats is called with an empty points slice.
+	// Distinct from ClassInsufficientData, which means "data exists but is
+	// too sparse to trust" — ClassNotComputed means "no data at all, no
+	// computation was attempted". Tool handlers should detect this via the
+	// NoData path before calling Process, so this sentinel should never
+	// appear in tool output.
+	ClassNotComputed Classification = ""
 )
 
 // IsValid returns true if the Classification is one of the defined constants.
 func (c Classification) IsValid() bool {
 	switch c {
 	case ClassStable, ClassNoisy, ClassSpike, ClassStepRegression,
-		ClassSustainedRegression, ClassRecovery, ClassSaturation:
+		ClassSustainedRegression, ClassRecovery, ClassSaturation,
+		ClassImprovement, ClassFlapping, ClassInsufficientData:
 		return true
 	}
 	return false
 }
 
+// isDeltaBased: true if classification depends on baseline comparison.
+// Excludes saturation (direct capacity), stable (lowest-severity), and
+// flapping (pure current-window signal based on SLO threshold crossings).
+func (c Classification) isDeltaBased() bool {
+	switch c {
+	case ClassSpike, ClassStepRegression, ClassSustainedRegression,
+		ClassRecovery, ClassImprovement:
+		return true
+	}
+	return false
+}
+
+// flappingTransitionRate is the minimum fraction of points that must be
+// threshold crossings to be classified as flapping. For a 60-point window
+// this means at least 9 transitions — roughly a crossing every ~7 minutes
+// at a 60s step, which is unambiguously oscillating behavior.
+const flappingTransitionRate = 0.15
+
+// flappingBreachRatioMin / flappingBreachRatioMax bracket the window of
+// breach ratios that count as flapping. Outside this band the metric is
+// either mostly healthy (recovery candidate) or mostly breached (sustained
+// regression candidate).
+const (
+	flappingBreachRatioMin = 0.15
+	flappingBreachRatioMax = 0.85
+)
+
 // Classify applies a deterministic decision tree to produce a classification.
+//
+// After the decision tree runs, a final data-quality pass downgrades
+// regression-like classifications when the underlying data cannot support
+// them:
+//   - if the current window is unreliable (gaps, too few points) → noisy;
+//   - if the baseline is unreliable and delta is the main evidence →
+//     drop to stable, because |DeltaPct| computed against a flimsy baseline
+//     cannot be trusted.
+//
+// This turns ambiguous "looks like a regression" signals into an honest
+// "we don't have enough data to say" rather than false-positive alerts.
 func Classify(f *SignalFeatures, meta MetricMeta) Classification {
 	thr := meta.EffectiveThresholds()
 	absDelta := math.Abs(f.DeltaPct)
 	degrading := isDegrading(f.DeltaPct, meta.BetterDirection)
 
+	class := classifyCore(f, meta, thr, absDelta, degrading)
+	return applyReliabilityDowngrade(class, f)
+}
+
+// classifyCore is the pure decision tree that looks only at the signal
+// features. The reliability-aware downgrade is applied separately.
+func classifyCore(f *SignalFeatures, meta MetricMeta, thr ClassificationThresholds, absDelta float64, degrading bool) Classification {
 	// 1. Saturation.
 	if f.SaturationDetected {
 		return ClassSaturation
 	}
 
 	// 2. Spike: short burst, not sustained.
-	// SpikeRatio < 0.15: burst affects <15% of points. absDelta < 20: overall deviation is moderate.
+	// SpikeRatio < 0.15: burst affects <15% of points.
+	// absDelta < 20: overall deviation is moderate (spike has not shifted the mean much).
 	if f.MaxZScore >= thr.SpikeZScore && f.SpikeRatio < 0.15 && absDelta < 20 {
 		return ClassSpike
 	}
 
-	// 3. No significant deviation.
+	// 3. Flapping: metric oscillates across the SLO threshold. Orthogonal
+	// to delta — a flapping metric can have a near-zero mean delta while
+	// still crossing the threshold repeatedly. Gated on an actual SLO
+	// being configured and on enough total points for the transition rate
+	// to be meaningful.
+	if meta.SLOThreshold != nil && f.DataQuality.ActualPoints >= 10 {
+		transitionRate := float64(f.BreachTransitions) / float64(f.DataQuality.ActualPoints)
+		if transitionRate >= flappingTransitionRate &&
+			f.BreachRatio >= flappingBreachRatioMin &&
+			f.BreachRatio <= flappingBreachRatioMax {
+			return ClassFlapping
+		}
+	}
+
+	// 4. No significant deviation.
 	if absDelta < thr.SignificantDeltaPct {
 		if f.CV > thr.CVForNoisy {
 			return ClassNoisy
@@ -53,39 +126,90 @@ func Classify(f *SignalFeatures, meta MetricMeta) Classification {
 
 	// Beyond this point: absDelta >= significant threshold.
 
-	// 4. Recovery: trend is moving back toward baseline after a significant deviation.
-	// The trend must oppose the delta direction (i.e. trending toward baseline, not away).
-	// Recovery applies even when the metric is still in a degraded state — what matters
-	// is that the trend direction indicates it is returning toward baseline.
-	isReturningToBaseline := (f.DeltaPct > 0 && f.TrendScore < -0.02) ||
-		(f.DeltaPct < 0 && f.TrendScore > 0.02)
-	if f.BreachRatio < 0.2 && isReturningToBaseline {
-		return ClassRecovery
+	// 5. Recovery: trend is moving back toward baseline after a significant deviation.
+	// Requires both an active SLO (so BreachRatio is meaningful) AND a trend
+	// strong enough to oppose the delta. Without an SLO, BreachRatio is
+	// always 0 and this branch would fire on any ordinary direction reversal.
+	if meta.SLOThreshold != nil && f.BreachRatio < 0.2 {
+		isReturningToBaseline := (f.DeltaPct > 0 && f.TrendScore < -TrendFlatBand) ||
+			(f.DeltaPct < 0 && f.TrendScore > TrendFlatBand)
+		if isReturningToBaseline {
+			return ClassRecovery
+		}
 	}
 
-	// 5. Step regression: sudden level shift.
-	// CV < 0.35: signal is stable enough to detect a real shift (relaxed from 0.25 to reduce false positives on noisy-but-real steps).
-	if math.Abs(f.StepChangePct) > 20 && f.CV < 0.35 && f.BreachRatio > thr.BreachRatioForRegress {
+	// 6. Step regression: sudden level shift.
+	// StepChangeDetected already enforces the kind-scaled step threshold
+	// (2 * SignificantDeltaPct) inside the processor; here we only gate
+	// on noise level and whether the SLO is being breached often enough.
+	if f.StepChangeDetected && f.CV < 0.35 && f.BreachRatio > thr.BreachRatioForRegress {
 		return ClassStepRegression
 	}
 
-	// 6. Sustained regression: slow steady degradation.
-	if degrading && f.BreachRatio > thr.BreachRatioForRegress && math.Abs(f.TrendScore) > 0.02 {
+	// 7. Sustained regression: slow steady degradation.
+	if degrading && f.BreachRatio > thr.BreachRatioForRegress && math.Abs(f.TrendScore) > TrendStrongBand {
 		return ClassSustainedRegression
 	}
 
-	// 7. High noise with significant deviation.
-	// Higher bar than CVForNoisy (above): catches cases where delta is significant but signal is too unreliable to classify as regression.
+	// 8. Improvement: mirror of sustained_regression. Significant delta in
+	// the favorable direction, trend continuing in that direction, and
+	// (if an SLO is configured) we are not currently breaching it. For
+	// DirectionNone metrics "improvement" is not defined.
+	if !degrading && meta.BetterDirection != DirectionNone {
+		favorableTrend := (meta.BetterDirection == DirectionDown && f.TrendScore < -TrendStrongBand) ||
+			(meta.BetterDirection == DirectionUp && f.TrendScore > TrendStrongBand)
+		if favorableTrend && f.BreachRatio < 0.2 {
+			return ClassImprovement
+		}
+	}
+
+	// 9. High noise with significant deviation.
+	// Higher bar than CVForNoisy: catches cases where delta is significant
+	// but signal is too unreliable to classify as regression.
 	if f.CV > 0.4 {
 		return ClassNoisy
 	}
 
-	// 8. Default for significant degradation without clear pattern.
+	// 10. Default for significant degradation without clear pattern.
 	if degrading {
 		return ClassStepRegression
 	}
 
 	return ClassStable
+}
+
+// applyReliabilityDowngrade drops delta-based classifications when the
+// underlying data is too sparse or gap-ridden to support them. Saturation
+// and stable are never downgraded: saturation is a direct capacity
+// measurement, stable is already the lowest-severity label.
+//
+// The downgrade target is ClassInsufficientData rather than noisy/stable
+// so the caller can distinguish "metric is genuinely flaky" (noisy) from
+// "we don't have enough data to judge" (insufficient_data). Noisy is still
+// returned for the core decision when CV is high — that is real noise, not
+// a data gap.
+func applyReliabilityDowngrade(class Classification, f *SignalFeatures) Classification {
+	if class == ClassSaturation {
+		return class
+	}
+
+	// The current window itself is unreliable (gap-ridden or too sparse).
+	// We cannot distinguish a real regression from missing data, so any
+	// delta-based verdict becomes insufficient_data. Flapping also requires
+	// a reliable current window to count transitions meaningfully.
+	if !f.DataQuality.Reliable && (class.isDeltaBased() || class == ClassFlapping) {
+		return ClassInsufficientData
+	}
+
+	// The baseline is too thin to trust — we can see the current window
+	// but cannot compare it against history confidently. Flapping does not
+	// depend on the baseline (it only looks at SLO threshold crossings in
+	// the current window), so it is not affected here.
+	if !f.BaselineReliable && class.isDeltaBased() {
+		return ClassInsufficientData
+	}
+
+	return class
 }
 
 // isDegrading returns true if the delta direction is unfavorable.

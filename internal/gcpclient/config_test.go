@@ -2,6 +2,8 @@ package gcpclient
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestConfigValidate(t *testing.T) {
@@ -49,8 +51,10 @@ func TestConfigValidate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.config.Validate()
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
 			}
 		})
 	}

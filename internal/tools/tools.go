@@ -2,87 +2,175 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
+	"os"
+	"sync/atomic"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
+	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
 
+// Logging level constants for MCP log notifications.
+const (
+	logLevelWarning mcp.LoggingLevel = "warning"
+	logLevelError   mcp.LoggingLevel = "error"
+)
+
+// notifyErrLog is used to log dropped MCP notification errors. Defaults to
+// stderr; call SetNotifyLogger at server startup to route to the configured
+// errOut writer instead. atomic.Pointer ensures SetNotifyLogger is safe to
+// call concurrently with in-flight tool handlers.
+var notifyErrLog atomic.Pointer[log.Logger]
+
+func init() {
+	notifyErrLog.Store(log.New(os.Stderr, "[mcp-gcp-observability] ", log.LstdFlags))
+}
+
+// SetNotifyLogger configures where notification-drop errors are written.
+// Safe to call concurrently with tool handlers.
+func SetNotifyLogger(l *log.Logger) { notifyErrLog.Store(l) }
+
 // sendProgress sends a progress notification if the request includes a progress token.
-func sendProgress(ctx context.Context, request mcp.CallToolRequest, progress, total float64, message string) {
-	token := progressToken(request)
+func sendProgress(ctx context.Context, req *mcp.CallToolRequest, progress, total float64, message string) {
+	if req == nil || req.Session == nil || req.Params == nil {
+		return
+	}
+	token := req.Params.GetProgressToken()
 	if token == nil {
 		return
 	}
-	srv := server.ServerFromContext(ctx)
-	if srv == nil {
-		return
+	if err := req.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{
+		ProgressToken: token,
+		Progress:      progress,
+		Total:         total,
+		Message:       message,
+	}); err != nil {
+		notifyErrLog.Load().Printf("progress notification dropped: %v", err)
 	}
-	_ = srv.SendNotificationToClient(ctx, "notifications/progress", map[string]any{
-		"progressToken": token,
-		"progress":      progress,
-		"total":         total,
-		"message":       message,
-	})
-}
-
-// progressToken extracts the progress token from a request, or nil if not present.
-func progressToken(request mcp.CallToolRequest) mcp.ProgressToken {
-	if request.Params.Meta == nil {
-		return nil
-	}
-	return request.Params.Meta.ProgressToken
 }
 
 // mcpLog sends a structured log message via MCP logging notification.
-func mcpLog(ctx context.Context, level mcp.LoggingLevel, logger string, data any) {
-	srv := server.ServerFromContext(ctx)
-	if srv == nil {
+func mcpLog(ctx context.Context, req *mcp.CallToolRequest, level mcp.LoggingLevel, logger string, data any) {
+	if req == nil || req.Session == nil {
+		notifyErrLog.Load().Printf("[%s] %s: %v (no session)", level, logger, data)
 		return
 	}
-	_ = srv.SendLogMessageToClient(ctx, mcp.NewLoggingMessageNotification(level, logger, data))
-}
-
-// Handler defines the interface for MCP tool handlers.
-type Handler interface {
-	Tool() mcp.Tool
-	Handle(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error)
-}
-
-// RegisterTools registers all handlers with the MCP server.
-func RegisterTools(s *server.MCPServer, handlers []Handler) {
-	for _, h := range handlers {
-		s.AddTool(h.Tool(), h.Handle)
+	if err := req.Session.Log(ctx, &mcp.LoggingMessageParams{
+		Level:  level,
+		Logger: logger,
+		Data:   data,
+	}); err != nil {
+		notifyErrLog.Load().Printf("log notification dropped (level=%s logger=%s): %v", level, logger, err)
 	}
 }
 
-// newToolWithTimeFilter creates a tool with start_time and end_time parameters appended.
-func newToolWithTimeFilter(name string, opts ...mcp.ToolOption) mcp.Tool {
-	opts = append(opts,
-		mcp.WithString("start_time",
-			mcp.Description("Start of time range in RFC3339 format (e.g. '2025-01-15T00:00:00Z'). Defaults to 24 hours ago, or 24 hours before end_time if only end_time is provided."),
-		),
-		mcp.WithString("end_time",
-			mcp.Description("End of time range in RFC3339 format (e.g. '2025-01-15T23:59:59Z'). If omitted, only the start bound is applied (open-ended towards now)."),
-		),
-	)
-	return mcp.NewTool(name, opts...)
+// logAggregationWarnings forwards non-fatal AggregationWarnings to the client.
+// Helps operators spot registry typos and sparse coverage. windowLabel
+// distinguishes current/baseline/windowA/windowB sites.
+func logAggregationWarnings(ctx context.Context, req *mcp.CallToolRequest, logger, metricType, windowLabel string, warnings gcpdata.AggregationWarnings) {
+	for _, msg := range aggregationWarningMessages(metricType, windowLabel, warnings) {
+		mcpLog(ctx, req, logLevelWarning, logger, msg)
+	}
 }
 
-// buildTimeFilter constructs a Cloud Logging timestamp filter from request params.
-// Returns the timestamp portion of a Cloud Logging filter, e.g. `timestamp>="..." timestamp<="..."`
-// joined by newline (implicit AND).
-// When neither start_time nor end_time is specified, defaults start_time to 24h ago (open-ended towards now).
-// When only end_time is given, start_time defaults to 24h before end_time.
-// Returns an error if end_time is not after start_time.
-func buildTimeFilter(request mcp.CallToolRequest) (string, error) {
-	startTime := request.GetString("start_time", "")
-	endTime := request.GetString("end_time", "")
+// aggregationWarningMessages returns warning messages from AggregationWarnings.
+// Pure function; testable without an MCP server context.
+func aggregationWarningMessages(metricType, windowLabel string, warnings gcpdata.AggregationWarnings) []string {
+	if !warnings.HasAny() {
+		return nil
+	}
+	var msgs []string
+	if warnings.TruncatedSeries {
+		msgs = append(msgs, fmt.Sprintf(
+			"metric %q (%s): query hit the server-side time-series cap (%d series) and the result is truncated; aggregates are computed from a partial set of series only. Narrow the filter or group cardinality before trusting the numbers.",
+			metricType, windowLabel, gcpdata.MaxTimeSeries))
+	}
+	if warnings.SingleGroup {
+		msgs = append(msgs, fmt.Sprintf(
+			"metric %q (%s): two-stage aggregation returned %d group(s) — verify the configured group_by label actually exists on this metric (registry typo produces this symptom). The fold is mathematically safe but operators should re-check the registry entry.",
+			metricType, windowLabel, warnings.GroupCount))
+	}
+	// Report departed groups (structural issue) before carry-forward (transient gap).
+	if warnings.DepartedGroupBuckets > 0 {
+		msgs = append(msgs, fmt.Sprintf(
+			"metric %q (%s): %d of %d folded buckets dropped at least one departed group (series went silent longer than the carry-forward bound); %d distinct group series departed during the window. Investigate whether the upstream publisher (replica, tenant, leader) actually stopped or whether the bound is too tight.",
+			metricType, windowLabel, warnings.DepartedGroupBuckets, warnings.TotalBuckets, warnings.DepartedSeries))
+	}
+	if warnings.CarryForwardBuckets > 0 {
+		msgs = append(msgs, fmt.Sprintf(
+			"metric %q (%s): %d of %d folded buckets used carry-forward for at least one group (transient gap, still within the carry-forward bound); numbers are usable but trend/spike detection may be noisy.",
+			metricType, windowLabel, warnings.CarryForwardBuckets, warnings.TotalBuckets))
+	}
+	return msgs
+}
+
+func stripTruncatedSeries(series []gcpdata.MetricTimeSeries) ([]gcpdata.MetricTimeSeries, bool) {
+	return gcpdata.StripTruncationSentinel(series)
+}
+
+func joinNote(parts ...string) string {
+	var out string
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		if out == "" {
+			out = part
+		} else {
+			out += " " + part
+		}
+	}
+	return out
+}
+
+func aggregationWarningsNote(metricType, windowLabel string, warnings gcpdata.AggregationWarnings) string {
+	return joinNote(aggregationWarningMessages(metricType, windowLabel, warnings)...)
+}
+
+// invalidAggregationSpecError reports whether err is a registry validation error
+// (operator must fix YAML) vs a transient GCP failure (safe to retry).
+func invalidAggregationSpecError(err error) bool {
+	return errors.Is(err, metrics.ErrInvalidAggregationSpec)
+}
+
+// formatRegistryMisconfigError wraps validation errors in a user-facing message
+// pointing to the YAML that needs fixing.
+func formatRegistryMisconfigError(metricType string, err error) string {
+	return fmt.Sprintf("Registry misconfiguration for metric %q: %v. Fix the metric's aggregation block in the registry YAML — retrying will not help.", metricType, err)
+}
+
+// reportUnsupportedPoints sums and logs dropped points across series.
+// Returns total so callers can surface drops on results.
+func reportUnsupportedPoints(ctx context.Context, req *mcp.CallToolRequest, tool, metricType string, series []gcpdata.MetricTimeSeries) int {
+	total := 0
+	for _, s := range series {
+		total += s.UnsupportedCount
+	}
+	if total > 0 {
+		mcpLog(ctx, req, logLevelWarning, tool,
+			fmt.Sprintf("metric %q: dropped %d points with unsupported or malformed value types during decode", metricType, total))
+	}
+	return total
+}
+
+// errResult creates a tool error result.
+func errResult(msg string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{
+		IsError: true,
+		Content: []mcp.Content{&mcp.TextContent{Text: msg}},
+	}
+}
+
+// buildTimeFilter constructs a Cloud Logging timestamp filter from TimeFilterInput.
+func buildTimeFilter(in TimeFilterInput) (string, error) {
+	startTime := in.StartTime
+	endTime := in.EndTime
 
 	if startTime == "" && endTime == "" {
 		startTime = time.Now().Add(-24 * time.Hour).Format(time.RFC3339)
@@ -120,40 +208,47 @@ func buildTimeFilter(request mcp.CallToolRequest) (string, error) {
 }
 
 // requireClient validates that client is non-nil, panicking on programming errors.
-func requireClient(client *gcpclient.Client) *gcpclient.Client {
+func requireClient(client *gcpclient.Client) {
 	if client == nil {
 		panic("nil client")
 	}
-	return client
 }
 
-// requireProject returns the project ID from the request or default, returning an error result if empty.
-func requireProject(request mcp.CallToolRequest, defaultProject string) (string, *mcp.CallToolResult) {
-	project := request.GetString("project_id", defaultProject)
-	if project == "" {
-		return "", mcp.NewToolResultError("project_id must not be empty: either omit it to use the default project, or provide a valid project ID")
+// resolveProject returns the project ID, falling back to defaultProject.
+func resolveProject(projectID, defaultProject string) (string, error) {
+	if projectID != "" {
+		return projectID, nil
 	}
-	return project, nil
-}
-
-// jsonResult marshals v as indented JSON text and also sets structuredContent for typed output.
-func jsonResult(v any) (*mcp.CallToolResult, error) {
-	data, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal result: %v", err)), nil
+	if defaultProject != "" {
+		return defaultProject, nil
 	}
-	result := mcp.NewToolResultText(string(data))
-	result.StructuredContent = v
-	return result, nil
+	return "", fmt.Errorf("project_id must not be empty: either omit it to use the default project, or provide a valid project ID")
 }
 
-// clampLimit returns limit clamped to [1, maxLimit], falling back to defaultVal when limit is non-positive.
-func clampLimit(limit, defaultVal, maxLimit int) int {
+// clampLimit returns limit clamped to [1, maxLimit], falling back to fallback
+// when limit is non-positive.
+func clampLimit(limit, fallback, maxLimit int) int {
 	if limit <= 0 {
-		return defaultVal
+		return fallback
 	}
 	if limit > maxLimit {
 		return maxLimit
 	}
 	return limit
+}
+
+// ptrTrue returns a pointer to true, for use in ToolAnnotations.
+func ptrTrue() *bool {
+	v := true
+	return &v
+}
+
+// safeClassification converts a Classification to string for JSON output,
+// mapping the zero value ClassNotComputed ("") to ClassInsufficientData
+// so consumers never receive an empty classification string.
+func safeClassification(c metrics.Classification) string {
+	if c == metrics.ClassNotComputed {
+		return string(metrics.ClassInsufficientData)
+	}
+	return string(c)
 }

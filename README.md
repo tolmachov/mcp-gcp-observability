@@ -11,7 +11,7 @@ MCP server for querying Google Cloud Logging, Error Reporting, Cloud Trace, and 
 
 ## Prerequisites
 
-- Go 1.22+
+- Go 1.26+
 - GCP project with the following APIs enabled:
   - Cloud Logging
   - Error Reporting
@@ -158,6 +158,29 @@ The server provides pre-built investigation workflows:
 | `--errors-max-limit` | `ERRORS_MAX_LIMIT` | `100` | Maximum error groups per request |
 | `--dns-server` | `DNS_SERVER` | (none) | Custom DNS server for GCP API resolution |
 | `--metrics-registry` | `METRICS_REGISTRY_FILE` | (none) | Path to metrics semantic registry YAML file |
+| `--transport` | `MCP_TRANSPORT` | `stdio` | Transport mode: `stdio` (default) or `http` |
+| `--http-addr` | `MCP_HTTP_ADDR` | `:8080` | HTTP listen address (only used with `--transport http`) |
+
+### HTTP Transport
+
+For remote deployments or shared access, use the streamable HTTP transport:
+
+```bash
+mcp-gcp-observability run --transport http --http-addr :8080
+```
+
+**Security:** The HTTP transport does not include built-in authentication. When exposing over a network, place it behind a reverse proxy with authentication or use network-level access controls.
+
+## GCP API Limits
+
+Each tool call translates to one or more GCP API requests. Be aware of [GCP quotas](https://cloud.google.com/monitoring/quotas):
+
+- **Cloud Logging** — default 60 read requests/minute per project
+- **Cloud Monitoring** — default 6,000 time series read requests/minute
+- **Cloud Trace** — default 300 read requests/minute
+- **Error Reporting** — default 300 read requests/minute
+
+The server applies per-tool timeouts (30-60 seconds). For large result sets, use pagination via `page_token` and keep `limit` values reasonable.
 
 ## Metrics Semantic Registry
 
@@ -189,7 +212,7 @@ metrics:
 
 Without a registry, metric kinds are auto-detected from naming conventions (e.g. `latency` in name → latency kind).
 
-Supported metric kinds: `latency`, `throughput`, `error_rate`, `resource_utilization`, `saturation`, `availability`, `business_kpi`.
+Supported metric kinds: `latency`, `throughput`, `error_rate`, `resource_utilization`, `saturation`, `availability`, `freshness`, `business_kpi`.
 
 ## License
 

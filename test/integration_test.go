@@ -12,10 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/joho/godotenv"
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal"
 )
@@ -26,7 +27,7 @@ func init() {
 	}
 }
 
-func setupClient(t *testing.T) (*client.Client, context.Context, func()) {
+func setupClient(t *testing.T) (*mcp.ClientSession, context.Context, func()) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -55,15 +56,23 @@ func setupClient(t *testing.T) (*client.Client, context.Context, func()) {
 		app := internal.New(serverReader, serverWriter, stderrWriter)
 		err := app.Run(serverCtx, []string{"mcp-gcp-observability", "run"})
 		serverDone <- err
+		_ = serverReader.CloseWithError(fmt.Errorf("server exited: %v", err))
+		_ = serverWriter.CloseWithError(fmt.Errorf("server exited: %v", err))
 	}()
 
-	stdioTransport := transport.NewIO(clientReader, clientWriter, stderrReader)
-	c := client.NewClient(stdioTransport)
+	transport := &mcp.IOTransport{
+		Reader: io.NopCloser(clientReader),
+		Writer: nopWriteCloser{clientWriter},
+	}
+	client := mcp.NewClient(
+		&mcp.Implementation{Name: "mcp-gcp-observability-test", Version: "1.0.0"},
+		nil,
+	)
+
+	session, err := client.Connect(ctx, transport, nil)
+	require.NoError(t, err)
 
 	cleanup := func() {
-		if err := c.Close(); err != nil {
-			t.Errorf("failed to close client: %v", err)
-		}
 		serverCancel()
 		_ = clientWriter.Close()
 		_ = serverWriter.Close()
@@ -72,47 +81,48 @@ func setupClient(t *testing.T) (*client.Client, context.Context, func()) {
 		select {
 		case err := <-serverDone:
 			if err != nil && !errors.Is(err, context.Canceled) {
-				t.Errorf("server error: %v", err)
+				assert.Failf(t, "server error", "%v", err)
 			}
 		case <-time.After(5 * time.Second):
-			t.Error("server did not stop in time")
+			assert.Fail(t, "server did not stop in time")
 		}
 
 		cancel()
 	}
 
-	if err := c.Start(ctx); err != nil {
-		cleanup()
-		t.Fatalf("failed to start client: %v", err)
-	}
+	t.Logf("Connected to server")
 
-	initRequest := mcp.InitializeRequest{}
-	initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-	initRequest.Params.ClientInfo = mcp.Implementation{
-		Name:    "mcp-gcp-observability-test",
-		Version: "1.0.0",
-	}
-	initRequest.Params.Capabilities = mcp.ClientCapabilities{}
+	return session, ctx, cleanup
+}
 
-	serverInfo, err := c.Initialize(ctx, initRequest)
-	if err != nil {
-		cleanup()
-		t.Fatalf("failed to initialize: %v", err)
-	}
+type nopWriteCloser struct{ io.Writer }
 
-	t.Logf("Connected to server: %s (version %s)", serverInfo.ServerInfo.Name, serverInfo.ServerInfo.Version)
+func (nopWriteCloser) Close() error { return nil }
 
-	return c, ctx, cleanup
+func callTool(t *testing.T, session *mcp.ClientSession, ctx context.Context, name string, args map[string]any) *mcp.CallToolResult {
+	t.Helper()
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      name,
+		Arguments: args,
+	})
+	require.NoErrorf(t, err, "failed to call %s", name)
+	return result
+}
+
+func textFromResult(t *testing.T, result *mcp.CallToolResult) string {
+	t.Helper()
+	require.NotEmpty(t, result.Content, "expected non-empty result content")
+	tc, ok := result.Content[0].(*mcp.TextContent)
+	require.True(t, ok, "expected TextContent, got %T", result.Content[0])
+	return tc.Text
 }
 
 func TestListTools(t *testing.T) {
-	c, ctx, cleanup := setupClient(t)
+	session, ctx, cleanup := setupClient(t)
 	defer cleanup()
 
-	toolsResult, err := c.ListTools(ctx, mcp.ListToolsRequest{})
-	if err != nil {
-		t.Fatalf("failed to list tools: %v", err)
-	}
+	toolsResult, err := session.ListTools(ctx, nil)
+	require.NoError(t, err)
 
 	t.Logf("Available tools: %d", len(toolsResult.Tools))
 	for _, tool := range toolsResult.Tools {
@@ -138,64 +148,36 @@ func TestListTools(t *testing.T) {
 	}
 
 	for _, expected := range expectedTools {
-		if !toolNames[expected] {
-			t.Errorf("expected tool %q not found", expected)
-		}
+		assert.True(t, toolNames[expected], "expected tool %q not found", expected)
 	}
 }
 
 func TestLogsQuery(t *testing.T) {
-	c, ctx, cleanup := setupClient(t)
+	session, ctx, cleanup := setupClient(t)
 	defer cleanup()
 
-	result, err := c.CallTool(ctx, mcp.CallToolRequest{
-		Params: mcp.CallToolParams{
-			Name: "logs.query",
-			Arguments: map[string]any{
-				"filter": "severity>=ERROR",
-				"limit":  5,
-			},
-		},
+	result := callTool(t, session, ctx, "logs.query", map[string]any{
+		"filter": "severity>=ERROR",
+		"limit":  5,
 	})
-	if err != nil {
-		t.Fatalf("failed to call logs.query: %v", err)
-	}
 
-	if len(result.Content) == 0 {
-		t.Fatal("expected non-empty result")
-	}
-
-	text := result.Content[0].(mcp.TextContent).Text
+	text := textFromResult(t, result)
 	t.Logf("logs.query result: %s", text[:min(len(text), 500)])
 }
 
 func TestLogsServices(t *testing.T) {
-	c, ctx, cleanup := setupClient(t)
+	session, ctx, cleanup := setupClient(t)
 	defer cleanup()
 
-	result, err := c.CallTool(ctx, mcp.CallToolRequest{
-		Params: mcp.CallToolParams{
-			Name:      "logs.services",
-			Arguments: map[string]any{},
-		},
-	})
-	if err != nil {
-		t.Fatalf("failed to call logs.services: %v", err)
-	}
+	result := callTool(t, session, ctx, "logs.services", map[string]any{})
 
-	if len(result.Content) == 0 {
-		t.Fatal("expected non-empty result")
-	}
-
-	text := result.Content[0].(mcp.TextContent).Text
+	text := textFromResult(t, result)
 	t.Logf("logs.services result: %s", text)
 
 	var services struct {
 		Count int `json:"count"`
 	}
-	if err := json.Unmarshal([]byte(text), &services); err != nil {
-		t.Fatalf("failed to parse result: %v", err)
-	}
+	require.NoError(t, json.Unmarshal([]byte(text), &services))
 
 	if services.Count == 0 {
 		t.Log("warning: no services found")
@@ -208,51 +190,27 @@ func TestLogsFindRequests(t *testing.T) {
 		urlPattern = "/api"
 	}
 
-	c, ctx, cleanup := setupClient(t)
+	session, ctx, cleanup := setupClient(t)
 	defer cleanup()
 
-	result, err := c.CallTool(ctx, mcp.CallToolRequest{
-		Params: mcp.CallToolParams{
-			Name: "logs.find_requests",
-			Arguments: map[string]any{
-				"url_pattern": urlPattern,
-				"limit":       5,
-			},
-		},
+	result := callTool(t, session, ctx, "logs.find_requests", map[string]any{
+		"url_pattern": urlPattern,
+		"limit":       5,
 	})
-	if err != nil {
-		t.Fatalf("failed to call logs.find_requests: %v", err)
-	}
 
-	if len(result.Content) == 0 {
-		t.Fatal("expected non-empty result")
-	}
-
-	text := result.Content[0].(mcp.TextContent).Text
+	text := textFromResult(t, result)
 	t.Logf("logs.find_requests result: %s", text[:min(len(text), 500)])
 }
 
 func TestErrorsList(t *testing.T) {
-	c, ctx, cleanup := setupClient(t)
+	session, ctx, cleanup := setupClient(t)
 	defer cleanup()
 
-	result, err := c.CallTool(ctx, mcp.CallToolRequest{
-		Params: mcp.CallToolParams{
-			Name: "errors.list",
-			Arguments: map[string]any{
-				"limit": 5,
-			},
-		},
+	result := callTool(t, session, ctx, "errors.list", map[string]any{
+		"limit": 5,
 	})
-	if err != nil {
-		t.Fatalf("failed to call errors.list: %v", err)
-	}
 
-	if len(result.Content) == 0 {
-		t.Fatal("expected non-empty result")
-	}
-
-	text := result.Content[0].(mcp.TextContent).Text
+	text := textFromResult(t, result)
 	t.Logf("errors.list result: %s", text[:min(len(text), 500)])
 }
 
@@ -262,60 +220,37 @@ func TestLogsK8s(t *testing.T) {
 		t.Skip("TEST_K8S_NAMESPACE not set, skipping K8s test")
 	}
 
-	c, ctx, cleanup := setupClient(t)
+	session, ctx, cleanup := setupClient(t)
 	defer cleanup()
 
-	result, err := c.CallTool(ctx, mcp.CallToolRequest{
-		Params: mcp.CallToolParams{
-			Name: "logs.k8s",
-			Arguments: map[string]any{
-				"namespace": namespace,
-				"limit":     5,
-			},
-		},
+	result := callTool(t, session, ctx, "logs.k8s", map[string]any{
+		"namespace": namespace,
+		"limit":     5,
 	})
-	if err != nil {
-		t.Fatalf("failed to call logs.k8s: %v", err)
-	}
 
-	if len(result.Content) == 0 {
-		t.Fatal("expected non-empty result")
-	}
-
-	text := result.Content[0].(mcp.TextContent).Text
+	text := textFromResult(t, result)
 	t.Logf("logs.k8s result: %s", text[:min(len(text), 500)])
 }
 
 func TestLogsByRequestID(t *testing.T) {
 	requestID := os.Getenv("TEST_REQUEST_ID")
 	if requestID == "" {
-		// Find a request with request_id
-		c, ctx, cleanup := setupClient(t)
+		session, ctx, cleanup := setupClient(t)
 		defer cleanup()
 
-		findResult, err := c.CallTool(ctx, mcp.CallToolRequest{
-			Params: mcp.CallToolParams{
-				Name: "logs.find_requests",
-				Arguments: map[string]any{
-					"url_pattern": "/",
-					"limit":       5,
-				},
-			},
+		findResult := callTool(t, session, ctx, "logs.find_requests", map[string]any{
+			"url_pattern": "/",
+			"limit":       5,
 		})
-		if err != nil {
-			t.Fatalf("failed to find requests: %v", err)
-		}
 
-		text := findResult.Content[0].(mcp.TextContent).Text
+		text := textFromResult(t, findResult)
 
 		var requests struct {
 			Requests []struct {
 				RequestID string `json:"request_id"`
 			} `json:"requests"`
 		}
-		if err := json.Unmarshal([]byte(text), &requests); err != nil {
-			t.Fatalf("failed to parse find_requests result: %v", err)
-		}
+		require.NoError(t, json.Unmarshal([]byte(text), &requests))
 
 		for _, r := range requests.Requests {
 			if r.RequestID != "" {
@@ -327,345 +262,190 @@ func TestLogsByRequestID(t *testing.T) {
 			t.Skip("no requests with request_id found, skipping logs.by_request_id test")
 		}
 
-		result, err := c.CallTool(ctx, mcp.CallToolRequest{
-			Params: mcp.CallToolParams{
-				Name: "logs.by_request_id",
-				Arguments: map[string]any{
-					"request_id": requestID,
-					"limit":      10,
-				},
-			},
+		result := callTool(t, session, ctx, "logs.by_request_id", map[string]any{
+			"request_id": requestID,
+			"limit":      10,
 		})
-		if err != nil {
-			t.Fatalf("failed to call logs.by_request_id: %v", err)
-		}
 
-		if len(result.Content) == 0 {
-			t.Fatal("expected non-empty result")
-		}
-
-		resultText := result.Content[0].(mcp.TextContent).Text
+		resultText := textFromResult(t, result)
 		t.Logf("logs.by_request_id result (request_id=%s): %s", requestID, resultText[:min(len(resultText), 500)])
 
 		var logResult struct {
 			Count int `json:"count"`
 		}
-		if err := json.Unmarshal([]byte(resultText), &logResult); err != nil {
-			t.Fatalf("failed to parse result: %v", err)
-		}
+		require.NoError(t, json.Unmarshal([]byte(resultText), &logResult))
 
-		if logResult.Count == 0 {
-			t.Error("expected at least one log entry for the request_id")
-		}
+		assert.NotZero(t, logResult.Count, "expected at least one log entry for the request_id")
 		return
 	}
 
-	// Use provided request ID
-	c, ctx, cleanup := setupClient(t)
+	session, ctx, cleanup := setupClient(t)
 	defer cleanup()
 
-	result, err := c.CallTool(ctx, mcp.CallToolRequest{
-		Params: mcp.CallToolParams{
-			Name: "logs.by_request_id",
-			Arguments: map[string]any{
-				"request_id": requestID,
-				"limit":      10,
-			},
-		},
+	result := callTool(t, session, ctx, "logs.by_request_id", map[string]any{
+		"request_id": requestID,
+		"limit":      10,
 	})
-	if err != nil {
-		t.Fatalf("failed to call logs.by_request_id: %v", err)
-	}
 
-	if len(result.Content) == 0 {
-		t.Fatal("expected non-empty result")
-	}
-
-	text := result.Content[0].(mcp.TextContent).Text
+	text := textFromResult(t, result)
 	t.Logf("logs.by_request_id result: %s", text[:min(len(text), 500)])
 }
 
 func TestLogsByTrace(t *testing.T) {
 	traceID := os.Getenv("TEST_TRACE_ID")
 	if traceID == "" {
-		// First find a traced request to get a real trace ID
-		c, ctx, cleanup := setupClient(t)
+		session, ctx, cleanup := setupClient(t)
 		defer cleanup()
 
-		findResult, err := c.CallTool(ctx, mcp.CallToolRequest{
-			Params: mcp.CallToolParams{
-				Name: "logs.find_requests",
-				Arguments: map[string]any{
-					"traced_only": true,
-					"limit":       1,
-				},
-			},
+		findResult := callTool(t, session, ctx, "logs.find_requests", map[string]any{
+			"traced_only": true,
+			"limit":       1,
 		})
-		if err != nil {
-			t.Fatalf("failed to find traced request: %v", err)
-		}
 
-		text := findResult.Content[0].(mcp.TextContent).Text
+		text := textFromResult(t, findResult)
 
 		var requests struct {
 			Requests []struct {
 				TraceID string `json:"trace_id"`
 			} `json:"requests"`
 		}
-		if err := json.Unmarshal([]byte(text), &requests); err != nil {
-			t.Fatalf("failed to parse find_requests result: %v", err)
-		}
+		require.NoError(t, json.Unmarshal([]byte(text), &requests))
 
 		if len(requests.Requests) == 0 || requests.Requests[0].TraceID == "" {
 			t.Skip("no traced requests found, skipping logs.by_trace test")
 		}
 		traceID = requests.Requests[0].TraceID
 
-		// Now test by_trace with the found trace ID
-		result, err := c.CallTool(ctx, mcp.CallToolRequest{
-			Params: mcp.CallToolParams{
-				Name: "logs.by_trace",
-				Arguments: map[string]any{
-					"trace_id": traceID,
-					"limit":    10,
-				},
-			},
+		result := callTool(t, session, ctx, "logs.by_trace", map[string]any{
+			"trace_id": traceID,
+			"limit":    10,
 		})
-		if err != nil {
-			t.Fatalf("failed to call logs.by_trace: %v", err)
-		}
 
-		if len(result.Content) == 0 {
-			t.Fatal("expected non-empty result")
-		}
-
-		traceText := result.Content[0].(mcp.TextContent).Text
+		traceText := textFromResult(t, result)
 		t.Logf("logs.by_trace result (trace_id=%s): %s", traceID, traceText[:min(len(traceText), 500)])
 		return
 	}
 
-	// Use provided trace ID
-	c, ctx, cleanup := setupClient(t)
+	session, ctx, cleanup := setupClient(t)
 	defer cleanup()
 
-	result, err := c.CallTool(ctx, mcp.CallToolRequest{
-		Params: mcp.CallToolParams{
-			Name: "logs.by_trace",
-			Arguments: map[string]any{
-				"trace_id": traceID,
-				"limit":    10,
-			},
-		},
+	result := callTool(t, session, ctx, "logs.by_trace", map[string]any{
+		"trace_id": traceID,
+		"limit":    10,
 	})
-	if err != nil {
-		t.Fatalf("failed to call logs.by_trace: %v", err)
-	}
 
-	if len(result.Content) == 0 {
-		t.Fatal("expected non-empty result")
-	}
-
-	text := result.Content[0].(mcp.TextContent).Text
+	text := textFromResult(t, result)
 	t.Logf("logs.by_trace result: %s", text[:min(len(text), 500)])
 }
 
 func TestErrorsGet(t *testing.T) {
 	groupID := os.Getenv("TEST_ERROR_GROUP_ID")
 	if groupID == "" {
-		// First get an error group ID from errors.list
-		c, ctx, cleanup := setupClient(t)
+		session, ctx, cleanup := setupClient(t)
 		defer cleanup()
 
-		listResult, err := c.CallTool(ctx, mcp.CallToolRequest{
-			Params: mcp.CallToolParams{
-				Name: "errors.list",
-				Arguments: map[string]any{
-					"limit": 1,
-				},
-			},
+		listResult := callTool(t, session, ctx, "errors.list", map[string]any{
+			"limit": 1,
 		})
-		if err != nil {
-			t.Fatalf("failed to list errors: %v", err)
-		}
 
-		text := listResult.Content[0].(mcp.TextContent).Text
+		text := textFromResult(t, listResult)
 
 		var errorList struct {
 			Groups []struct {
 				GroupID string `json:"group_id"`
 			} `json:"groups"`
 		}
-		if err := json.Unmarshal([]byte(text), &errorList); err != nil {
-			t.Fatalf("failed to parse errors.list result: %v", err)
-		}
+		require.NoError(t, json.Unmarshal([]byte(text), &errorList))
 
 		if len(errorList.Groups) == 0 || errorList.Groups[0].GroupID == "" {
 			t.Skip("no error groups found, skipping errors.get test")
 		}
 		groupID = errorList.Groups[0].GroupID
 
-		// Now test errors.get with the found group ID
-		result, err := c.CallTool(ctx, mcp.CallToolRequest{
-			Params: mcp.CallToolParams{
-				Name: "errors.get",
-				Arguments: map[string]any{
-					"group_id": groupID,
-					"limit":    5,
-				},
-			},
+		result := callTool(t, session, ctx, "errors.get", map[string]any{
+			"group_id": groupID,
+			"limit":    5,
 		})
-		if err != nil {
-			t.Fatalf("failed to call errors.get: %v", err)
-		}
 
-		if len(result.Content) == 0 {
-			t.Fatal("expected non-empty result")
-		}
-
-		getText := result.Content[0].(mcp.TextContent).Text
+		getText := textFromResult(t, result)
 		t.Logf("errors.get result (group_id=%s): %s", groupID, getText[:min(len(getText), 500)])
 		return
 	}
 
-	// Use provided group ID
-	c, ctx, cleanup := setupClient(t)
+	session, ctx, cleanup := setupClient(t)
 	defer cleanup()
 
-	result, err := c.CallTool(ctx, mcp.CallToolRequest{
-		Params: mcp.CallToolParams{
-			Name: "errors.get",
-			Arguments: map[string]any{
-				"group_id": groupID,
-				"limit":    5,
-			},
-		},
+	result := callTool(t, session, ctx, "errors.get", map[string]any{
+		"group_id": groupID,
+		"limit":    5,
 	})
-	if err != nil {
-		t.Fatalf("failed to call errors.get: %v", err)
-	}
 
-	if len(result.Content) == 0 {
-		t.Fatal("expected non-empty result")
-	}
-
-	text := result.Content[0].(mcp.TextContent).Text
+	text := textFromResult(t, result)
 	t.Logf("errors.get result: %s", text[:min(len(text), 500)])
 }
 
 func TestTraceGet(t *testing.T) {
 	traceID := os.Getenv("TEST_TRACE_ID")
 	if traceID == "" {
-		// Find a traced request to get a real trace ID
-		c, ctx, cleanup := setupClient(t)
+		session, ctx, cleanup := setupClient(t)
 		defer cleanup()
 
-		findResult, err := c.CallTool(ctx, mcp.CallToolRequest{
-			Params: mcp.CallToolParams{
-				Name: "logs.find_requests",
-				Arguments: map[string]any{
-					"traced_only": true,
-					"limit":       1,
-				},
-			},
+		findResult := callTool(t, session, ctx, "logs.find_requests", map[string]any{
+			"traced_only": true,
+			"limit":       1,
 		})
-		if err != nil {
-			t.Fatalf("failed to find traced request: %v", err)
-		}
 
-		text := findResult.Content[0].(mcp.TextContent).Text
+		text := textFromResult(t, findResult)
 
 		var requests struct {
 			Requests []struct {
 				TraceID string `json:"trace_id"`
 			} `json:"requests"`
 		}
-		if err := json.Unmarshal([]byte(text), &requests); err != nil {
-			t.Fatalf("failed to parse find_requests result: %v", err)
-		}
+		require.NoError(t, json.Unmarshal([]byte(text), &requests))
 
 		if len(requests.Requests) == 0 || requests.Requests[0].TraceID == "" {
 			t.Skip("no traced requests found, skipping trace.get test")
 		}
 		traceID = requests.Requests[0].TraceID
 
-		result, err := c.CallTool(ctx, mcp.CallToolRequest{
-			Params: mcp.CallToolParams{
-				Name: "trace.get",
-				Arguments: map[string]any{
-					"trace_id": traceID,
-				},
-			},
+		result := callTool(t, session, ctx, "trace.get", map[string]any{
+			"trace_id": traceID,
 		})
-		if err != nil {
-			t.Fatalf("failed to call trace.get: %v", err)
-		}
 
-		if len(result.Content) == 0 {
-			t.Fatal("expected non-empty result")
-		}
-
-		traceText := result.Content[0].(mcp.TextContent).Text
+		traceText := textFromResult(t, result)
 		t.Logf("trace.get result (trace_id=%s): %s", traceID, traceText[:min(len(traceText), 500)])
 
 		var traceDetail struct {
 			TraceID   string `json:"trace_id"`
 			SpanCount int    `json:"span_count"`
 		}
-		if err := json.Unmarshal([]byte(traceText), &traceDetail); err != nil {
-			t.Fatalf("failed to parse trace.get result: %v", err)
-		}
+		require.NoError(t, json.Unmarshal([]byte(traceText), &traceDetail))
 
-		if traceDetail.TraceID == "" {
-			t.Error("expected non-empty trace_id in response")
-		}
+		assert.NotEmpty(t, traceDetail.TraceID, "expected non-empty trace_id in response")
 		if traceDetail.SpanCount == 0 {
 			t.Log("warning: trace has no spans")
 		}
 		return
 	}
 
-	// Use provided trace ID
-	c, ctx, cleanup := setupClient(t)
+	session, ctx, cleanup := setupClient(t)
 	defer cleanup()
 
-	result, err := c.CallTool(ctx, mcp.CallToolRequest{
-		Params: mcp.CallToolParams{
-			Name: "trace.get",
-			Arguments: map[string]any{
-				"trace_id": traceID,
-			},
-		},
+	result := callTool(t, session, ctx, "trace.get", map[string]any{
+		"trace_id": traceID,
 	})
-	if err != nil {
-		t.Fatalf("failed to call trace.get: %v", err)
-	}
 
-	if len(result.Content) == 0 {
-		t.Fatal("expected non-empty result")
-	}
-
-	text := result.Content[0].(mcp.TextContent).Text
+	text := textFromResult(t, result)
 	t.Logf("trace.get result: %s", text[:min(len(text), 500)])
 }
 
 func TestLogsSummary(t *testing.T) {
-	c, ctx, cleanup := setupClient(t)
+	session, ctx, cleanup := setupClient(t)
 	defer cleanup()
 
-	result, err := c.CallTool(ctx, mcp.CallToolRequest{
-		Params: mcp.CallToolParams{
-			Name:      "logs.summary",
-			Arguments: map[string]any{},
-		},
-	})
-	if err != nil {
-		t.Fatalf("failed to call logs.summary: %v", err)
-	}
+	result := callTool(t, session, ctx, "logs.summary", map[string]any{})
 
-	if len(result.Content) == 0 {
-		t.Fatal("expected non-empty result")
-	}
-
-	text := result.Content[0].(mcp.TextContent).Text
+	text := textFromResult(t, result)
 	t.Logf("logs.summary result: %s", text[:min(len(text), 500)])
 }

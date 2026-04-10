@@ -1,12 +1,86 @@
 package tools
 
 import (
-	"math"
-	"strings"
+	"context"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+func TestAggregationWarningMessages(t *testing.T) {
+	const metricType = "custom.googleapis.com/players_count"
+	const window = "current"
+
+	t.Run("Edge: zero warnings → empty slice", func(t *testing.T) {
+		got := aggregationWarningMessages(metricType, window, gcpdata.AggregationWarnings{})
+		assert.Nil(t, got)
+	})
+
+	t.Run("Positive: SingleGroup-only emits one message naming the metric, window, and group count", func(t *testing.T) {
+		got := aggregationWarningMessages(metricType, window, gcpdata.AggregationWarnings{
+			SingleGroup: true,
+			GroupCount:  1,
+		})
+		require.Len(t, got, 1)
+		msg := got[0]
+		assert.Contains(t, msg, metricType)
+		assert.Contains(t, msg, window)
+		assert.Contains(t, msg, "1 group")
+		assert.Contains(t, msg, "group_by")
+	})
+
+	t.Run("Positive: CarryForwardBuckets-only emits one message with the ratio", func(t *testing.T) {
+		got := aggregationWarningMessages(metricType, "baseline", gcpdata.AggregationWarnings{
+			CarryForwardBuckets: 7,
+			TotalBuckets:        20,
+		})
+		require.Len(t, got, 1)
+		msg := got[0]
+		assert.Contains(t, msg, "7 of 20")
+		assert.Contains(t, msg, "baseline")
+		assert.Contains(t, msg, "carry-forward")
+	})
+
+	t.Run("Positive: DepartedGroupBuckets emits a message naming distinct departed series", func(t *testing.T) {
+		got := aggregationWarningMessages(metricType, window, gcpdata.AggregationWarnings{
+			DepartedGroupBuckets: 4,
+			DepartedSeries:       2,
+			TotalBuckets:         60,
+		})
+		require.Len(t, got, 1)
+		msg := got[0]
+		assert.Contains(t, msg, "4 of 60")
+		assert.Contains(t, msg, "2 distinct group series departed")
+	})
+
+	t.Run("Positive: SingleGroup + DepartedGroup + CarryForward → three messages, departed before carry-forward", func(t *testing.T) {
+		got := aggregationWarningMessages(metricType, window, gcpdata.AggregationWarnings{
+			SingleGroup:          true,
+			GroupCount:           1,
+			DepartedGroupBuckets: 2,
+			DepartedSeries:       1,
+			CarryForwardBuckets:  3,
+			TotalBuckets:         10,
+		})
+		require.Len(t, got, 3)
+		assert.Contains(t, got[0], "two-stage aggregation")
+		assert.Contains(t, got[1], "departed")
+		assert.Contains(t, got[2], "carry-forward")
+		assert.NotContains(t, got[2], "departed")
+	})
+
+	t.Run("Edge: zero counters with TotalBuckets>0 does NOT emit ragged warning", func(t *testing.T) {
+		got := aggregationWarningMessages(metricType, window, gcpdata.AggregationWarnings{
+			TotalBuckets: 60,
+		})
+		assert.Nil(t, got)
+	})
+}
 
 func TestClampLimit(t *testing.T) {
 	tests := []struct {
@@ -26,365 +100,156 @@ func TestClampLimit(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := clampLimit(tt.limit, tt.defaultVal, tt.maxLimit)
-			if got != tt.want {
-				t.Errorf("clampLimit(%d, %d, %d) = %d, want %d", tt.limit, tt.defaultVal, tt.maxLimit, got, tt.want)
-			}
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
 
 func TestRequireClient(t *testing.T) {
-	t.Run("non-nil returns client", func(t *testing.T) {
-		// We can't create a real Client without GCP credentials,
-		// but we can verify the panic behavior on nil.
-		defer func() {
-			if r := recover(); r != nil {
-				t.Errorf("unexpected panic for non-nil-like test")
-			}
-		}()
-		// Just test the nil case since we can't construct a real Client in unit tests.
-	})
-
 	t.Run("nil panics", func(t *testing.T) {
 		defer func() {
-			if r := recover(); r == nil {
-				t.Error("expected panic for nil client")
-			}
+			assert.NotNil(t, recover())
 		}()
 		requireClient(nil)
 	})
 }
 
-func TestJsonResult(t *testing.T) {
-	t.Run("valid struct", func(t *testing.T) {
-		result, err := jsonResult(map[string]string{"key": "value"})
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if result == nil {
-			t.Fatal("expected non-nil result")
-		}
-		if result.IsError {
-			t.Error("expected non-error result")
-		}
-	})
-
-	t.Run("unmarshalable value returns error result", func(t *testing.T) {
-		result, err := jsonResult(math.NaN())
-		if err != nil {
-			t.Fatalf("unexpected Go error: %v", err)
-		}
-		if result == nil {
-			t.Fatal("expected non-nil result")
-		}
-		if !result.IsError {
-			t.Error("expected error result for unmarshalable value")
-		}
-	})
-}
-
-func makeRequest(args map[string]any) mcp.CallToolRequest {
-	return mcp.CallToolRequest{
-		Params: mcp.CallToolParams{
-			Arguments: args,
-		},
-	}
-}
-
-func TestRequireProject(t *testing.T) {
+func TestResolveProject(t *testing.T) {
 	tests := []struct {
 		name           string
-		args           map[string]any
+		projectID      string
 		defaultProject string
 		wantProject    string
 		wantErr        bool
 	}{
-		{
-			"from request",
-			map[string]any{"project_id": "req-project"},
-			"default-project",
-			"req-project",
-			false,
-		},
-		{
-			"from default",
-			map[string]any{},
-			"default-project",
-			"default-project",
-			false,
-		},
-		{
-			"both empty",
-			map[string]any{},
-			"",
-			"",
-			true,
-		},
-		{
-			"explicit empty with default",
-			map[string]any{"project_id": ""},
-			"default-project",
-			"",
-			true,
-		},
+		{"from request", "req-project", "default-project", "req-project", false},
+		{"from default", "", "default-project", "default-project", false},
+		{"both empty", "", "", "", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := makeRequest(tt.args)
-			project, errResult := requireProject(req, tt.defaultProject)
+			project, err := resolveProject(tt.projectID, tt.defaultProject)
 			if tt.wantErr {
-				if errResult == nil {
-					t.Error("expected error result, got nil")
-				}
+				assert.Error(t, err)
 				return
 			}
-			if errResult != nil {
-				t.Errorf("unexpected error result: %v", errResult)
-				return
-			}
-			if project != tt.wantProject {
-				t.Errorf("project = %q, want %q", project, tt.wantProject)
-			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantProject, project)
 		})
 	}
 }
 
 func TestBuildTimeFilter(t *testing.T) {
 	t.Run("both empty defaults to 24h", func(t *testing.T) {
-		req := makeRequest(map[string]any{})
-		filter, err := buildTimeFilter(req)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if !strings.Contains(filter, `timestamp>="`) {
-			t.Errorf("expected timestamp>= in filter, got %q", filter)
-		}
+		filter, err := buildTimeFilter(TimeFilterInput{})
+		require.NoError(t, err)
+		assert.Contains(t, filter, `timestamp>="`)
 	})
 
 	t.Run("start_time only", func(t *testing.T) {
-		req := makeRequest(map[string]any{
-			"start_time": "2025-01-15T00:00:00Z",
-		})
-		filter, err := buildTimeFilter(req)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if filter != `timestamp>="2025-01-15T00:00:00Z"` {
-			t.Errorf("unexpected filter: %q", filter)
-		}
+		filter, err := buildTimeFilter(TimeFilterInput{StartTime: "2025-01-15T00:00:00Z"})
+		require.NoError(t, err)
+		assert.Equal(t, `timestamp>="2025-01-15T00:00:00Z"`, filter)
 	})
 
 	t.Run("end_time only defaults start to 24h before end", func(t *testing.T) {
-		req := makeRequest(map[string]any{
-			"end_time": "2025-01-15T23:59:59Z",
-		})
-		filter, err := buildTimeFilter(req)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		// Should include both a default start (24h before end) and the end
-		if !strings.Contains(filter, `timestamp>="2025-01-14T23:59:59Z"`) {
-			t.Errorf("expected default start 24h before end, got %q", filter)
-		}
-		if !strings.Contains(filter, `timestamp<="2025-01-15T23:59:59Z"`) {
-			t.Errorf("expected end_time in filter, got %q", filter)
-		}
+		filter, err := buildTimeFilter(TimeFilterInput{EndTime: "2025-01-15T23:59:59Z"})
+		require.NoError(t, err)
+		assert.Contains(t, filter, `timestamp>="2025-01-14T23:59:59Z"`)
+		assert.Contains(t, filter, `timestamp<="2025-01-15T23:59:59Z"`)
 	})
 
 	t.Run("both set", func(t *testing.T) {
-		req := makeRequest(map[string]any{
-			"start_time": "2025-01-15T00:00:00Z",
-			"end_time":   "2025-01-15T23:59:59Z",
+		filter, err := buildTimeFilter(TimeFilterInput{
+			StartTime: "2025-01-15T00:00:00Z",
+			EndTime:   "2025-01-15T23:59:59Z",
 		})
-		filter, err := buildTimeFilter(req)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		require.NoError(t, err)
 		want := "timestamp>=\"2025-01-15T00:00:00Z\"\ntimestamp<=\"2025-01-15T23:59:59Z\""
-		if filter != want {
-			t.Errorf("filter = %q, want %q", filter, want)
-		}
+		assert.Equal(t, want, filter)
 	})
 
 	t.Run("invalid start_time", func(t *testing.T) {
-		req := makeRequest(map[string]any{
-			"start_time": "not-a-date",
-		})
-		_, err := buildTimeFilter(req)
-		if err == nil {
-			t.Error("expected error for invalid start_time")
-		}
+		_, err := buildTimeFilter(TimeFilterInput{StartTime: "not-a-date"})
+		assert.Error(t, err)
 	})
 
 	t.Run("invalid end_time", func(t *testing.T) {
-		req := makeRequest(map[string]any{
-			"end_time": "not-a-date",
-		})
-		_, err := buildTimeFilter(req)
-		if err == nil {
-			t.Error("expected error for invalid end_time")
-		}
+		_, err := buildTimeFilter(TimeFilterInput{EndTime: "not-a-date"})
+		assert.Error(t, err)
 	})
 
 	t.Run("end_time before start_time returns error", func(t *testing.T) {
-		req := makeRequest(map[string]any{
-			"start_time": "2025-01-15T23:00:00Z",
-			"end_time":   "2025-01-15T00:00:00Z",
+		_, err := buildTimeFilter(TimeFilterInput{
+			StartTime: "2025-01-15T23:00:00Z",
+			EndTime:   "2025-01-15T00:00:00Z",
 		})
-		_, err := buildTimeFilter(req)
-		if err == nil {
-			t.Error("expected error when end_time is before start_time")
-		}
+		assert.Error(t, err)
 	})
 
 	t.Run("equal start_time and end_time returns error", func(t *testing.T) {
-		req := makeRequest(map[string]any{
-			"start_time": "2025-01-15T12:00:00Z",
-			"end_time":   "2025-01-15T12:00:00Z",
+		_, err := buildTimeFilter(TimeFilterInput{
+			StartTime: "2025-01-15T12:00:00Z",
+			EndTime:   "2025-01-15T12:00:00Z",
 		})
-		_, err := buildTimeFilter(req)
-		if err == nil {
-			t.Error("expected error when end_time equals start_time")
-		}
+		assert.Error(t, err)
 	})
 }
 
 func TestResolveErrorsTimeRange(t *testing.T) {
 	tests := []struct {
 		name    string
-		args    map[string]any
+		input   ErrorsListInput
 		wantErr bool
-		want    int // expected hours (only checked if !wantErr)
+		want    int
 	}{
-		{
-			"default 24h",
-			map[string]any{},
-			false,
-			24,
-		},
-		{
-			"time_range_hours explicit",
-			map[string]any{"time_range_hours": 48.0},
-			false,
-			48,
-		},
-		{
-			"time_range_hours at max",
-			map[string]any{"time_range_hours": 720.0},
-			false,
-			720,
-		},
-		{
-			"time_range_hours too small",
-			map[string]any{"time_range_hours": 0.0},
-			true,
-			0,
-		},
-		{
-			"time_range_hours too large",
-			map[string]any{"time_range_hours": 721.0},
-			true,
-			0,
-		},
-		{
-			"both start and end",
-			map[string]any{
-				"start_time": "2025-01-15T00:00:00Z",
-				"end_time":   "2025-01-15T06:00:00Z",
-			},
-			false,
-			6,
-		},
-		{
-			"start and end rounds up",
-			map[string]any{
-				"start_time": "2025-01-15T00:00:00Z",
-				"end_time":   "2025-01-15T06:30:00Z",
-			},
-			false,
-			7,
-		},
-		{
-			"end before start returns error",
-			map[string]any{
-				"start_time": "2025-01-15T23:00:00Z",
-				"end_time":   "2025-01-15T00:00:00Z",
-			},
-			true,
-			0,
-		},
-		{
-			"equal start and end returns error",
-			map[string]any{
-				"start_time": "2025-01-15T12:00:00Z",
-				"end_time":   "2025-01-15T12:00:00Z",
-			},
-			true,
-			0,
-		},
-		{
-			"range exceeds 720h returns error",
-			map[string]any{
-				"start_time": "2025-01-01T00:00:00Z",
-				"end_time":   "2025-03-01T00:00:00Z",
-			},
-			true,
-			0,
-		},
-		{
-			"invalid start_time format",
-			map[string]any{"start_time": "not-a-date"},
-			true,
-			0,
-		},
-		{
-			"invalid end_time format",
-			map[string]any{"end_time": "not-a-date"},
-			true,
-			0,
-		},
-		{
-			"start_time only with far past exceeds 720h",
-			map[string]any{"start_time": "2025-01-15T00:00:00Z"},
-			true, // now - 2025 > 720h
-			0,
-		},
-		{
-			"end_time only with far future exceeds 720h",
-			map[string]any{"end_time": "2099-01-15T00:00:00Z"},
-			true, // 2099 - (now - 24h) > 720h
-			0,
-		},
-		{
-			"start_time/end_time takes precedence over time_range_hours",
-			map[string]any{
-				"start_time":       "2025-01-15T00:00:00Z",
-				"end_time":         "2025-01-15T12:00:00Z",
-				"time_range_hours": 48.0,
-			},
-			false,
-			12,
-		},
+		{"default 24h", ErrorsListInput{}, false, 24},
+		{"time_range_hours explicit", ErrorsListInput{TimeRangeHours: 48}, false, 48},
+		{"time_range_hours at max", ErrorsListInput{TimeRangeHours: 720}, false, 720},
+		{"time_range_hours too small — negative", ErrorsListInput{TimeRangeHours: -1}, true, 0},
+		{"time_range_hours too large", ErrorsListInput{TimeRangeHours: 721}, true, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := makeRequest(tt.args)
-			got, err := resolveErrorsTimeRange(req)
+			got, err := resolveErrorsTimeRange(tt.input)
 			if tt.wantErr {
-				if err == nil {
-					t.Errorf("expected error, got hours=%d", got)
-				}
+				assert.Error(t, err)
 				return
 			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
+			require.NoError(t, err)
+			if tt.want != 0 {
+				assert.Equal(t, tt.want, got)
 			}
-			if tt.want != 0 && got != tt.want {
-				t.Errorf("hours = %d, want %d", got, tt.want)
-			}
-			if got < 1 {
-				t.Errorf("hours = %d, must be >= 1", got)
-			}
+			assert.GreaterOrEqual(t, got, 1)
+		})
+	}
+}
+
+func TestAggregationWarningMessagesTruncation(t *testing.T) {
+	got := aggregationWarningMessages("custom.googleapis.com/foo", "current", gcpdata.AggregationWarnings{
+		TruncatedSeries: true,
+	})
+	require.Len(t, got, 1)
+	assert.Contains(t, got[0], "truncated")
+	assert.Contains(t, got[0], "500")
+}
+
+func TestFormatTraceGetError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"invalid argument", status.Error(codes.InvalidArgument, "bad trace id"), "32-character hex"},
+		{"not found", status.Error(codes.NotFound, "not found"), "does not exist"},
+		{"permission denied", status.Error(codes.PermissionDenied, "denied"), "credentials"},
+		{"unavailable", status.Error(codes.Unavailable, "down"), "temporarily unavailable"},
+		{"deadline", context.DeadlineExceeded, "did not respond in time"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatTraceGetError("abc", tt.err)
+			assert.Contains(t, got, tt.want)
 		})
 	}
 }

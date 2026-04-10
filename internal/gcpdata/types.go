@@ -3,19 +3,21 @@ package gcpdata
 // LogEntry represents a normalized log entry for LLM consumption.
 // Either TextPayload or JSONPayload is set, never both.
 // All timestamps are UTC strings with millisecond precision (e.g. "2006-01-02T15:04:05.000Z").
+// PayloadConversionError is set if payload conversion failed (e.g., proto marshaling error).
 type LogEntry struct {
-	Timestamp   string            `json:"timestamp"`
-	Severity    string            `json:"severity"`
-	LogName     string            `json:"log_name"`
-	InsertID    string            `json:"insert_id"`
-	TextPayload string            `json:"text_payload,omitempty"`
-	JSONPayload map[string]any    `json:"json_payload,omitempty"`
-	Resource    *ResourceInfo     `json:"resource,omitempty"`
-	HTTPRequest *HTTPRequestInfo  `json:"http_request,omitempty"`
-	Trace       string            `json:"trace,omitempty"`
-	SpanID      string            `json:"span_id,omitempty"`
-	Labels      map[string]string `json:"labels,omitempty"`
-	Operation   *OperationInfo    `json:"operation,omitempty"`
+	Timestamp              string            `json:"timestamp"`
+	Severity               string            `json:"severity"`
+	LogName                string            `json:"log_name"`
+	InsertID               string            `json:"insert_id"`
+	TextPayload            string            `json:"text_payload,omitempty"`
+	JSONPayload            map[string]any    `json:"json_payload,omitempty"`
+	PayloadConversionError string            `json:"payload_conversion_error,omitempty"`
+	Resource               *ResourceInfo     `json:"resource,omitempty"`
+	HTTPRequest            *HTTPRequestInfo  `json:"http_request,omitempty"`
+	Trace                  string            `json:"trace,omitempty"`
+	SpanID                 string            `json:"span_id,omitempty"`
+	Labels                 map[string]string `json:"labels,omitempty"`
+	Operation              *OperationInfo    `json:"operation,omitempty"`
 }
 
 // ResourceInfo describes the monitored resource that produced a log entry.
@@ -65,8 +67,10 @@ type RequestInfo struct {
 // RequestList is the response for logs.find_requests.
 // Count always equals len(Requests).
 type RequestList struct {
-	Count    int           `json:"count"`
-	Requests []RequestInfo `json:"requests"`
+	Count          int           `json:"count"`
+	Requests       []RequestInfo `json:"requests"`
+	Truncated      bool          `json:"truncated,omitempty"`
+	TruncationHint string        `json:"truncation_hint,omitempty"`
 }
 
 // ErrorGroup represents an aggregated error group from Error Reporting.
@@ -83,25 +87,55 @@ type ErrorGroup struct {
 // ErrorGroupList is the response for errors.list.
 // Count always equals len(Groups).
 type ErrorGroupList struct {
-	Count  int          `json:"count"`
-	Groups []ErrorGroup `json:"groups"`
+	Count          int          `json:"count"`
+	Groups         []ErrorGroup `json:"groups"`
+	Truncated      bool         `json:"truncated,omitempty"`
+	TruncationHint string       `json:"truncation_hint,omitempty"`
 }
 
 // ErrorInstance represents a single error event.
 type ErrorInstance struct {
-	Timestamp string `json:"timestamp"`
-	Message   string `json:"message"`
-	Service   string `json:"service,omitempty"`
-	Version   string `json:"version,omitempty"`
+	Timestamp  string        `json:"timestamp"`
+	Message    string        `json:"message"`
+	StackTrace string        `json:"stack_trace,omitempty"`
+	Service    string        `json:"service,omitempty"`
+	Version    string        `json:"version,omitempty"`
+	Context    *ErrorContext `json:"context,omitempty"`
+}
+
+// ErrorContext contains structured context attached to an Error Reporting event.
+type ErrorContext struct {
+	User           string               `json:"user,omitempty"`
+	HTTPRequest    *ErrorHTTPRequest    `json:"http_request,omitempty"`
+	ReportLocation *ErrorSourceLocation `json:"report_location,omitempty"`
+}
+
+type ErrorHTTPRequest struct {
+	Method             string `json:"method,omitempty"`
+	URL                string `json:"url,omitempty"`
+	UserAgent          string `json:"user_agent,omitempty"`
+	Referrer           string `json:"referrer,omitempty"`
+	ResponseStatusCode int32  `json:"response_status_code,omitempty"`
+	RemoteIP           string `json:"remote_ip,omitempty"`
+}
+
+type ErrorSourceLocation struct {
+	FilePath     string `json:"file_path,omitempty"`
+	LineNumber   int32  `json:"line_number,omitempty"`
+	FunctionName string `json:"function_name,omitempty"`
 }
 
 // ErrorGroupDetail is the response for errors.get.
 // Instances is guaranteed non-empty. Message and Service are derived from the first instance.
 type ErrorGroupDetail struct {
-	GroupID   string          `json:"group_id"`
-	Message   string          `json:"message"`
-	Service   string          `json:"service"`
-	Instances []ErrorInstance `json:"instances"`
+	GroupID        string          `json:"group_id"`
+	Message        string          `json:"message"`
+	Service        string          `json:"service"`
+	Instances      []ErrorInstance `json:"instances"`
+	Truncated      bool            `json:"truncated,omitempty"`
+	TruncationHint string          `json:"truncation_hint,omitempty"`
+	NextPageToken  string          `json:"next_page_token,omitempty"`
+	TimeRangeBegin string          `json:"time_range_begin,omitempty"`
 }
 
 // ServiceInfo represents a discovered service in the project.

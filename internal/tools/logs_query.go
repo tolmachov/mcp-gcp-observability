@@ -4,82 +4,54 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-// LogsQueryHandler handles the logs.query tool.
-type LogsQueryHandler struct {
-	client *gcpclient.Client
-}
+func RegisterLogsQuery(s *mcp.Server, client *gcpclient.Client) {
+	requireClient(client)
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "logs.query",
+		Description: "Execute an arbitrary Cloud Logging query with full filter syntax. " +
+			"Use Cloud Logging filter language (e.g. severity>=ERROR, resource.type=\"k8s_container\"). " +
+			"For Kubernetes logs, prefer logs.k8s which builds filters automatically. " +
+			"For initial triage, use logs.summary instead.",
+		Annotations: &mcp.ToolAnnotations{
+			ReadOnlyHint:   true,
+			OpenWorldHint:  ptrTrue(),
+			IdempotentHint: true,
+		},
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsQueryInput) (*mcp.CallToolResult, *gcpdata.LogQueryResult, error) {
+		project, err := resolveProject(in.ProjectID, client.Config().DefaultProject)
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+		if in.Filter == "" {
+			return errResult("filter is required"), nil, nil
+		}
+		limit := clampLimit(in.Limit, 100, client.Config().LogsMaxLimit)
+		order := in.Order
+		if order == "" {
+			order = "desc"
+		}
+		if order != "asc" && order != "desc" {
+			return errResult(fmt.Sprintf("invalid order %q: must be \"asc\" or \"desc\"", order)), nil, nil
+		}
 
-// NewLogsQueryHandler creates a new LogsQueryHandler.
-func NewLogsQueryHandler(client *gcpclient.Client) *LogsQueryHandler {
-	return &LogsQueryHandler{client: requireClient(client)}
-}
+		timeFilter, err := buildTimeFilter(in.TimeFilterInput)
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+		filter := gcpdata.AppendFilter(in.Filter, timeFilter)
 
-// Tool returns the MCP tool definition.
-func (h *LogsQueryHandler) Tool() mcp.Tool {
-	return newToolWithTimeFilter("logs.query",
-		mcp.WithDescription("Execute an arbitrary Cloud Logging query with full filter syntax. "+
-			"Use Cloud Logging filter language (e.g. severity>=ERROR, resource.type=\"k8s_container\"). "+
-			"For Kubernetes logs, prefer logs.k8s which builds filters automatically. "+
-			"For initial triage, use logs.summary instead."),
-		mcp.WithReadOnlyHintAnnotation(true),
-		mcp.WithOpenWorldHintAnnotation(true),
-		mcp.WithIdempotentHintAnnotation(true),
-		mcp.WithString("project_id",
-			mcp.Description("GCP project ID (uses default if not specified)"),
-		),
-		mcp.WithString("filter",
-			mcp.Description("Cloud Logging filter expression (e.g. 'severity>=ERROR', 'resource.type=\"k8s_container\"')"),
-			mcp.Required(),
-		),
-		mcp.WithNumber("limit",
-			mcp.Description("Maximum number of log entries to return (default 100, server max applies)"),
-			mcp.Min(1),
-		),
-		mcp.WithString("order",
-			mcp.Description("Sort order by timestamp (default 'desc')"),
-			mcp.Enum("asc", "desc"),
-		),
-		mcp.WithString("page_token",
-			mcp.Description("Page token for pagination"),
-		),
-	)
-}
+		result, err := gcpdata.QueryLogs(ctx, client.LoggingClient(), project, filter, limit, order, in.PageToken)
+		if err != nil {
+			mcpLog(ctx, req, logLevelError, "logs.query", fmt.Sprintf("query failed for project %s: %v", project, err))
+			return errResult(fmt.Sprintf("Failed to query logs: %v. Verify the project_id and filter syntax.", err)), nil, nil
+		}
 
-// Handle processes the logs.query tool request.
-func (h *LogsQueryHandler) Handle(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	filter, err := request.RequireString("filter")
-	if err != nil {
-		return mcp.NewToolResultError("filter is required"), nil
-	}
-
-	project, errResult := requireProject(request, h.client.Config().DefaultProject)
-	if errResult != nil {
-		return errResult, nil
-	}
-	limit := clampLimit(request.GetInt("limit", 100), 100, h.client.Config().LogsMaxLimit)
-	order := request.GetString("order", "desc")
-	if order != "asc" && order != "desc" {
-		return mcp.NewToolResultError(fmt.Sprintf("invalid order %q: must be \"asc\" or \"desc\"", order)), nil
-	}
-	pageToken := request.GetString("page_token", "")
-
-	timeFilter, err := buildTimeFilter(request)
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
-	filter = gcpdata.AppendFilter(filter, timeFilter)
-
-	result, err := gcpdata.QueryLogs(ctx, h.client.LoggingClient(), project, filter, limit, order, pageToken)
-	if err != nil {
-		mcpLog(ctx, mcp.LoggingLevelError, "logs.query", fmt.Sprintf("query failed for project %s: %v", project, err))
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to query logs: %v. Verify the project_id and filter syntax.", err)), nil
-	}
-
-	return jsonResult(result)
+		return nil, result, nil
+	})
 }

@@ -2,11 +2,13 @@ package internal
 
 import (
 	"context"
+	"fmt"
 	"io"
 
 	"github.com/urfave/cli/v3"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
+	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 	"github.com/tolmachov/mcp-gcp-observability/internal/server"
 )
 
@@ -15,7 +17,7 @@ var Version = "dev"
 
 const serviceName = "mcp-gcp-observability"
 
-// New creates a new instance of application.
+// New creates a new CLI application.
 func New(in io.Reader, out, errOut io.Writer) *cli.Command {
 	return &cli.Command{
 		Name:      serviceName,
@@ -52,6 +54,31 @@ func New(in io.Reader, out, errOut io.Writer) *cli.Command {
 					transport := server.Transport(cmd.String(flagTransport))
 					httpAddr := cmd.String(flagHTTPAddr)
 					return srv.Run(ctx, transport, httpAddr)
+				},
+			},
+			{
+				Name:      "validate-registry",
+				Usage:     "Validate a metrics registry overlay YAML against the embedded schema",
+				ArgsUsage: "<path-to-registry.yaml>",
+				Description: "Loads the given YAML file as a user overlay on top of the embedded default " +
+					"registry and reports any parse, merge, or validation errors. Exits non-zero if the " +
+					"file would be rejected by the server at startup. Use this after generating a custom " +
+					"registry (e.g. via the generate-metrics-registry MCP prompt) to catch mistakes before " +
+					"wiring the file up with METRICS_REGISTRY_FILE.",
+				Action: func(_ context.Context, cmd *cli.Command) error {
+					if cmd.NArg() != 1 {
+						return fmt.Errorf("validate-registry requires exactly one argument: the path to the registry YAML file")
+					}
+					path := cmd.Args().Get(0)
+					reg, err := metrics.LoadRegistry(path)
+					if err != nil {
+						return fmt.Errorf("registry %q is invalid: %w", path, err)
+					}
+					out := cmd.Root().Writer
+					if _, err := fmt.Fprintf(out, "OK: %s loaded successfully (%d metrics total after merge with embedded defaults)\n", path, reg.Count()); err != nil {
+						return fmt.Errorf("writing output: %w", err)
+					}
+					return nil
 				},
 			},
 		},

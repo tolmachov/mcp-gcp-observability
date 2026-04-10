@@ -5,100 +5,109 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
 
 func TestPromptCompleter_EmptyPrefix(t *testing.T) {
 	c := &promptCompleter{}
-	result, err := c.CompletePromptArgument(context.Background(), "investigate-metrics", mcp.CompleteArgument{
-		Name:  "metric_type",
-		Value: "",
-	}, mcp.CompleteContext{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Values) != len(defaultMetricCandidates) {
-		t.Errorf("expected %d candidates, got %d", len(defaultMetricCandidates), len(result.Values))
-	}
+	result, err := c.Handle(context.Background(), &mcp.CompleteRequest{
+		Params: &mcp.CompleteParams{
+			Ref:      &mcp.CompleteReference{Type: "ref/prompt", Name: "investigate-metrics"},
+			Argument: mcp.CompleteParamsArgument{Name: "metric_type", Value: ""},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, len(defaultMetricCandidates), len(result.Completion.Values))
 }
 
 func TestPromptCompleter_FilterByPrefix(t *testing.T) {
 	c := &promptCompleter{}
-	result, err := c.CompletePromptArgument(context.Background(), "investigate-metrics", mcp.CompleteArgument{
-		Name:  "metric_type",
-		Value: "compute",
-	}, mcp.CompleteContext{})
-	if err != nil {
-		t.Fatal(err)
+	result, err := c.Handle(context.Background(), &mcp.CompleteRequest{
+		Params: &mcp.CompleteParams{
+			Ref:      &mcp.CompleteReference{Type: "ref/prompt", Name: "investigate-metrics"},
+			Argument: mcp.CompleteParamsArgument{Name: "metric_type", Value: "compute"},
+		},
+	})
+	require.NoError(t, err)
+	for _, v := range result.Completion.Values {
+		assert.True(t, len(v) >= 7 && v[:7] == "compute")
 	}
-	for _, v := range result.Values {
-		if len(v) < 7 || v[:7] != "compute" {
-			t.Errorf("expected all values to contain 'compute', got %q", v)
-		}
-	}
-	if len(result.Values) == 0 {
-		t.Error("expected at least one compute metric candidate")
-	}
+	assert.NotEmpty(t, result.Completion.Values)
 }
 
 func TestPromptCompleter_CaseInsensitive(t *testing.T) {
 	c := &promptCompleter{}
-	result, err := c.CompletePromptArgument(context.Background(), "investigate-metrics", mcp.CompleteArgument{
-		Name:  "metric_type",
-		Value: "CPU",
-	}, mcp.CompleteContext{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Values) == 0 {
-		t.Error("expected case-insensitive match for 'CPU'")
-	}
+	result, err := c.Handle(context.Background(), &mcp.CompleteRequest{
+		Params: &mcp.CompleteParams{
+			Ref:      &mcp.CompleteReference{Type: "ref/prompt", Name: "investigate-metrics"},
+			Argument: mcp.CompleteParamsArgument{Name: "metric_type", Value: "CPU"},
+		},
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, result.Completion.Values)
 }
 
 func TestPromptCompleter_UnknownPrompt(t *testing.T) {
 	c := &promptCompleter{}
-	result, err := c.CompletePromptArgument(context.Background(), "unknown-prompt", mcp.CompleteArgument{
-		Name:  "metric_type",
-		Value: "cpu",
-	}, mcp.CompleteContext{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Values) != 0 {
-		t.Errorf("expected empty values for unknown prompt, got %d", len(result.Values))
-	}
+	result, err := c.Handle(context.Background(), &mcp.CompleteRequest{
+		Params: &mcp.CompleteParams{
+			Ref:      &mcp.CompleteReference{Type: "ref/prompt", Name: "unknown-prompt"},
+			Argument: mcp.CompleteParamsArgument{Name: "metric_type", Value: "cpu"},
+		},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, result.Completion.Values)
 }
 
 func TestPromptCompleter_UnknownArgument(t *testing.T) {
 	c := &promptCompleter{}
-	result, err := c.CompletePromptArgument(context.Background(), "investigate-metrics", mcp.CompleteArgument{
-		Name:  "unknown_arg",
-		Value: "cpu",
-	}, mcp.CompleteContext{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Values) != 0 {
-		t.Errorf("expected empty values for unknown arg, got %d", len(result.Values))
-	}
+	result, err := c.Handle(context.Background(), &mcp.CompleteRequest{
+		Params: &mcp.CompleteParams{
+			Ref:      &mcp.CompleteReference{Type: "ref/prompt", Name: "investigate-metrics"},
+			Argument: mcp.CompleteParamsArgument{Name: "unknown_arg", Value: "cpu"},
+		},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, result.Completion.Values)
 }
 
 func TestPromptCompleter_UsesRegistry(t *testing.T) {
 	reg := metrics.NewRegistry()
-	// A registry with no entries should fall back to defaults.
 	c := &promptCompleter{registry: reg}
-	result, err := c.CompletePromptArgument(context.Background(), "investigate-metrics", mcp.CompleteArgument{
-		Name:  "metric_type",
-		Value: "",
-	}, mcp.CompleteContext{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Values) != len(defaultMetricCandidates) {
-		t.Errorf("empty registry should fall back to defaults, got %d values", len(result.Values))
-	}
+	result, err := c.Handle(context.Background(), &mcp.CompleteRequest{
+		Params: &mcp.CompleteParams{
+			Ref:      &mcp.CompleteReference{Type: "ref/prompt", Name: "investigate-metrics"},
+			Argument: mcp.CompleteParamsArgument{Name: "metric_type", Value: ""},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, len(defaultMetricCandidates), len(result.Completion.Values))
+}
+
+// TestPromptCompleter_NonEmptyRegistry verifies that when the registry has
+// entries, completions come from the registry rather than from
+// defaultMetricCandidates. Regression guard: a refactor that always returned
+// defaults would pass the empty-registry test above but fail here.
+func TestPromptCompleter_NonEmptyRegistry(t *testing.T) {
+	const metricType = "custom.googleapis.com/my_metric"
+	reg := metrics.NewRegistryFromMetaMap(map[string]metrics.MetricMeta{
+		metricType: {Kind: metrics.KindThroughput, BetterDirection: metrics.DirectionNone},
+	})
+	c := &promptCompleter{registry: reg}
+	result, err := c.Handle(context.Background(), &mcp.CompleteRequest{
+		Params: &mcp.CompleteParams{
+			Ref:      &mcp.CompleteReference{Type: "ref/prompt", Name: "investigate-metrics"},
+			Argument: mcp.CompleteParamsArgument{Name: "metric_type", Value: ""},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Completion.Values, 1)
+	assert.Equal(t, metricType, result.Completion.Values[0])
 }
 
 func TestTransportValidation(t *testing.T) {
@@ -114,19 +123,17 @@ func TestTransportValidation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.transport), func(t *testing.T) {
-			// We can't fully run the server, but we can check that the switch handles correctly.
-			// Testing the validation logic extracted from Run.
 			var err error
 			switch tt.transport {
 			case TransportHTTP:
-				// would call runHTTP
 			case TransportStdio, "":
-				// would call runStdio
 			default:
 				err = fmt.Errorf("unsupported transport %q", tt.transport)
 			}
-			if (err != nil) != tt.wantErr {
-				t.Errorf("transport %q: got err=%v, wantErr=%v", tt.transport, err, tt.wantErr)
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
 			}
 		})
 	}

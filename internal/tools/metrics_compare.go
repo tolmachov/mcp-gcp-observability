@@ -2,248 +2,311 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
 
-	"cloud.google.com/go/monitoring/apiv3/v2/monitoringpb"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
 
-// MetricsCompareHandler handles the metrics.compare tool.
-type MetricsCompareHandler struct {
-	querier        gcpdata.MetricsQuerier
-	registry       *metrics.Registry
-	defaultProject string
-}
+func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "metrics.compare",
+		Description: "Compare two arbitrary time windows for the same metric. " +
+			"Useful for deploy diff, before/after comparisons, or ad-hoc analysis. " +
+			"Returns mean values, delta, trend shift, and classification for each window. " +
+			"For automatic baseline comparison (prev_window, same_weekday_hour), use metrics.snapshot instead.",
+		Annotations: &mcp.ToolAnnotations{
+			ReadOnlyHint:   true,
+			OpenWorldHint:  ptrTrue(),
+			IdempotentHint: true,
+		},
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsCompareInput) (*mcp.CallToolResult, *CompareResult, error) {
+		if in.MetricType == "" {
+			return errResult("metric_type is required"), nil, nil
+		}
+		project, err := resolveProject(in.ProjectID, defaultProject)
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
 
-// NewMetricsCompareHandler creates a new MetricsCompareHandler.
-func NewMetricsCompareHandler(querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string) *MetricsCompareHandler {
-	return &MetricsCompareHandler{querier: querier, registry: registry, defaultProject: defaultProject}
-}
+		windowALabel := in.WindowALabel
+		if windowALabel == "" {
+			windowALabel = "window_a"
+		}
+		windowBLabel := in.WindowBLabel
+		if windowBLabel == "" {
+			windowBLabel = "window_b"
+		}
 
-// Tool returns the MCP tool definition.
-func (h *MetricsCompareHandler) Tool() mcp.Tool {
-	return mcp.NewTool("metrics.compare",
-		mcp.WithDescription("Compare two arbitrary time windows for the same metric. "+
-			"Useful for deploy diff, before/after comparisons, or ad-hoc analysis. "+
-			"Returns mean values, delta, trend shift, and classification for each window. "+
-			"For automatic baseline comparison (prev_window, same_weekday_hour), use metrics.snapshot instead."),
-		mcp.WithReadOnlyHintAnnotation(true),
-		mcp.WithOpenWorldHintAnnotation(true),
-		mcp.WithIdempotentHintAnnotation(true),
-		mcp.WithString("project_id",
-			mcp.Description("GCP project ID (uses default if not specified)"),
-		),
-		mcp.WithString("metric_type",
-			mcp.Description("Full Cloud Monitoring metric type"),
-			mcp.Required(),
-		),
-		mcp.WithString("filter",
-			mcp.Description("Additional Cloud Monitoring label filter"),
-		),
-		mcp.WithString("window_a_from",
-			mcp.Description("Start of window A in RFC3339 format"),
-			mcp.Required(),
-		),
-		mcp.WithString("window_a_to",
-			mcp.Description("End of window A in RFC3339 format"),
-			mcp.Required(),
-		),
-		mcp.WithString("window_b_from",
-			mcp.Description("Start of window B in RFC3339 format"),
-			mcp.Required(),
-		),
-		mcp.WithString("window_b_to",
-			mcp.Description("End of window B in RFC3339 format"),
-			mcp.Required(),
-		),
-		mcp.WithString("window_a_label",
-			mcp.Description("Label for window A (default 'window_a')"),
-		),
-		mcp.WithString("window_b_label",
-			mcp.Description("Label for window B (default 'window_b')"),
-		),
-	)
-}
+		aFrom, err := parseRFC3339(in.WindowAFrom, "window_a_from")
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+		aTo, err := parseRFC3339(in.WindowATo, "window_a_to")
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+		bFrom, err := parseRFC3339(in.WindowBFrom, "window_b_from")
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+		bTo, err := parseRFC3339(in.WindowBTo, "window_b_to")
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
 
-// CompareResult is the output for metrics.compare.
-type CompareResult struct {
-	WindowALabel     string  `json:"window_a_label"`
-	WindowBLabel     string  `json:"window_b_label"`
-	WindowAMean      float64 `json:"window_a_mean"`
-	WindowBMean      float64 `json:"window_b_mean"`
-	DeltaPct         float64 `json:"delta_pct"`
-	TrendShift       string  `json:"trend_shift"`
-	ClassificationA  string  `json:"classification_a"`
-	ClassificationB  string  `json:"classification_b"`
-	StepChangeDetected  bool `json:"step_change_detected"`
-	SLOBreachIntroduced bool `json:"slo_breach_introduced"`
-}
+		if !aTo.After(aFrom) {
+			return errResult(fmt.Sprintf("window_a_to must be after window_a_from (got %s to %s)", aFrom.Format(time.RFC3339), aTo.Format(time.RFC3339))), nil, nil
+		}
+		if !bTo.After(bFrom) {
+			return errResult(fmt.Sprintf("window_b_to must be after window_b_from (got %s to %s)", bFrom.Format(time.RFC3339), bTo.Format(time.RFC3339))), nil, nil
+		}
 
-// Handle processes the metrics.compare tool request.
-func (h *MetricsCompareHandler) Handle(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	metricType, err := request.RequireString("metric_type")
-	if err != nil {
-		return mcp.NewToolResultError("metric_type is required"), nil
-	}
+		meta := registry.Lookup(in.MetricType)
+		stepSeconds := int64(60)
 
-	project, errResult := requireProject(request, h.defaultProject)
-	if errResult != nil {
-		return errResult, nil
-	}
+		sendProgress(ctx, req, 1, 4, "Looking up metric descriptor")
 
-	labelFilter := request.GetString("filter", "")
-	windowALabel := request.GetString("window_a_label", "window_a")
-	windowBLabel := request.GetString("window_b_label", "window_b")
+		descriptor, err := querier.GetMetricDescriptor(ctx, project, in.MetricType)
+		if err != nil {
+			mcpLog(ctx, req, logLevelError, "metrics.compare", fmt.Sprintf("metric descriptor lookup failed: %v", err))
+			return errResult(fmt.Sprintf("Failed to look up metric descriptor: %v. Verify the metric_type.", err)), nil, nil
+		}
 
-	aFrom, err := requireRFC3339(request, "window_a_from")
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
-	aTo, err := requireRFC3339(request, "window_a_to")
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
-	bFrom, err := requireRFC3339(request, "window_b_from")
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
-	bTo, err := requireRFC3339(request, "window_b_to")
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
+		sendProgress(ctx, req, 2, 4, "Querying both windows")
 
-	if !aTo.After(aFrom) {
-		return mcp.NewToolResultError(fmt.Sprintf("window_a_to must be after window_a_from (got %s to %s)", aFrom.Format(time.RFC3339), aTo.Format(time.RFC3339))), nil
-	}
-	if !bTo.After(bFrom) {
-		return mcp.NewToolResultError(fmt.Sprintf("window_b_to must be after window_b_from (got %s to %s)", bFrom.Format(time.RFC3339), bTo.Format(time.RFC3339))), nil
-	}
+		aggSpec := meta.ResolveAggregation()
+		if err := aggSpec.Validate(); err != nil {
+			mcpLog(ctx, req, logLevelError, "metrics.compare",
+				fmt.Sprintf("registry misconfiguration for %s: %v", in.MetricType, err))
+			return errResult(formatRegistryMisconfigError(in.MetricType, err)), nil, nil
+		}
 
-	meta := h.registry.Lookup(metricType)
-	stepSeconds := int64(60)
+		baseParams := gcpdata.QueryTimeSeriesParams{
+			Project:     project,
+			MetricType:  in.MetricType,
+			LabelFilter: in.Filter,
+			StepSeconds: stepSeconds,
+			MetricKind:  descriptor.Kind,
+			ValueType:   descriptor.ValueType,
+		}
 
-	sendProgress(ctx, request, 1, 4, "Looking up metric descriptor")
+		paramsA := baseParams
+		paramsA.Start = aFrom
+		paramsA.End = aTo
 
-	gcpMetricKind, err := h.querier.GetMetricKind(ctx, project, metricType)
-	if err != nil {
-		mcpLog(ctx, mcp.LoggingLevelError, "metrics.compare", fmt.Sprintf("metric descriptor lookup failed: %v", err))
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to look up metric descriptor: %v. Verify the metric_type.", err)), nil
-	}
+		paramsB := baseParams
+		paramsB.Start = bFrom
+		paramsB.End = bTo
 
-	sendProgress(ctx, request, 2, 4, "Querying both windows")
-
-	baseParams := gcpdata.QueryTimeSeriesParams{
-		Project:     project,
-		MetricType:  metricType,
-		LabelFilter: labelFilter,
-		StepSeconds: stepSeconds,
-		MetricKind:  gcpMetricKind,
-		Reducer:     monitoringpb.Aggregation_REDUCE_MEAN,
-	}
-
-	// Query both windows in parallel.
-	paramsA := baseParams
-	paramsA.Start = aFrom
-	paramsA.End = aTo
-
-	paramsB := baseParams
-	paramsB.Start = bFrom
-	paramsB.End = bTo
-
-	var seriesA, seriesB []gcpdata.MetricTimeSeries
-	var errA, errB error
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		defer func() {
-			if r := recover(); r != nil {
-				mcpLog(ctx, mcp.LoggingLevelError, "metrics.compare", fmt.Sprintf("panic querying window A: %v", r))
-				errA = fmt.Errorf("internal error: %v", r)
+		var seriesA, seriesB []gcpdata.MetricTimeSeries
+		var warningsA, warningsB gcpdata.AggregationWarnings
+		var errA, errB error
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					stack := debug.Stack()
+					msg := fmt.Sprintf("panic querying window A: %v\n%s", r, stack)
+					notifyErrLog.Load().Printf("metrics.compare: %s", msg)
+					mcpLog(ctx, req, logLevelError, "metrics.compare", msg)
+					errA = fmt.Errorf("internal error: %v", r)
+				}
+			}()
+			if ctx.Err() != nil {
+				errA = ctx.Err()
+				return
 			}
+			seriesA, warningsA, errA = querier.QueryTimeSeriesAggregated(ctx, paramsA, aggSpec)
 		}()
-		if ctx.Err() != nil {
-			errA = ctx.Err()
-			return
-		}
-		seriesA, errA = h.querier.QueryTimeSeries(ctx, paramsA)
-	}()
-	go func() {
-		defer wg.Done()
-		defer func() {
-			if r := recover(); r != nil {
-				mcpLog(ctx, mcp.LoggingLevelError, "metrics.compare", fmt.Sprintf("panic querying window B: %v", r))
-				errB = fmt.Errorf("internal error: %v", r)
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					stack := debug.Stack()
+					msg := fmt.Sprintf("panic querying window B: %v\n%s", r, stack)
+					notifyErrLog.Load().Printf("metrics.compare: %s", msg)
+					mcpLog(ctx, req, logLevelError, "metrics.compare", msg)
+					errB = fmt.Errorf("internal error: %v", r)
+				}
+			}()
+			if ctx.Err() != nil {
+				errB = ctx.Err()
+				return
 			}
+			seriesB, warningsB, errB = querier.QueryTimeSeriesAggregated(ctx, paramsB, aggSpec)
 		}()
-		if ctx.Err() != nil {
-			errB = ctx.Err()
-			return
+		wg.Wait()
+		logAggregationWarnings(ctx, req, "metrics.compare", in.MetricType, windowALabel, warningsA)
+		logAggregationWarnings(ctx, req, "metrics.compare", in.MetricType, windowBLabel, warningsB)
+		warningsNote := joinNote(
+			aggregationWarningsNote(in.MetricType, windowALabel, warningsA),
+			aggregationWarningsNote(in.MetricType, windowBLabel, warningsB),
+		)
+		if errA != nil || errB != nil {
+			var msgs []string
+			if errA != nil {
+				msgs = append(msgs, fmt.Sprintf("window A: %v", errA))
+			}
+			if errB != nil {
+				msgs = append(msgs, fmt.Sprintf("window B: %v", errB))
+			}
+			msg := strings.Join(msgs, "; ")
+			mcpLog(ctx, req, logLevelError, "metrics.compare", msg)
+			if invalidAggregationSpecError(errA) || invalidAggregationSpecError(errB) {
+				return errResult(formatRegistryMisconfigError(in.MetricType, errors.Join(errA, errB))), nil, nil
+			}
+			if isInvalidFilterError(errA) || isInvalidFilterError(errB) {
+				return errResult(enrichInvalidFilterError(ctx, req, querier, project, in.MetricType, in.Filter, errors.Join(errA, errB))), nil, nil
+			}
+			return errResult(fmt.Sprintf("Failed to query: %s", msg)), nil, nil
 		}
-		seriesB, errB = h.querier.QueryTimeSeries(ctx, paramsB)
-	}()
-	wg.Wait()
-	if errA != nil || errB != nil {
-		var msgs []string
-		if errA != nil {
-			msgs = append(msgs, fmt.Sprintf("window A: %v", errA))
+
+		unsupportedCount := reportUnsupportedPoints(ctx, req, "metrics.compare", in.MetricType, seriesA) +
+			reportUnsupportedPoints(ctx, req, "metrics.compare", in.MetricType, seriesB)
+
+		pointsA := mergePoints(seriesA)
+		pointsB := mergePoints(seriesB)
+
+		if len(pointsA) == 0 || len(pointsB) == 0 {
+			var emptyLabels []string
+			var notes []string
+			if len(pointsA) == 0 {
+				emptyLabels = append(emptyLabels, windowALabel)
+				windowDesc := fmt.Sprintf("%s (%s to %s)", windowALabel, aFrom.Format(time.RFC3339), aTo.Format(time.RFC3339))
+				notes = append(notes, emptyWindowMessage(in.MetricType, windowDesc, descriptor.Kind, in.Filter))
+			}
+			if len(pointsB) == 0 {
+				emptyLabels = append(emptyLabels, windowBLabel)
+				windowDesc := fmt.Sprintf("%s (%s to %s)", windowBLabel, bFrom.Format(time.RFC3339), bTo.Format(time.RFC3339))
+				notes = append(notes, emptyWindowMessage(in.MetricType, windowDesc, descriptor.Kind, in.Filter))
+			}
+
+			trendShift := "unchanged"
+			switch {
+			case len(pointsA) == 0 && len(pointsB) > 0:
+				trendShift = "emerged"
+			case len(pointsA) > 0 && len(pointsB) == 0:
+				trendShift = "disappeared"
+			}
+			noDataNote := strings.Join(notes, "\n\n")
+			if warningsNote != "" {
+				if noDataNote != "" {
+					noDataNote += "\n\n"
+				}
+				noDataNote += warningsNote
+			}
+			if unsupportedCount > 0 {
+				if noDataNote != "" {
+					noDataNote += "\n\n"
+				}
+				noDataNote += fmt.Sprintf("Dropped %d points with unsupported or malformed value types during decode (see server log).", unsupportedCount)
+			}
+			result := &CompareResult{
+				WindowALabel:              windowALabel,
+				WindowBLabel:              windowBLabel,
+				TrendShift:                trendShift,
+				ClassificationA:           string(metrics.ClassInsufficientData),
+				ClassificationB:           string(metrics.ClassInsufficientData),
+				ClassificationConfidenceA: "low",
+				ClassificationConfidenceB: "low",
+				NoData:                    true,
+				NoDataWindows:             emptyLabels,
+				Note:                      noDataNote,
+			}
+			if len(pointsA) > 0 {
+				expectedA := expectedPointsForWindow(aTo.Sub(aFrom), int(stepSeconds))
+				fA := metrics.Process(pointsA, nil, meta, int(stepSeconds), expectedA)
+				result.WindowAMean = fA.Mean
+				result.ClassificationA = safeClassification(fA.Classification)
+				result.ClassificationConfidenceA = string(fA.Confidence)
+			}
+			if len(pointsB) > 0 {
+				expectedB := expectedPointsForWindow(bTo.Sub(bFrom), int(stepSeconds))
+				fB := metrics.Process(pointsB, nil, meta, int(stepSeconds), expectedB)
+				result.WindowBMean = fB.Mean
+				result.ClassificationB = safeClassification(fB.Classification)
+				result.ClassificationConfidenceB = string(fB.Confidence)
+			}
+			return nil, result, nil
 		}
-		if errB != nil {
-			msgs = append(msgs, fmt.Sprintf("window B: %v", errB))
+
+		sendProgress(ctx, req, 3, 4, "Processing results")
+
+		expectedBaseA := expectedPointsForWindow(aTo.Sub(aFrom), int(stepSeconds))
+		// Window A has no baseline — it is the reference window for Window B.
+		// Pass expectedBaselinePoints=0 to skip baseline reliability checks;
+		// deriveConfidence returns ConfidenceLow when BaselinePointCount == 0.
+		fA := metrics.Process(pointsA, nil, meta, int(stepSeconds), 0)
+		fB := metrics.Process(pointsB, pointsA, meta, int(stepSeconds), expectedBaseA)
+
+		trendShift := "unchanged"
+		if classificationSeverity(fB.Classification) > classificationSeverity(fA.Classification) {
+			trendShift = "degraded"
+		} else if classificationSeverity(fB.Classification) < classificationSeverity(fA.Classification) {
+			trendShift = "improved"
 		}
-		msg := strings.Join(msgs, "; ")
-		mcpLog(ctx, mcp.LoggingLevelError, "metrics.compare", msg)
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to query: %s", msg)), nil
-	}
 
-	pointsA := mergePoints(seriesA)
-	pointsB := mergePoints(seriesB)
+		sloBreachIntroduced := fB.SLOBreach && !fA.SLOBreach
 
-	if len(pointsA) == 0 {
-		return mcp.NewToolResultError(fmt.Sprintf("No data found for %s (%s to %s). Verify the metric_type with metrics.list and check the time range.", windowALabel, aFrom.Format(time.RFC3339), aTo.Format(time.RFC3339))), nil
-	}
-	if len(pointsB) == 0 {
-		return mcp.NewToolResultError(fmt.Sprintf("No data found for %s (%s to %s). Verify the metric_type with metrics.list and check the time range.", windowBLabel, bFrom.Format(time.RFC3339), bTo.Format(time.RFC3339))), nil
-	}
+		var note string
+		if warningsNote != "" {
+			note = warningsNote
+		}
+		if unsupportedCount > 0 {
+			note = joinNote(note, fmt.Sprintf("Dropped %d points with unsupported or malformed value types during decode (see server log).", unsupportedCount))
+		}
 
-	sendProgress(ctx, request, 3, 4, "Processing results")
-
-	// Process: A is self-baseline, B uses A as baseline.
-	fA := metrics.Process(pointsA, nil, meta, int(stepSeconds))
-	fB := metrics.Process(pointsB, pointsA, meta, int(stepSeconds))
-
-	trendShift := "unchanged"
-	if classificationSeverity(fB.Classification) > classificationSeverity(fA.Classification) {
-		trendShift = "degraded"
-	} else if classificationSeverity(fB.Classification) < classificationSeverity(fA.Classification) {
-		trendShift = "improved"
-	}
-
-	sloBreachIntroduced := fB.SLOBreach && !fA.SLOBreach
-
-	return jsonResult(CompareResult{
-		WindowALabel:        windowALabel,
-		WindowBLabel:        windowBLabel,
-		WindowAMean:         fA.Mean,
-		WindowBMean:         fB.Mean,
-		DeltaPct:            fB.DeltaPct,
-		TrendShift:          trendShift,
-		ClassificationA:     string(fA.Classification),
-		ClassificationB:     string(fB.Classification),
-		StepChangeDetected:  fB.StepChangeDetected,
-		SLOBreachIntroduced: sloBreachIntroduced,
+		cmp := &CompareResult{
+			WindowALabel:              windowALabel,
+			WindowBLabel:              windowBLabel,
+			WindowAMean:               fA.Mean,
+			WindowBMean:               fB.Mean,
+			DeltaPct:                  fB.DeltaPct,
+			TrendShift:                trendShift,
+			ClassificationA:           safeClassification(fA.Classification),
+			ClassificationB:           safeClassification(fB.Classification),
+			ClassificationConfidenceA: string(fA.Confidence),
+			ClassificationConfidenceB: string(fB.Confidence),
+			SLOBreachIntroduced:       sloBreachIntroduced,
+			Note:                      note,
+		}
+		if fB.StepChangeAt != nil {
+			cmp.StepChangeAt = fB.StepChangeAt.Format(time.RFC3339)
+		}
+		return nil, cmp, nil
 	})
 }
 
-func requireRFC3339(request mcp.CallToolRequest, field string) (time.Time, error) {
-	s, err := request.RequireString(field)
-	if err != nil {
+type CompareResult struct {
+	WindowALabel              string   `json:"window_a_label"`
+	WindowBLabel              string   `json:"window_b_label"`
+	WindowAMean               float64  `json:"window_a_mean"`
+	WindowBMean               float64  `json:"window_b_mean"`
+	DeltaPct                  float64  `json:"delta_pct"`
+	TrendShift                string   `json:"trend_shift"`
+	ClassificationA           string   `json:"classification_a"`
+	ClassificationB           string   `json:"classification_b"`
+	ClassificationConfidenceA string   `json:"classification_confidence_a"`
+	ClassificationConfidenceB string   `json:"classification_confidence_b"`
+	StepChangeAt              string   `json:"step_change_at,omitempty"`
+	SLOBreachIntroduced       bool     `json:"slo_breach_introduced"`
+	NoData                    bool     `json:"no_data,omitempty"`
+	NoDataWindows             []string `json:"no_data_windows,omitempty"`
+	Note                      string   `json:"note,omitempty"`
+}
+
+func parseRFC3339(s, field string) (time.Time, error) {
+	if s == "" {
 		return time.Time{}, fmt.Errorf("%s is required", field)
 	}
 	t, err := time.Parse(time.RFC3339, s)
@@ -255,22 +318,28 @@ func requireRFC3339(request mcp.CallToolRequest, field string) (time.Time, error
 
 func classificationSeverity(class metrics.Classification) int {
 	switch class {
+	case metrics.ClassInsufficientData:
+		return 0
 	case metrics.ClassStable:
 		return 0
+	case metrics.ClassImprovement:
+		return -1
 	case metrics.ClassNoisy:
 		return 1
 	case metrics.ClassRecovery:
 		return 2
 	case metrics.ClassSpike:
 		return 3
-	case metrics.ClassStepRegression:
+	case metrics.ClassFlapping:
 		return 4
-	case metrics.ClassSustainedRegression:
+	case metrics.ClassStepRegression:
 		return 5
-	case metrics.ClassSaturation:
+	case metrics.ClassSustainedRegression:
 		return 6
+	case metrics.ClassSaturation:
+		return 7
 	default:
 		// Unknown classifications are treated as high severity (fail-safe).
-		return 5
+		return 6
 	}
 }

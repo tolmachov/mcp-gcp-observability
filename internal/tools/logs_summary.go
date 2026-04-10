@@ -4,59 +4,51 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-// LogsSummaryHandler handles the logs.summary tool.
-type LogsSummaryHandler struct {
-	client *gcpclient.Client
-}
+func RegisterLogsSummary(s *mcp.Server, client *gcpclient.Client) {
+	requireClient(client)
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "logs.summary",
+		Description: "Get an aggregated summary of logs (based on up to 1000 sampled entries): severity distribution, top services, top errors, and sample entries. " +
+			"Useful for initial triage before drilling down with logs.query or logs.k8s. " +
+			"Does NOT return full log entries — use logs.query for that.",
+		Annotations: &mcp.ToolAnnotations{
+			ReadOnlyHint:   true,
+			OpenWorldHint:  ptrTrue(),
+			IdempotentHint: true,
+		},
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsSummaryInput) (*mcp.CallToolResult, *gcpdata.LogsSummary, error) {
+		project, err := resolveProject(in.ProjectID, client.Config().DefaultProject)
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+		filter := in.Filter
 
-// NewLogsSummaryHandler creates a new LogsSummaryHandler.
-func NewLogsSummaryHandler(client *gcpclient.Client) *LogsSummaryHandler {
-	return &LogsSummaryHandler{client: requireClient(client)}
-}
+		timeFilter, err := buildTimeFilter(in.TimeFilterInput)
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
+		filter = gcpdata.AppendFilter(filter, timeFilter)
 
-// Tool returns the MCP tool definition.
-func (h *LogsSummaryHandler) Tool() mcp.Tool {
-	return newToolWithTimeFilter("logs.summary",
-		mcp.WithDescription("Get an aggregated summary of logs (based on up to 1000 sampled entries): severity distribution, top services, top errors, and sample entries. "+
-			"Useful for initial triage before drilling down with logs.query or logs.k8s. "+
-			"Does NOT return full log entries — use logs.query for that."),
-		mcp.WithReadOnlyHintAnnotation(true),
-		mcp.WithOpenWorldHintAnnotation(true),
-		mcp.WithIdempotentHintAnnotation(true),
-		mcp.WithString("project_id",
-			mcp.Description("GCP project ID (uses default if not specified)"),
-		),
-		mcp.WithString("filter",
-			mcp.Description("Additional Cloud Logging filter to narrow the scope"),
-		),
-	)
-}
+		sendProgress(ctx, req, 0, 1000, "Scanning log entries")
 
-// Handle processes the logs.summary tool request.
-func (h *LogsSummaryHandler) Handle(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	project, errResult := requireProject(request, h.client.Config().DefaultProject)
-	if errResult != nil {
-		return errResult, nil
-	}
-	filter := request.GetString("filter", "")
+		result, err := gcpdata.SummarizeLogs(ctx, client.LoggingClient(), project, filter,
+			func(scanned, total int) {
+				sendProgress(ctx, req, float64(scanned), float64(total),
+					fmt.Sprintf("Scanned %d/%d entries", scanned, total))
+			})
+		if err != nil {
+			mcpLog(ctx, req, logLevelError, "logs.summary", fmt.Sprintf("summarize failed for project %s: %v", project, err))
+			return errResult(fmt.Sprintf("Failed to summarize logs: %v. Verify the project_id and filter syntax.", err)), nil, nil
+		}
 
-	timeFilter, err := buildTimeFilter(request)
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
-	filter = gcpdata.AppendFilter(filter, timeFilter)
+		sendProgress(ctx, req, 1000, 1000, "Aggregating results")
 
-	result, err := gcpdata.SummarizeLogs(ctx, h.client.LoggingClient(), project, filter)
-	if err != nil {
-		mcpLog(ctx, mcp.LoggingLevelError, "logs.summary", fmt.Sprintf("summarize failed for project %s: %v", project, err))
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to summarize logs: %v. Verify the project_id and filter syntax.", err)), nil
-	}
-
-	return jsonResult(result)
+		return nil, result, nil
+	})
 }

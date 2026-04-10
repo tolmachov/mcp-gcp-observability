@@ -49,8 +49,8 @@ func IsValidSeverity(s string) bool {
 	return validSeverities[strings.ToUpper(s)]
 }
 
-// AppendFilter joins two filter parts with a newline (implicit AND in Cloud Logging filter syntax).
-// Returns the other part unchanged if either part is empty.
+// AppendFilter joins two filter parts with newline (implicit AND).
+// Returns the other part unchanged if either is empty.
 func AppendFilter(base, part string) string {
 	if base == "" {
 		return part
@@ -61,9 +61,8 @@ func AppendFilter(base, part string) string {
 	return base + "\n" + part
 }
 
-// formatTimestamp converts a proto timestamp to a UTC string with millisecond precision
-// (e.g. "2006-01-02T15:04:05.000Z"). This is similar to RFC3339 but always includes
-// exactly 3 fractional digits and a literal "Z" suffix.
+// formatTimestamp converts proto timestamp to UTC string with millisecond precision
+// (e.g., "2006-01-02T15:04:05.000Z").
 func formatTimestamp(ts *timestamppb.Timestamp) string {
 	if ts == nil {
 		return ""

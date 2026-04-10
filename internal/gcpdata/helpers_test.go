@@ -5,6 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"cloud.google.com/go/logging/apiv2/loggingpb"
 	"google.golang.org/genproto/googleapis/api/monitoredres"
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -27,9 +30,7 @@ func TestSafeInt32(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := safeInt32(tt.in)
-			if got != tt.want {
-				t.Errorf("safeInt32(%d) = %d, want %d", tt.in, got, tt.want)
-			}
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -50,9 +51,7 @@ func TestFormatDuration(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := formatDuration(tt.dur)
-			if got != tt.want {
-				t.Errorf("formatDuration(%v) = %q, want %q", tt.dur, got, tt.want)
-			}
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -72,9 +71,7 @@ func TestEscapeFilterValue(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := EscapeFilterValue(tt.in)
-			if got != tt.want {
-				t.Errorf("EscapeFilterValue(%q) = %q, want %q", tt.in, got, tt.want)
-			}
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -82,32 +79,25 @@ func TestEscapeFilterValue(t *testing.T) {
 func TestIsValidSeverity(t *testing.T) {
 	valid := []string{"ERROR", "INFO", "WARNING", "CRITICAL", "DEBUG", "DEFAULT", "NOTICE", "ALERT", "EMERGENCY", "error", "Error"}
 	for _, s := range valid {
-		if !IsValidSeverity(s) {
-			t.Errorf("IsValidSeverity(%q) = false, want true", s)
-		}
+		assert.True(t, IsValidSeverity(s), "expected IsValidSeverity(%q) to be true", s)
 	}
 	invalid := []string{"INVALID", "ERR", "", "warn", "FATAL"}
 	for _, s := range invalid {
-		if IsValidSeverity(s) {
-			t.Errorf("IsValidSeverity(%q) = true, want false", s)
-		}
+		assert.False(t, IsValidSeverity(s), "expected IsValidSeverity(%q) to be false", s)
 	}
 }
 
 func TestFormatTimestamp(t *testing.T) {
 	t.Run("nil", func(t *testing.T) {
-		if got := formatTimestamp(nil); got != "" {
-			t.Errorf("formatTimestamp(nil) = %q, want empty", got)
-		}
+		got := formatTimestamp(nil)
+		assert.Equal(t, "", got)
 	})
 
 	t.Run("valid", func(t *testing.T) {
 		ts := timestamppb.New(time.Date(2025, 3, 15, 10, 30, 0, 0, time.UTC))
 		got := formatTimestamp(ts)
 		want := "2025-03-15T10:30:00.000Z"
-		if got != want {
-			t.Errorf("formatTimestamp() = %q, want %q", got, want)
-		}
+		assert.Equal(t, want, got)
 	})
 }
 
@@ -124,9 +114,7 @@ func TestFormatLatency(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := formatLatency(tt.dur)
-			if got != tt.want {
-				t.Errorf("formatLatency() = %q, want %q", got, tt.want)
-			}
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -144,9 +132,7 @@ func TestExtractTraceID(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := extractTraceID(tt.trace)
-			if got != tt.want {
-				t.Errorf("extractTraceID(%q) = %q, want %q", tt.trace, got, tt.want)
-			}
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -206,18 +192,15 @@ func TestExtractServiceName(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := extractServiceName(tt.entry)
-			if got != tt.want {
-				t.Errorf("extractServiceName() = %q, want %q", got, tt.want)
-			}
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
 
 func TestStructToMap(t *testing.T) {
 	t.Run("nil", func(t *testing.T) {
-		if got := structToMap(nil); got != nil {
-			t.Errorf("structToMap(nil) = %v, want nil", got)
-		}
+		got := structToMap(nil)
+		assert.Nil(t, got)
 	})
 
 	t.Run("with fields", func(t *testing.T) {
@@ -228,28 +211,18 @@ func TestStructToMap(t *testing.T) {
 			"nested": map[string]any{"inner": "data"},
 			"list":   []any{"a", "b"},
 		})
-		if err != nil {
-			t.Fatalf("failed to create struct: %v", err)
-		}
+		require.NoError(t, err)
 
 		m := structToMap(s)
-		if m["key"] != "value" {
-			t.Errorf("key = %v, want 'value'", m["key"])
-		}
-		if m["number"] != 42.0 {
-			t.Errorf("number = %v, want 42.0", m["number"])
-		}
-		if m["flag"] != true {
-			t.Errorf("flag = %v, want true", m["flag"])
-		}
+		assert.Equal(t, "value", m["key"])
+		assert.Equal(t, 42.0, m["number"])
+		assert.Equal(t, true, m["flag"])
 		nested, ok := m["nested"].(map[string]any)
-		if !ok || nested["inner"] != "data" {
-			t.Errorf("nested = %v, want map with inner=data", m["nested"])
-		}
+		assert.True(t, ok)
+		assert.Equal(t, "data", nested["inner"])
 		list, ok := m["list"].([]any)
-		if !ok || len(list) != 2 {
-			t.Errorf("list = %v, want [a, b]", m["list"])
-		}
+		assert.True(t, ok)
+		assert.Len(t, list, 2)
 	})
 }
 
@@ -268,9 +241,7 @@ func TestAppendFilter(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := AppendFilter(tt.base, tt.part)
-			if got != tt.want {
-				t.Errorf("AppendFilter(%q, %q) = %q, want %q", tt.base, tt.part, got, tt.want)
-			}
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -284,15 +255,11 @@ func TestTopN(t *testing.T) {
 	}
 
 	result := topN(counts, 2)
-	if len(result) != 2 {
-		t.Fatalf("topN returned %d items, want 2", len(result))
-	}
-	if result[0].Service != "svc-c" || result[0].Count != 200 {
-		t.Errorf("first = %v, want svc-c:200", result[0])
-	}
-	if result[1].Service != "svc-a" || result[1].Count != 100 {
-		t.Errorf("second = %v, want svc-a:100", result[1])
-	}
+	require.Len(t, result, 2)
+	assert.Equal(t, "svc-c", result[0].Service)
+	assert.Equal(t, 200, result[0].Count)
+	assert.Equal(t, "svc-a", result[1].Service)
+	assert.Equal(t, 100, result[1].Count)
 }
 
 func TestTopNErrors(t *testing.T) {
@@ -303,10 +270,7 @@ func TestTopNErrors(t *testing.T) {
 	}
 
 	result := topNErrors(counts, 2)
-	if len(result) != 2 {
-		t.Fatalf("topNErrors returned %d items, want 2", len(result))
-	}
-	if result[0].Message != "null ptr" || result[0].Count != 100 {
-		t.Errorf("first = %v, want null ptr:100", result[0])
-	}
+	require.Len(t, result, 2)
+	assert.Equal(t, "null ptr", result[0].Message)
+	assert.Equal(t, 100, result[0].Count)
 }
