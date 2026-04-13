@@ -43,6 +43,8 @@ func RegisterLogsFindRequests(s *mcp.Server, client *gcpclient.Client) {
 			return errResult(err.Error()), nil, nil
 		}
 
+		sendProgress(ctx, req, 0, 1, "Finding requests...")
+
 		result, err := gcpdata.FindRequests(ctx, client.LoggingClient(), project, in.URLPattern, in.Method, in.StatusCode, in.TracedOnly, timeFilter, limit)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "logs.find_requests", fmt.Sprintf("find requests failed: %v", err))

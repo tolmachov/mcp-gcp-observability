@@ -70,6 +70,8 @@ func RegisterLogsK8s(s *mcp.Server, client *gcpclient.Client) {
 			return errResult(fmt.Sprintf("invalid order %q: must be \"asc\" or \"desc\"", order)), nil, nil
 		}
 
+		sendProgress(ctx, req, 0, 1, "Querying Kubernetes logs...")
+
 		result, err := gcpdata.QueryLogs(ctx, client.LoggingClient(), project, filter, limit, order, in.PageToken)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "logs.k8s", fmt.Sprintf("query failed for project %s: %v", project, err))

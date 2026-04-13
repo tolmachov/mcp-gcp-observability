@@ -46,6 +46,8 @@ func RegisterLogsQuery(s *mcp.Server, client *gcpclient.Client) {
 		}
 		filter := gcpdata.AppendFilter(in.Filter, timeFilter)
 
+		sendProgress(ctx, req, 0, 1, "Querying logs...")
+
 		result, err := gcpdata.QueryLogs(ctx, client.LoggingClient(), project, filter, limit, order, in.PageToken)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "logs.query", fmt.Sprintf("query failed for project %s: %v", project, err))

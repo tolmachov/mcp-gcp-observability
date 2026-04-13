@@ -32,6 +32,8 @@ func RegisterErrorsGet(s *mcp.Server, client *gcpclient.Client) {
 		}
 		limit := clampLimit(in.Limit, 20, client.Config().ErrorsMaxLimit)
 
+		sendProgress(ctx, req, 0, 1, "Fetching error group details...")
+
 		result, err := gcpdata.GetErrorGroup(ctx, client.ErrorsClient(), project, in.GroupID, limit, in.PageToken)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "errors.get", fmt.Sprintf("get error group %s failed: %v", in.GroupID, err))

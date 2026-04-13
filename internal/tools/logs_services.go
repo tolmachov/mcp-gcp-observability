@@ -34,6 +34,8 @@ func RegisterLogsServices(s *mcp.Server, client *gcpclient.Client) {
 			return errResult(err.Error()), nil, nil
 		}
 
+		sendProgress(ctx, req, 0, 1, "Discovering services...")
+
 		result, err := gcpdata.ListServices(ctx, client.LoggingClient(), project, timeFilter)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "logs.services", fmt.Sprintf("list services failed for project %s: %v", project, err))

@@ -42,6 +42,8 @@ func RegisterMetricsList(s *mcp.Server, querier gcpdata.MetricsQuerier, registry
 		}
 		limit := clampLimit(in.Limit, 50, 200)
 
+		sendProgress(ctx, req, 0, 1, "Discovering metrics...")
+
 		// Registry entries.
 		registryEntries := registry.List(in.Match, kind)
 		seen := make(map[string]bool, len(registryEntries))

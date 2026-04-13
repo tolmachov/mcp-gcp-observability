@@ -38,6 +38,8 @@ func RegisterLogsByTrace(s *mcp.Server, client *gcpclient.Client) {
 			return errResult(err.Error()), nil, nil
 		}
 
+		sendProgress(ctx, req, 0, 1, "Querying logs by trace...")
+
 		result, err := gcpdata.QueryLogsByTrace(ctx, client.LoggingClient(), project, in.TraceID, timeFilter, limit, in.PageToken)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "logs.by_trace", fmt.Sprintf("trace query failed for %s: %v", in.TraceID, err))

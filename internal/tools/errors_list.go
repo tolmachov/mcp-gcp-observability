@@ -37,6 +37,8 @@ func RegisterErrorsList(s *mcp.Server, client *gcpclient.Client) {
 
 		limit := clampLimit(in.Limit, 50, client.Config().ErrorsMaxLimit)
 
+		sendProgress(ctx, req, 0, 1, "Listing error groups...")
+
 		result, err := gcpdata.ListErrors(ctx, client.ErrorsClient(), project, timeRangeHours, limit, in.ServiceFilter, in.VersionFilter)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "errors.list", fmt.Sprintf("list errors failed for project %s: %v", project, err))

@@ -74,6 +74,8 @@ func RegisterTraceGet(s *mcp.Server, client *gcpclient.Client) {
 			return errResult(err.Error()), nil, nil
 		}
 
+		sendProgress(ctx, req, 0, 1, "Fetching trace...")
+
 		result, err := gcpdata.GetTrace(ctx, client.TraceClient(), project, in.TraceID)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "trace.get", fmt.Sprintf("get trace %s failed: %v", in.TraceID, err))
