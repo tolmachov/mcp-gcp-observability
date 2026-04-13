@@ -356,7 +356,10 @@ func mergeThresholds(dst *ClassificationThresholds, overlay map[string]any) []er
 			errs = append(errs, fmt.Errorf("field %q must be number, got %T", key, val))
 			continue
 		}
-		switch key {
+		// Second switch applies the value. The first switch (lines 349-353)
+		// validates key presence by continuing on unknown keys, so reaching
+		// here means key is one of the known valid cases.
+		switch key { //nolint:GoDfaInspectionRunner // DFA detects unreachable cases, but second switch is intentionally exhaustive for validated keys
 		case "significant_delta_pct":
 			dst.SignificantDeltaPct = f
 		case "breach_ratio_for_regression":

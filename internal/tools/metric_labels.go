@@ -101,12 +101,12 @@ func enrichInvalidFilterError(ctx context.Context, req *mcp.CallToolRequest, que
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "Filter invalid for %s.\n", metricType)
-	fmt.Fprintf(&b, "  Your filter: %s\n", labelFilter)
-	fmt.Fprintf(&b, "  GCP said:    %v\n", origErr)
+	_, _ = fmt.Fprintf(&b, "Filter invalid for %s.\n", metricType)
+	_, _ = fmt.Fprintf(&b, "  Your filter: %s\n", labelFilter)
+	_, _ = fmt.Fprintf(&b, "  GCP said:    %v\n", origErr)
 	b.WriteString("\nAvailable labels for this metric:\n")
 	if len(labels.Metric) > 0 {
-		fmt.Fprintf(&b, "  metric.labels:   %s\n", strings.Join(labels.Metric, ", "))
+		_, _ = fmt.Fprintf(&b, "  metric.labels:   %s\n", strings.Join(labels.Metric, ", "))
 	} else {
 		b.WriteString("  metric.labels:   (none)\n")
 	}
@@ -117,7 +117,7 @@ func enrichInvalidFilterError(ctx context.Context, req *mcp.CallToolRequest, que
 		}
 		sort.Strings(types)
 		for _, t := range types {
-			fmt.Fprintf(&b, "  resource.labels: %s   (%s)\n", strings.Join(labels.Resource[t], ", "), t)
+			_, _ = fmt.Fprintf(&b, "  resource.labels: %s   (%s)\n", strings.Join(labels.Resource[t], ", "), t)
 		}
 	} else {
 		b.WriteString("  resource.labels: (none)\n")

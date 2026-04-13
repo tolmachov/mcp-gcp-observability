@@ -380,14 +380,14 @@ func TestValidateProfileType(t *testing.T) {
 
 	// Invalid type.
 	err := ValidateProfileType("GARBAGE")
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid profile_type")
 }
 
 func TestValidateValueIndex_EmptySampleTypes(t *testing.T) {
 	p := &profile.Profile{}
 	err := validateValueIndex(p, 0)
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "profile has no sample types")
 }
 

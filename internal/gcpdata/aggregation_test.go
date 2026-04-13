@@ -274,9 +274,7 @@ func testFoldCarryForwardResurrect(t *testing.T) {
 	// last carry bucket, so still 51; bucket maxCarryForwardBuckets+1 is
 	// the first departed bucket, so 1.
 	assert.Equal(t, 51.0, got[maxCarryForwardBuckets].Value, "last carry bucket")
-	if maxCarryForwardBuckets+1 < total-1 {
-		assert.Equal(t, 1.0, got[maxCarryForwardBuckets+1].Value, "first departed bucket")
-	}
+	assert.Equal(t, 1.0, got[maxCarryForwardBuckets+1].Value, "first departed bucket")
 }
 
 // testFoldMeanWithDepartedGroup is a regression guard against a class
@@ -579,7 +577,9 @@ func TestBuildAggregationReduceNoneIsOptOut(t *testing.T) {
 // client: an invalid spec must be rejected up front with a wrapped error
 // so callers never reach the RPC path with nonsense aggregation.
 func TestQueryTimeSeriesAggregatedInvalidSpec(t *testing.T) {
-	_, _, err := QueryTimeSeriesAggregated(context.Background(), nil, QueryTimeSeriesParams{}, metrics.AggregationSpec{})
+	// Passing nil client is intentional: QueryTimeSeriesAggregated validates
+	// the AggregationSpec before making any RPC calls, so the client is never used.
+	_, _, err := QueryTimeSeriesAggregated(context.Background(), nil, QueryTimeSeriesParams{}, metrics.AggregationSpec{}) //nolint:GoMaybeNil
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid aggregation spec")
 	// The error must wrap the sentinel so tool handlers can escalate

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"time"
@@ -88,7 +89,7 @@ type MetricTimeSeries struct {
 	UnsupportedCount int `json:"unsupported_count,omitempty"`
 }
 
-// MetricDescriptorBasic: fields needed for aligner selection and response enrichment.
+// MetricDescriptorBasic contains fields needed for aligner selection and response enrichment.
 // Everything from one ListMetricDescriptors call; no second RPC needed.
 type MetricDescriptorBasic struct {
 	Kind      string // GAUGE, DELTA, CUMULATIVE
@@ -376,7 +377,7 @@ type AggregationWarnings struct {
 	TruncatedSeries bool
 }
 
-// HasAny: true if any actionable warning field is set.
+// HasAny returns true if any actionable warning field is set.
 // (TotalBuckets and GroupCount are context, not warnings.)
 func (w AggregationWarnings) HasAny() bool {
 	return w.SingleGroup || w.CarryForwardBuckets > 0 || w.DepartedGroupBuckets > 0 || w.DepartedSeries > 0 || w.TruncatedSeries
@@ -693,7 +694,7 @@ func applyReducer(values []float64, reducer metrics.Reducer) float64 {
 	case metrics.ReducerMax:
 		mx := values[0]
 		for _, v := range values[1:] {
-			if v > mx || (v != v && mx == mx) { // NaN wins
+			if v > mx || (math.IsNaN(v) && !math.IsNaN(mx)) { // NaN wins
 				mx = v
 			}
 		}
@@ -701,7 +702,7 @@ func applyReducer(values []float64, reducer metrics.Reducer) float64 {
 	case metrics.ReducerMin:
 		mn := values[0]
 		for _, v := range values[1:] {
-			if v < mn || (v != v && mn == mn) { // NaN wins
+			if v < mn || (math.IsNaN(v) && !math.IsNaN(mn)) { // NaN wins
 				mn = v
 			}
 		}

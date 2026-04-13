@@ -12,11 +12,11 @@ const (
 	ClassSustainedRegression Classification = "sustained_regression"
 	ClassRecovery            Classification = "recovery"
 	ClassSaturation          Classification = "saturation"
-	// ClassImprovement: favorable delta continuing to improve (post-deploy signal).
+	// ClassImprovement is a favorable delta continuing to improve (post-deploy signal).
 	ClassImprovement Classification = "improvement"
-	// ClassFlapping: repeatedly crosses SLO threshold back and forth.
+	// ClassFlapping repeatedly crosses SLO threshold back and forth.
 	ClassFlapping Classification = "flapping"
-	// ClassInsufficientData: too sparse or unreliable baseline; cannot classify.
+	// ClassInsufficientData means too sparse or unreliable baseline; cannot classify.
 	ClassInsufficientData Classification = "insufficient_data"
 	// ClassNotComputed is the zero value for Classification, returned when
 	// ProcessWithBaselineStats is called with an empty points slice.
@@ -39,9 +39,11 @@ func (c Classification) IsValid() bool {
 	return false
 }
 
-// isDeltaBased: true if classification depends on baseline comparison.
-// Excludes saturation (direct capacity), stable (lowest-severity), and
-// flapping (pure current-window signal based on SLO threshold crossings).
+// isDeltaBased reports whether a classification depends on baseline comparison.
+// Excludes saturation (measured directly from capacity, not from baseline delta),
+// stable (no delta analysis needed for lowest-severity), and flapping (based
+// purely on SLO threshold crossings in the current window, independent of
+// historical baseline).
 func (c Classification) isDeltaBased() bool {
 	switch c {
 	case ClassSpike, ClassStepRegression, ClassSustainedRegression,
@@ -52,9 +54,11 @@ func (c Classification) isDeltaBased() bool {
 }
 
 // flappingTransitionRate is the minimum fraction of points that must be
-// threshold crossings to be classified as flapping. For a 60-point window
-// this means at least 9 transitions — roughly a crossing every ~7 minutes
-// at a 60s step, which is unambiguously oscillating behavior.
+// threshold crossings to be classified as flapping. For example, with a
+// 60-point window this means at least 9 transitions (0.15 * 60). At 60-second
+// step intervals, this represents roughly a crossing every 7 minutes, which is
+// unambiguously oscillating behavior. Classification only runs when
+// ActualPoints >= 10 (see classifyCore).
 const flappingTransitionRate = 0.15
 
 // flappingBreachRatioMin / flappingBreachRatioMax bracket the window of
