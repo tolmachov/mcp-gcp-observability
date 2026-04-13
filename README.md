@@ -1,6 +1,15 @@
+<div align="center">
+
 # MCP GCP Observability
 
-MCP server for querying Google Cloud Logging, Error Reporting, Cloud Trace, Cloud Monitoring, and Cloud Profiler without the web UI.
+**MCP server for querying Google Cloud Logging, Error Reporting, Cloud Trace, Cloud Monitoring, and Cloud Profiler without the web UI.**
+
+[![MCP Server](https://badge.mcpx.dev?type=server 'MCP Server')](https://github.com/punkpeye/awesome-mcp-servers)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/tolmachov/mcp-gcp-observability)](https://go.dev/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Go Report Card](https://goreportcard.com/badge/github.com/tolmachov/mcp-gcp-observability)](https://goreportcard.com/report/github.com/tolmachov/mcp-gcp-observability)
+
+</div>
 
 ## Features
 
