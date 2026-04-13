@@ -102,6 +102,21 @@ type TraceGetInput struct {
 	TraceID string `json:"trace_id" jsonschema:"The trace ID (32-character hex string, not the full resource path)"`
 }
 
+// TraceListInput is the input for trace.list.
+type TraceListInput struct {
+	ProjectInput
+	StartTime  string `json:"start_time,omitempty"  jsonschema:"Start of time range in RFC3339 format (e.g. '2025-01-15T00:00:00Z'). Defaults to 1 hour ago, or 1 hour before end_time if only end_time is provided."`
+	EndTime    string `json:"end_time,omitempty"    jsonschema:"End of time range in RFC3339 format (e.g. '2025-01-15T23:59:59Z'). Defaults to now."`
+	RootName   string `json:"root_name,omitempty"   jsonschema:"Filter by root span name prefix (e.g. '/api/users'). Compiled to 'root:NAME' filter."`
+	SpanName   string `json:"span_name,omitempty"   jsonschema:"Filter by any span name prefix. Compiled to 'span:NAME' filter."`
+	MinLatency string `json:"min_latency,omitempty" jsonschema:"Minimum trace latency (e.g. '100ms', '1.5s'). Compiled to 'latency:NNNms' filter."`
+	Filter     string `json:"filter,omitempty"      jsonschema:"Raw Cloud Trace filter. Overrides root_name/span_name/min_latency. Syntax: 'root:NAME', 'span:NAME', '+label_key:value', 'latency:DURATIONms'."`
+	OrderBy    string `json:"order_by,omitempty"    jsonschema:"Sort order (default 'start desc'). One of: trace_id, trace_id desc, name, name desc, duration, duration desc, start, start desc"`
+	View       string `json:"view,omitempty"        jsonschema:"Data per trace (default 'ROOTSPAN'). ROOTSPAN returns root span info; MINIMAL returns only trace IDs; COMPLETE returns all spans (expensive)."`
+	Limit      int    `json:"limit,omitempty"       jsonschema:"Maximum traces to return (default 50, max 200)"`
+	PageToken  string `json:"page_token,omitempty"  jsonschema:"Page token from previous response's next_page_token"`
+}
+
 // MetricsListInput is the input for metrics.list.
 type MetricsListInput struct {
 	ProjectInput

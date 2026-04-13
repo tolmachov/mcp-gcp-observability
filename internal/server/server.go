@@ -64,7 +64,8 @@ func New(cfg *gcpclient.Config, version string, stdin io.Reader, stdout, errOut 
 				"3) errors.list — list error groups sorted by count. " +
 				"4) logs.query or logs.k8s — investigate specific logs with filters. " +
 				"5) logs.by_trace — follow a single request across services using a trace ID from logs.find_requests or logs.query results. " +
-				"6) trace.get — get detailed span tree for a trace to understand request timing and dependencies. " +
+				"6) trace.list — search for traces by span name, latency, or time range without knowing trace IDs. " +
+				"7) trace.get — get detailed span tree for a trace to understand request timing and dependencies. " +
 				"Always prefer logs.k8s over logs.query when investigating Kubernetes workloads. " +
 				"For metrics analysis: " +
 				"1) metrics.list — discover available metrics. " +
@@ -172,6 +173,7 @@ func (s *Server) Run(ctx context.Context, transport Transport, httpAddr string) 
 	tools.RegisterErrorsGet(s.mcpServer, client)
 	// Traces
 	tools.RegisterTraceGet(s.mcpServer, client)
+	tools.RegisterTraceList(s.mcpServer, client)
 	// Metrics
 	tools.RegisterMetricsList(s.mcpServer, querier, reg, defaultProject)
 	tools.RegisterMetricsSnapshot(s.mcpServer, querier, reg, defaultProject)

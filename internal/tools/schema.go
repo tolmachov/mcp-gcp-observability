@@ -46,4 +46,6 @@ var (
 	enumBaselineMode = toAny([]string{"prev_window", "same_weekday_hour", "pre_event"})
 	enumProfileType  = toAny([]string{"CPU", "WALL", "HEAP", "THREADS", "CONTENTION", "PEAK_HEAP", "HEAP_ALLOC"})
 	enumSortBy       = toAny([]string{"self", "cumulative"})
+	enumTraceOrderBy = toAny([]string{"trace_id", "trace_id desc", "name", "name desc", "duration", "duration desc", "start", "start desc"})
+	enumTraceView    = toAny([]string{"MINIMAL", "ROOTSPAN", "COMPLETE"})
 )

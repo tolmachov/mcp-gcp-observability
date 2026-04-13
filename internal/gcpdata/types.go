@@ -192,6 +192,27 @@ type TraceSpan struct {
 	Children  []TraceSpan       `json:"children,omitempty"`
 }
 
+// TraceSummary is a single trace in a trace.list result.
+// With ROOTSPAN view, RootSpanName/StartTime/EndTime/Duration/Labels come from the root span.
+type TraceSummary struct {
+	TraceID      string            `json:"trace_id"`
+	RootSpanName string            `json:"root_span_name,omitempty"`
+	StartTime    string            `json:"start_time,omitempty"`
+	EndTime      string            `json:"end_time,omitempty"`
+	Duration     string            `json:"duration,omitempty"`
+	SpanCount    int               `json:"span_count"`
+	Labels       map[string]string `json:"labels,omitempty"`
+}
+
+// TraceListResult is the response for trace.list.
+type TraceListResult struct {
+	Count          int            `json:"count"`
+	Traces         []TraceSummary `json:"traces"`
+	NextPageToken  string         `json:"next_page_token,omitempty"`
+	Truncated      bool           `json:"truncated,omitempty"`
+	TruncationHint string         `json:"truncation_hint,omitempty"`
+}
+
 // TraceDetail is the response for trace.get.
 // Count is the total number of spans across the entire tree (not just len(Spans), which counts only roots).
 type TraceDetail struct {
