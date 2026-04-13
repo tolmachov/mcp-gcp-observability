@@ -8,6 +8,9 @@
 [![Go Version](https://img.shields.io/github/go-mod/go-version/tolmachov/mcp-gcp-observability)](https://go.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Go Report Card](https://goreportcard.com/badge/github.com/tolmachov/mcp-gcp-observability)](https://goreportcard.com/report/github.com/tolmachov/mcp-gcp-observability)
+[![mcp-gcp-observability MCP server](https://glama.ai/mcp/servers/tolmachov/mcp-gcp-observability/badges/score.svg)](https://glama.ai/mcp/servers/tolmachov/mcp-gcp-observability)
+
+[![mcp-gcp-observability MCP server](https://glama.ai/mcp/servers/tolmachov/mcp-gcp-observability/badges/card.svg)](https://glama.ai/mcp/servers/tolmachov/mcp-gcp-observability)
 
 </div>
 
