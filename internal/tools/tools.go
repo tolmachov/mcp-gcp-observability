@@ -237,12 +237,6 @@ func clampLimit(limit, fallback, maxLimit int) int {
 	return limit
 }
 
-// ptrTrue returns a pointer to true, for use in ToolAnnotations.
-func ptrTrue() *bool {
-	v := true
-	return &v
-}
-
 // safeClassification converts a Classification to string for JSON output,
 // mapping the zero value ClassNotComputed ("") to ClassInsufficientData
 // so consumers never receive an empty classification string.

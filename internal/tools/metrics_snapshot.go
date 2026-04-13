@@ -51,7 +51,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, regi
 			"For comparing two specific time windows (e.g. before/after deploy), use metrics.compare instead.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
-			OpenWorldHint:  ptrTrue(),
+			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsSnapshotInput) (*mcp.CallToolResult, *MetricSnapshotResult, error) {

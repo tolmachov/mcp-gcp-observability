@@ -8,6 +8,7 @@ require (
 	cloud.google.com/go/monitoring v1.26.0
 	cloud.google.com/go/trace v1.13.0
 	github.com/google/jsonschema-go v0.4.2
+	github.com/google/pprof v0.0.0-20260402051712-545e8a4df936
 	github.com/joho/godotenv v1.5.1
 	github.com/modelcontextprotocol/go-sdk v1.5.0
 	github.com/stretchr/testify v1.11.1
@@ -32,6 +33,7 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.14 // indirect
 	github.com/googleapis/gax-go/v2 v2.21.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect

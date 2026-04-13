@@ -19,7 +19,7 @@ func RegisterErrorsGet(s *mcp.Server, client *gcpclient.Client) {
 			"Returns all recent events for the group (time filtering is not supported for individual error events).",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
-			OpenWorldHint:  ptrTrue(),
+			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ErrorsGetInput) (*mcp.CallToolResult, *gcpdata.ErrorGroupDetail, error) {

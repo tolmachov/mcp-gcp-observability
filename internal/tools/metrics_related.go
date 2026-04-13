@@ -57,7 +57,7 @@ func RegisterMetricsRelated(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 			"For breaking down a single metric by dimension, use metrics.top_contributors instead.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
-			OpenWorldHint:  ptrTrue(),
+			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsRelatedInput) (*mcp.CallToolResult, *RelatedSignalsResult, error) {

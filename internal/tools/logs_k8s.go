@@ -20,7 +20,7 @@ func RegisterLogsK8s(s *mcp.Server, client *gcpclient.Client) {
 			"Preferred over logs.query for K8s workloads. Results default to newest-first (use order parameter to change).",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
-			OpenWorldHint:  ptrTrue(),
+			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsK8sInput) (*mcp.CallToolResult, *gcpdata.LogQueryResult, error) {

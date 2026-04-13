@@ -15,14 +15,16 @@ import (
 	logging "cloud.google.com/go/logging/apiv2"
 	monitoring "cloud.google.com/go/monitoring/apiv3/v2"
 	cloudtrace "cloud.google.com/go/trace/apiv1"
+	cloudprofiler "google.golang.org/api/cloudprofiler/v2"
 )
 
-// Client wraps GCP API clients for Logging, Error Reporting, Cloud Trace, and Cloud Monitoring.
+// Client wraps GCP API clients for Logging, Error Reporting, Cloud Trace, Cloud Monitoring, and Cloud Profiler.
 type Client struct {
 	logging    *logging.Client
 	errors     *errorreporting.ErrorStatsClient
 	trace      *cloudtrace.Client
 	monitoring *monitoring.MetricClient
+	profiler   *cloudprofiler.Service
 	config     *Config
 	closeOnce  sync.Once
 	closeErr   error
@@ -40,11 +42,14 @@ func (c *Client) TraceClient() *cloudtrace.Client { return c.trace }
 // MonitoringClient returns the Cloud Monitoring API client.
 func (c *Client) MonitoringClient() *monitoring.MetricClient { return c.monitoring }
 
+// ProfilerService returns the Cloud Profiler REST API service.
+func (c *Client) ProfilerService() *cloudprofiler.Service { return c.profiler }
+
 // Config returns a copy of the client configuration.
 func (c *Client) Config() Config { return *c.config }
 
-// New creates a new GCP client with Logging, Error Reporting, and Cloud Trace API clients.
-// Optionally configures a custom DNS resolver from Config.DNSServer.
+// New creates a new GCP client with Logging, Error Reporting, Cloud Trace, Cloud Monitoring,
+// and Cloud Profiler API clients. Optionally configures a custom DNS resolver from Config.DNSServer.
 func New(ctx context.Context, cfg *Config) (*Client, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config must not be nil")
@@ -75,12 +80,23 @@ func New(ctx context.Context, cfg *Config) (*Client, error) {
 		return nil, errors.Join(fmt.Errorf("creating monitoring client: %w", err), loggingClient.Close(), errorsClient.Close(), traceClient.Close())
 	}
 
+	// Cloud Profiler uses a REST (HTTP) client, not gRPC, so we create it
+	// with default credentials (custom DNS dialer is gRPC-only).
+	// The cloudprofiler.Service has no Close() method — it uses an OAuth2
+	// HTTP client from Application Default Credentials and does not hold
+	// resources that need cleanup.
+	profilerService, err := cloudprofiler.NewService(ctx)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("creating profiler service: %w", err), loggingClient.Close(), errorsClient.Close(), traceClient.Close(), monitoringClient.Close())
+	}
+
 	cfgCopy := *cfg
 	return &Client{
 		logging:    loggingClient,
 		errors:     errorsClient,
 		trace:      traceClient,
 		monitoring: monitoringClient,
+		profiler:   profilerService,
 		config:     &cfgCopy,
 	}, nil
 }

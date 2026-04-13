@@ -21,7 +21,7 @@ func RegisterErrorsList(s *mcp.Server, client *gcpclient.Client) {
 			"Note: Error Reporting supports only lookback periods ending at now (1h, 6h, 1d, 1w, 30d), not arbitrary historical start/end timestamps.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
-			OpenWorldHint:  ptrTrue(),
+			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ErrorsListInput) (*mcp.CallToolResult, *gcpdata.ErrorGroupList, error) {

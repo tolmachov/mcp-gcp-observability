@@ -61,7 +61,7 @@ func RegisterTraceGet(s *mcp.Server, client *gcpclient.Client) {
 			"Requires Cloud Trace API to be enabled in the project.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
-			OpenWorldHint:  ptrTrue(),
+			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
 		OutputSchema: traceDetailSchema,

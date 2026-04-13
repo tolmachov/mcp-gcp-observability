@@ -21,7 +21,7 @@ func RegisterLogsByRequestID(s *mcp.Server, client *gcpclient.Client) {
 			"If you have a trace ID instead, use logs.by_trace or trace.get.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
-			OpenWorldHint:  ptrTrue(),
+			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsByRequestIDInput) (*mcp.CallToolResult, *gcpdata.LogQueryResult, error) {

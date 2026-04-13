@@ -18,7 +18,7 @@ func RegisterLogsFindRequests(s *mcp.Server, client *gcpclient.Client) {
 			"Returns trace_id and request_id for each request, enabling deeper investigation with logs.by_trace, logs.by_request_id, or trace.get.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
-			OpenWorldHint:  ptrTrue(),
+			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsFindRequestsInput) (*mcp.CallToolResult, *gcpdata.RequestList, error) {

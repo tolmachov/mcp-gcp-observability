@@ -141,6 +141,64 @@ type MetricsRelatedInput struct {
 	Window     string `json:"window,omitempty" jsonschema:"Time window to analyze (default '1h'). One of: 15m, 30m, 1h, 3h, 6h, 24h"`
 }
 
+// ProfilerListInput is the input for profiler.list.
+type ProfilerListInput struct {
+	ProjectInput
+	TimeFilterInput
+	ProfileType string `json:"profile_type,omitempty" jsonschema:"Profile type filter, case-insensitive (one of: CPU, WALL, HEAP, THREADS, CONTENTION, PEAK_HEAP, HEAP_ALLOC)"`
+	Target      string `json:"target,omitempty"       jsonschema:"Deployment target (service name) filter"`
+	Limit       int    `json:"limit,omitempty"        jsonschema:"Number of profiles to return (default 20, max 100)"`
+	PageToken   string `json:"page_token,omitempty"   jsonschema:"Page token for pagination"`
+}
+
+// ProfilerTopInput is the input for profiler.top.
+type ProfilerTopInput struct {
+	ProjectInput
+	ProfileID  string `json:"profile_id"             jsonschema:"Profile ID from profiler.list results, or diff_id from profiler.compare results"`
+	Limit      int    `json:"limit,omitempty"         jsonschema:"Maximum number of functions to return (default 20, max 50)"`
+	SortBy     string `json:"sort_by,omitempty"       jsonschema:"Sort by 'self' or 'cumulative' cost (default 'cumulative')"`
+	ValueIndex int    `json:"value_index,omitempty"   jsonschema:"Value index for multi-value profiles (default 0). Use profiler.top once to see available_values."`
+	Filter     string `json:"filter,omitempty"        jsonschema:"Substring filter on function name or file path (e.g. 'mypackage/handler')"`
+}
+
+// ProfilerPeekInput is the input for profiler.peek.
+type ProfilerPeekInput struct {
+	ProjectInput
+	ProfileID    string `json:"profile_id"             jsonschema:"Profile ID from profiler.list results, or diff_id from profiler.compare results"`
+	FunctionName string `json:"function_name"          jsonschema:"Function name to inspect (from profiler.top results). Substring match."`
+	Limit        int    `json:"limit,omitempty"         jsonschema:"Max callers/callees to return (default 10, max 30)"`
+	ValueIndex   int    `json:"value_index,omitempty"   jsonschema:"Value index for multi-value profiles (default 0)"`
+}
+
+// ProfilerFlamegraphInput is the input for profiler.flamegraph.
+type ProfilerFlamegraphInput struct {
+	ProjectInput
+	ProfileID    string  `json:"profile_id"              jsonschema:"Profile ID from profiler.list results, or diff_id from profiler.compare results"`
+	RootFunction string  `json:"root_function,omitempty"  jsonschema:"Function to use as subtree root (omit for full profile root). Substring match."`
+	MaxDepth     int     `json:"max_depth,omitempty"      jsonschema:"Maximum tree depth to return (default 3, max 6)"`
+	MinPct       float64 `json:"min_pct,omitempty"        jsonschema:"Minimum percentage of total to include a node (default 1.0)"`
+	ValueIndex   int     `json:"value_index,omitempty"    jsonschema:"Value index for multi-value profiles (default 0)"`
+}
+
+// ProfilerCompareInput is the input for profiler.compare.
+type ProfilerCompareInput struct {
+	ProjectInput
+	ProfileID     string `json:"profile_id"              jsonschema:"Current profile ID from profiler.list (diff_id is not supported here)"`
+	BaseProfileID string `json:"base_profile_id"         jsonschema:"Base profile ID to compare against from profiler.list (diff_id is not supported here)"`
+	ValueIndex    int    `json:"value_index,omitempty"    jsonschema:"Value index for multi-value profiles (default 0)"`
+}
+
+// ProfilerTrendsInput is the input for profiler.trends.
+type ProfilerTrendsInput struct {
+	ProjectInput
+	ProfileType    string `json:"profile_type"            jsonschema:"Profile type, case-insensitive (one of: CPU, WALL, HEAP, THREADS, CONTENTION, PEAK_HEAP, HEAP_ALLOC)"`
+	Target         string `json:"target"                  jsonschema:"Deployment target (service name)"`
+	FunctionFilter string `json:"function_filter,omitempty" jsonschema:"Substring filter to track specific functions (e.g. 'mypackage/handler'). If omitted, tracks top functions by peak cost."`
+	ValueIndex     int    `json:"value_index,omitempty"    jsonschema:"Value index for multi-value profiles (default 0)"`
+	MaxProfiles    int    `json:"max_profiles,omitempty"   jsonschema:"Maximum number of profiles to analyze (default 30, max 100). More profiles = wider time range."`
+	MaxFunctions   int    `json:"max_functions,omitempty"  jsonschema:"Maximum number of functions to track (default 10, max 20)"`
+}
+
 // MetricsCompareInput is the input for metrics.compare.
 type MetricsCompareInput struct {
 	ProjectInput

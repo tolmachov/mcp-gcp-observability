@@ -71,7 +71,15 @@ func New(cfg *gcpclient.Config, version string, stdin io.Reader, stdout, errOut 
 				"2) metrics.snapshot — get semantic snapshot with baseline comparison, trend detection, and classification. " +
 				"3) metrics.top_contributors — break down by label dimension to find which values contribute most to an anomaly. " +
 				"4) metrics.related — check correlated signals configured in the registry. " +
-				"5) metrics.compare — compare two arbitrary time windows (e.g. before/after deploy).",
+				"5) metrics.compare — compare two arbitrary time windows (e.g. before/after deploy). " +
+					"For profiling analysis: " +
+					"1) profiler.list — discover available profiles by service and type. " +
+					"2) profiler.top — see top functions by resource consumption. " +
+					"3) profiler.peek — understand a hotspot's callers and callees. " +
+					"4) profiler.flamegraph — view bounded subtree of the call graph. " +
+					"5) profiler.compare — compare two profiles to find regressions (use diff_id with top/peek/flamegraph). " +
+					"6) profiler.trends — track how function costs change over time across multiple profiles. " +
+					"Use profiler.compare for point-in-time A/B comparison; use profiler.trends for historical cost evolution.",
 			Logger:            logger,
 			CompletionHandler: completer.Handle,
 		},
@@ -170,6 +178,14 @@ func (s *Server) Run(ctx context.Context, transport Transport, httpAddr string) 
 	tools.RegisterMetricsTop(s.mcpServer, querier, reg, defaultProject)
 	tools.RegisterMetricsRelated(s.mcpServer, querier, reg, defaultProject)
 	tools.RegisterMetricsCompare(s.mcpServer, querier, reg, defaultProject)
+	// Profiler
+	profileCache := gcpdata.NewProfileCache(10)
+	tools.RegisterProfilerList(s.mcpServer, client)
+	tools.RegisterProfilerTop(s.mcpServer, client, profileCache)
+	tools.RegisterProfilerPeek(s.mcpServer, client, profileCache)
+	tools.RegisterProfilerFlamegraph(s.mcpServer, client, profileCache)
+	tools.RegisterProfilerCompare(s.mcpServer, client, profileCache)
+	tools.RegisterProfilerTrends(s.mcpServer, client, profileCache)
 
 	if err := s.registerResources(client, reg); err != nil {
 		return err
@@ -362,6 +378,35 @@ func (s *Server) registerPrompts() {
 			"3. Use errors.list to see the most frequent error groups\n" +
 			"4. For any concerning services, use logs.k8s or logs.query to investigate further\n" +
 			"5. Provide a health summary with any issues found and recommended actions"
+		return &mcp.GetPromptResult{
+			Messages: []*mcp.PromptMessage{
+				{Role: "user", Content: &mcp.TextContent{Text: msg}},
+			},
+		}, nil
+	})
+
+	s.mcpServer.AddPrompt(&mcp.Prompt{
+		Name:        "investigate-profile",
+		Description: "Investigate performance hotspots using Cloud Profiler: list profiles, find top functions, and drill into call paths",
+		Arguments: []*mcp.PromptArgument{
+			{Name: "service", Description: "Service/target name to investigate"},
+			{Name: "profile_type", Description: "Profile type (CPU, HEAP, WALL, CONTENTION, etc.)"},
+		},
+	}, func(_ context.Context, request *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+		service := request.Params.Arguments["service"]
+		profileType := request.Params.Arguments["profile_type"]
+		msg := "Investigate performance hotspots using Cloud Profiler:\n" +
+			"1. Use profiler.list to discover available profiles"
+		if service != "" {
+			msg += fmt.Sprintf(" (filter by target: %s)", service)
+		}
+		if profileType != "" {
+			msg += fmt.Sprintf(" (filter by type: %s)", profileType)
+		}
+		msg += "\n2. Use profiler.top on the most recent profile to identify the hottest functions" +
+			"\n3. Use profiler.peek on the top hotspot to understand who calls it and what it calls" +
+			"\n4. Use profiler.flamegraph to see the call subtree around the hotspot" +
+			"\n5. Summarize the findings: which functions consume the most resources, potential optimizations"
 		return &mcp.GetPromptResult{
 			Messages: []*mcp.PromptMessage{
 				{Role: "user", Content: &mcp.TextContent{Text: msg}},

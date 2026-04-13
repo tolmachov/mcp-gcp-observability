@@ -20,7 +20,7 @@ func RegisterLogsServices(s *mcp.Server, client *gcpclient.Client) {
 			"Returns service names you can use as filters in logs.k8s or logs.query.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
-			OpenWorldHint:  ptrTrue(),
+			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsServicesInput) (*mcp.CallToolResult, *gcpdata.ServiceList, error) {

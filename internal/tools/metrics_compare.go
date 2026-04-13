@@ -24,7 +24,7 @@ func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 			"For automatic baseline comparison (prev_window, same_weekday_hour), use metrics.snapshot instead.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
-			OpenWorldHint:  ptrTrue(),
+			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsCompareInput) (*mcp.CallToolResult, *CompareResult, error) {

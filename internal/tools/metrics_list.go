@@ -24,7 +24,7 @@ func RegisterMetricsList(s *mcp.Server, querier gcpdata.MetricsQuerier, registry
 			"Does NOT return time series data — use metrics.snapshot for that.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
-			OpenWorldHint:  ptrTrue(),
+			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsListInput) (*mcp.CallToolResult, *MetricsListResult, error) {

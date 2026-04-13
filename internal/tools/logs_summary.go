@@ -19,7 +19,7 @@ func RegisterLogsSummary(s *mcp.Server, client *gcpclient.Client) {
 			"Does NOT return full log entries — use logs.query for that.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
-			OpenWorldHint:  ptrTrue(),
+			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsSummaryInput) (*mcp.CallToolResult, *gcpdata.LogsSummary, error) {
