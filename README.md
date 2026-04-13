@@ -1,6 +1,6 @@
 # MCP GCP Observability
 
-MCP server for querying Google Cloud Logging, Error Reporting, Cloud Trace, and Cloud Monitoring without the web UI.
+MCP server for querying Google Cloud Logging, Error Reporting, Cloud Trace, Cloud Monitoring, and Cloud Profiler without the web UI.
 
 ## Features
 
@@ -8,6 +8,7 @@ MCP server for querying Google Cloud Logging, Error Reporting, Cloud Trace, and 
 - **Error Reporting** — grouped errors sorted by count, individual events with stack traces
 - **Cloud Trace** — span trees, latency analysis, trace-based log correlation
 - **Cloud Monitoring** — metric discovery, semantic snapshots with baseline comparison, anomaly classification, contributor drill-down, and arbitrary window comparison
+- **Cloud Profiler** — profile listing, hotspot analysis (top/peek), call graph visualization (flamegraph), profile comparison, and performance trend tracking
 
 ## Prerequisites
 
@@ -17,6 +18,7 @@ MCP server for querying Google Cloud Logging, Error Reporting, Cloud Trace, and 
   - Error Reporting
   - Cloud Trace
   - Cloud Monitoring
+  - Cloud Profiler
 - Application Default Credentials configured:
   ```bash
   gcloud auth application-default login
@@ -28,6 +30,7 @@ MCP server for querying Google Cloud Logging, Error Reporting, Cloud Trace, and 
   - `cloudtrace.traces.get`
   - `monitoring.timeSeries.list`
   - `monitoring.metricDescriptors.list`
+  - `cloudprofiler.profiles.list`
 
 ## Installation
 
@@ -107,6 +110,7 @@ make build
 
 | Tool | Description |
 |------|-------------|
+| `trace.list` | Search traces by span name, latency, or time range |
 | `trace.get` | Get trace details with complete span tree by trace ID |
 
 ### Metrics
@@ -119,6 +123,17 @@ make build
 | `metrics.related` | Check all related metrics for correlated anomalies |
 | `metrics.compare` | Compare two arbitrary time windows (before/after deploy, incident diff) |
 
+### Profiling
+
+| Tool | Description |
+|------|-------------|
+| `profiler.list` | List available Cloud Profiler profiles with metadata |
+| `profiler.top` | Show top functions ranked by resource consumption (pprof top) |
+| `profiler.peek` | Show callers and callees of a specific function (pprof peek) |
+| `profiler.flamegraph` | Get bounded subtree of the call graph (flamegraph view) |
+| `profiler.compare` | Compare two profiles to find regressions; returns diff_id |
+| `profiler.trends` | Track how function costs change over time across multiple profiles |
+
 ## Recommended Workflow
 
 ### Logs & Errors
@@ -128,7 +143,8 @@ make build
 3. `errors.list` — list error groups sorted by count
 4. `logs.query` or `logs.k8s` — investigate specific logs with filters
 5. `logs.by_trace` — follow a single request across services
-6. `trace.get` — get detailed span tree for latency analysis
+6. `trace.list` — search traces by span name, latency, or time range
+7. `trace.get` — get detailed span tree for latency analysis
 
 ### Metrics
 
@@ -137,6 +153,15 @@ make build
 3. `metrics.top_contributors` — drill down by dimension to find root cause
 4. `metrics.related` — check correlated metrics for broader context
 5. `metrics.compare` — compare before/after windows for deploy or incident analysis
+
+### Profiling Analysis
+
+1. `profiler.list` — discover available profiles
+2. `profiler.top` — find top functions by resource consumption
+3. `profiler.peek` — understand a hotspot's callers and callees
+4. `profiler.flamegraph` — view bounded subtree of the call graph
+5. `profiler.compare` — A/B comparison (use diff_id with top/peek/flamegraph)
+6. `profiler.trends` — track how function costs change over time across multiple profiles
 
 ## Built-in Prompts
 
@@ -148,6 +173,8 @@ The server provides pre-built investigation workflows:
 | `trace-request` | Trace HTTP request end-to-end: find by URL, follow trace, analyze spans |
 | `investigate-metrics` | Metric anomaly investigation: discover, snapshot, drill down, check related |
 | `service-health` | Check health of services: discover, summarize logs, identify issues |
+| `investigate-profile` | Investigate performance hotspots using Cloud Profiler |
+| `generate-metrics-registry` | Scan codebase and auto-generate metrics registry overlay YAML |
 
 ## Configuration
 
