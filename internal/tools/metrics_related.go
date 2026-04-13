@@ -60,6 +60,9 @@ func RegisterMetricsRelated(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
+		InputSchema: inputSchemaWithEnums[MetricsRelatedInput](
+			enumPatch{"window", enumWindow},
+		),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsRelatedInput) (*mcp.CallToolResult, *RelatedSignalsResult, error) {
 		if in.MetricType == "" {
 			return errResult("metric_type is required"), nil, nil

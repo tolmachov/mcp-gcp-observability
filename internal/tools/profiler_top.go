@@ -24,6 +24,9 @@ func RegisterProfilerTop(s *mcp.Server, client *gcpclient.Client, cache *gcpdata
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
+		InputSchema: inputSchemaWithEnums[ProfilerTopInput](
+			enumPatch{"sort_by", enumSortBy},
+		),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerTopInput) (*mcp.CallToolResult, *gcpdata.ProfileTopResult, error) {
 		if in.ProfileID == "" {
 			return errResult("profile_id is required"), nil, nil

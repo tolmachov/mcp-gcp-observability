@@ -836,7 +836,7 @@ func TestSnapshotIntegration_InvalidWindow(t *testing.T) {
 		"window":      "99h",
 	})
 	require.NoError(t, err)
-	expectError(t, result, "invalid window")
+	expectError(t, result, "99h")
 }
 
 // --- metrics.list tests ---
@@ -961,7 +961,7 @@ func TestListIntegration_InvalidKind(t *testing.T) {
 		"kind": "bogus",
 	})
 	require.NoError(t, err)
-	expectError(t, result, "invalid kind")
+	expectError(t, result, "bogus")
 }
 
 func TestListIntegration_Truncation(t *testing.T) {

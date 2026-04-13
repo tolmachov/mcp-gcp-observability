@@ -21,6 +21,9 @@ func RegisterLogsFindRequests(s *mcp.Server, client *gcpclient.Client) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
+		InputSchema: inputSchemaWithEnums[LogsFindRequestsInput](
+			enumPatch{"method", enumHTTPMethod},
+		),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsFindRequestsInput) (*mcp.CallToolResult, *gcpdata.RequestList, error) {
 		if in.URLPattern == "" {
 			return errResult("url_pattern is required"), nil, nil

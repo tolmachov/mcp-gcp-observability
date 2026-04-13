@@ -32,6 +32,10 @@ func RegisterMetricsTop(s *mcp.Server, querier gcpdata.MetricsQuerier, registry 
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
+		InputSchema: inputSchemaWithEnums[MetricsTopInput](
+			enumPatch{"window", enumWindow},
+			enumPatch{"baseline_mode", enumBaselineMode},
+		),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsTopInput) (*mcp.CallToolResult, *TopContributorsResult, error) {
 		if in.MetricType == "" {
 			return errResult("metric_type is required"), nil, nil

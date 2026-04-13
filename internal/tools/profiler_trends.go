@@ -24,6 +24,9 @@ func RegisterProfilerTrends(s *mcp.Server, client *gcpclient.Client, cache *gcpd
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
+		InputSchema: inputSchemaWithEnums[ProfilerTrendsInput](
+			enumPatch{"profile_type", enumProfileType},
+		),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerTrendsInput) (*mcp.CallToolResult, *gcpdata.ProfileTrendsResult, error) {
 		if in.ProfileType == "" {
 			return errResult("profile_type is required (e.g. CPU, HEAP, WALL)"), nil, nil

@@ -23,6 +23,10 @@ func RegisterLogsK8s(s *mcp.Server, client *gcpclient.Client) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
+		InputSchema: inputSchemaWithEnums[LogsK8sInput](
+			enumPatch{"severity", enumSeverity},
+			enumPatch{"order", enumSortOrder},
+		),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsK8sInput) (*mcp.CallToolResult, *gcpdata.LogQueryResult, error) {
 		project, err := resolveProject(in.ProjectID, client.Config().DefaultProject)
 		if err != nil {

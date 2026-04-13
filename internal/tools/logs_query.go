@@ -23,6 +23,9 @@ func RegisterLogsQuery(s *mcp.Server, client *gcpclient.Client) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
+		InputSchema: inputSchemaWithEnums[LogsQueryInput](
+			enumPatch{"order", enumSortOrder},
+		),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsQueryInput) (*mcp.CallToolResult, *gcpdata.LogQueryResult, error) {
 		project, err := resolveProject(in.ProjectID, client.Config().DefaultProject)
 		if err != nil {

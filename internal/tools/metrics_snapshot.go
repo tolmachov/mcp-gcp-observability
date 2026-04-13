@@ -54,6 +54,10 @@ func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, regi
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
+		InputSchema: inputSchemaWithEnums[MetricsSnapshotInput](
+			enumPatch{"window", enumWindow},
+			enumPatch{"baseline_mode", enumBaselineMode},
+		),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsSnapshotInput) (*mcp.CallToolResult, *MetricSnapshotResult, error) {
 		if in.MetricType == "" {
 			return errResult("metric_type is required"), nil, nil
