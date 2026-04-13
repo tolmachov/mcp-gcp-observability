@@ -242,14 +242,80 @@ func expectError(t *testing.T, result *mcp.CallToolResult, contains string) {
 	}
 }
 
-// --- stable data: 60 points of ~0.50 with small variance ---
+const cpuMetric = "compute.googleapis.com/instance/cpu/utilization"
+
+// --- test data generators ---
+
+// stableValues returns n values with deterministic small variance (±0.01 cycle).
 func stableValues(n int, base float64) []float64 {
 	vals := make([]float64, n)
 	for i := range vals {
-		// deterministic small variation
 		vals[i] = base + float64(i%3)*0.01 - 0.01
 	}
 	return vals
+}
+
+// makeRisingValues returns n values linearly interpolated from lo to hi.
+func makeRisingValues(n int, lo, hi float64) []float64 {
+	vals := make([]float64, n)
+	for i := range vals {
+		vals[i] = lo + (hi-lo)*float64(i)/float64(n-1)
+	}
+	return vals
+}
+
+// makeSpikyValues returns n values: (n-outliers) copies of base followed by
+// outliers copies of spike.
+func makeSpikyValues(n, outliers int, base, spike float64) []float64 {
+	vals := make([]float64, n)
+	for i := range vals {
+		if i < n-outliers {
+			vals[i] = base
+		} else {
+			vals[i] = spike
+		}
+	}
+	return vals
+}
+
+// makeStepValues returns n values: first half at lo, second half at hi.
+func makeStepValues(n int, lo, hi float64) []float64 {
+	vals := make([]float64, n)
+	for i := range vals {
+		if i < n/2 {
+			vals[i] = lo
+		} else {
+			vals[i] = hi
+		}
+	}
+	return vals
+}
+
+// makeAlternatingValues returns n values alternating between lo and hi.
+func makeAlternatingValues(n int, lo, hi float64) []float64 {
+	vals := make([]float64, n)
+	for i := range vals {
+		if i%2 == 0 {
+			vals[i] = lo
+		} else {
+			vals[i] = hi
+		}
+	}
+	return vals
+}
+
+// snapshotSeriesFunc returns a seriesFunc that serves different data for the
+// current and baseline windows. It distinguishes them by comparing params.End
+// against cutoff (now - windowDur/2): queries ending after the cutoff are
+// the current window; queries ending before are the baseline window.
+func snapshotSeriesFunc(now time.Time, windowDur time.Duration, currentVals, baselineVals []float64) func(gcpdata.QueryTimeSeriesParams) []gcpdata.MetricTimeSeries {
+	cutoff := now.Add(-windowDur / 2)
+	return func(params gcpdata.QueryTimeSeriesParams) []gcpdata.MetricTimeSeries {
+		if params.End.After(cutoff) {
+			return []gcpdata.MetricTimeSeries{makeTimeSeries(params.Start, currentVals)}
+		}
+		return []gcpdata.MetricTimeSeries{makeTimeSeries(params.Start, baselineVals)}
+	}
 }
 
 // --- integration tests ---

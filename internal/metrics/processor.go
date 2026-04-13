@@ -87,8 +87,10 @@ func ProcessWithBaselineStats(points []Point, baseline BaselineStats, meta Metri
 	return f
 }
 
-// applyBaselineStats copies precomputed baseline statistics into the features struct
-// and computes delta vs current mean.
+// applyBaselineStats copies precomputed baseline statistics into the features struct,
+// computes delta vs current mean, and handles the near-zero denominator case: when
+// the baseline is negligibly small (< nearZeroEpsilon), the current mean is used as
+// the DeltaPct denominator to prevent division by an astronomically small value.
 func applyBaselineStats(f *SignalFeatures, b BaselineStats) {
 	f.BaselinePointCount = b.PointCount
 	if b.PointCount == 0 {
@@ -100,11 +102,13 @@ func applyBaselineStats(f *SignalFeatures, b BaselineStats) {
 
 	f.DeltaAbs = f.Mean - f.Baseline
 	switch {
-	case f.Baseline != 0:
+	case math.Abs(f.Baseline) > nearZeroEpsilon:
 		f.DeltaPct = (f.DeltaAbs / math.Abs(f.Baseline)) * 100
 	case f.Mean != 0:
-		// Baseline is zero but current is not — treat as a large deviation.
-		// Use current mean as denominator to produce a meaningful percentage.
+		// Baseline is zero or negligibly small (< nearZeroEpsilon): dividing by it
+		// would produce an astronomically large or infinite DeltaPct. Use current
+		// mean as denominator instead — same logic as the zero-baseline case, since
+		// no real metric has a meaningful baseline smaller than 1e-6.
 		f.DeltaPct = (f.DeltaAbs / math.Abs(f.Mean)) * 100
 	}
 }
@@ -215,6 +219,16 @@ func computeStepChange(f *SignalFeatures, points []Point, thr ClassificationThre
 // silently produces false negatives.
 func computeSpikes(f *SignalFeatures, values []float64, spikeZ float64) {
 	if len(values) < minPointsForSpikeDetection {
+		return
+	}
+
+	// Guard using Min/Max (already populated by the caller) rather than
+	// relying solely on stddev == 0. When all values are nearly (but not
+	// bitwise) identical, the accumulated squared residuals can produce a
+	// near-zero but non-zero s, yielding a spurious MaxZScore. The if s == 0
+	// check below handles the exact-equality case; this check handles the
+	// near-zero case by skipping spike detection entirely when Min == Max.
+	if f.Min == f.Max {
 		return
 	}
 
@@ -428,5 +442,9 @@ func percentile(sorted []float64, p float64) float64 {
 		return sorted[lower]
 	}
 	frac := idx - float64(lower)
-	return sorted[lower]*(1-frac) + sorted[upper]*frac
+	// Use the lerp form a+(b-a)*t instead of a*(1-t)+b*t: when a==b the
+	// former returns a exactly, while the latter can yield a*(1-t)+a*t ≠ a
+	// due to float64 rounding, breaking the monotone guarantee for equal
+	// adjacent elements.
+	return sorted[lower] + (sorted[upper]-sorted[lower])*frac
 }

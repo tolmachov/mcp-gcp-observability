@@ -236,6 +236,8 @@ func RegisterMetricsRelated(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 					Baseline:                 f.Baseline,
 					DeltaPct:                 f.DeltaPct,
 					Trend:                    string(f.Trend),
+					TrendScore:               f.TrendScore,
+					CV:                       f.CV,
 					Classification:           safeClassification(f.Classification),
 					ClassificationConfidence: string(f.Confidence),
 					Anomaly:                  anomaly,
@@ -292,6 +294,8 @@ type RelatedSignal struct {
 	Baseline                 float64 `json:"baseline"`
 	DeltaPct                 float64 `json:"delta_pct"`
 	Trend                    string  `json:"trend"`
+	TrendScore               float64 `json:"trend_score,omitempty"`
+	CV                       float64 `json:"cv,omitempty"`
 	Classification           string  `json:"classification"`
 	ClassificationConfidence string  `json:"classification_confidence"`
 	Anomaly                  bool    `json:"anomaly"`

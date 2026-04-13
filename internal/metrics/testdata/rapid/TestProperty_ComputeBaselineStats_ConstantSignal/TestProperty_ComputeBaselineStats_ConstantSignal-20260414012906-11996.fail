@@ -1,0 +1,27 @@
+# 2026/04/14 01:29:06.379495 [TestProperty_ComputeBaselineStats_ConstantSignal] [rapid] draw n: 43
+# 2026/04/14 01:29:06.379499 [TestProperty_ComputeBaselineStats_ConstantSignal] [rapid] draw v: -7.183565416418059e-68
+# 2026/04/14 01:29:06.379524 [TestProperty_ComputeBaselineStats_ConstantSignal] 
+# 	Error Trace:	/Users/tolmach/Projects/mcp-gcp-observability/internal/metrics/properties_test.go:107
+# 	            				/Users/tolmach/go/pkg/mod/pgregory.net/rapid@v1.2.0/engine.go:371
+# 	            				/Users/tolmach/go/pkg/mod/pgregory.net/rapid@v1.2.0/engine.go:380
+# 	            				/Users/tolmach/go/pkg/mod/pgregory.net/rapid@v1.2.0/engine.go:205
+# 	            				/Users/tolmach/go/pkg/mod/pgregory.net/rapid@v1.2.0/engine.go:120
+# 	            				/Users/tolmach/Projects/mcp-gcp-observability/internal/metrics/properties_test.go:100
+# 	            				/opt/homebrew/Cellar/go/1.26.2/libexec/src/runtime/asm_arm64.s:1447
+# 	Error:      	Not equal: 
+# 	            	expected: 0
+# 	            	actual  : 2.470827642944654e-83
+# 	Test:       	TestProperty_ComputeBaselineStats_ConstantSignal
+# 	Messages:   	stddev of constant signal must be 0
+# 
+v0.4.8#5948974363096238388
+0x12aa98f577e01c
+0x130377731ea913
+0x2a
+0x1e8df474b70421
+0x12ba149f6187a4
+0x1a5a223ca5a100
+0xdf
+0x0
+0x36
+0xefca9d5d66584

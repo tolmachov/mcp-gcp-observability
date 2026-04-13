@@ -200,13 +200,22 @@ func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, regi
 			DeltaPct:                   f.DeltaPct,
 			BaselineMode:               string(baselineMode),
 			BaselineReliable:           f.BaselineReliable,
+			Stddev:                     f.Stddev,
+			CV:                         f.CV,
 			Trend:                      string(f.Trend),
+			TrendScore:                 f.TrendScore,
 			Classification:             string(f.Classification),
 			ClassificationConfidence:   string(f.Confidence),
 			SLOBreach:                  f.SLOBreach,
 			SLOThreshold:               meta.SLOThreshold,
 			BreachDurationSeconds:      f.BreachDurationSeconds,
 			CurrentBreachStreakSeconds: f.CurrentBreachStreakSeconds,
+			BreachTransitions:          f.BreachTransitions,
+			StepChangePct:              f.StepChangePct,
+			MaxZScore:                  f.MaxZScore,
+			SpikeCount:                 f.SpikeCount,
+			SpikeRatio:                 f.SpikeRatio,
+			SaturationDetected:         f.SaturationDetected,
 			DataQuality:                f.DataQuality,
 			Window: WindowInfo{
 				From: start.Format(time.RFC3339),
@@ -273,7 +282,16 @@ type MetricSnapshotResult struct {
 	BaselineMode     string  `json:"baseline_mode"`
 	BaselineReliable bool    `json:"baseline_reliable"`
 
-	Trend                    string `json:"trend"`
+	// Distribution (all metric kinds).
+	Stddev float64 `json:"stddev,omitempty"`
+	CV     float64 `json:"cv,omitempty"`
+
+	// Trend: direction string + normalized magnitude.
+	// trend_score is total drift across the window as a fraction of baseline
+	// (e.g. 0.10 = drifted 10% of baseline). Window-length independent.
+	Trend      string  `json:"trend"`
+	TrendScore float64 `json:"trend_score,omitempty"`
+
 	Classification           string `json:"classification"`
 	ClassificationConfidence string `json:"classification_confidence"`
 
@@ -281,8 +299,22 @@ type MetricSnapshotResult struct {
 	SLOThreshold               *float64 `json:"slo_threshold,omitempty"`
 	BreachDurationSeconds      int      `json:"breach_duration_seconds,omitempty"`
 	CurrentBreachStreakSeconds int      `json:"current_breach_streak_seconds,omitempty"`
+	// BreachTransitions counts SLO threshold crossings in the window.
+	// High value with moderate breach_ratio indicates flapping/oscillation.
+	BreachTransitions int `json:"breach_transitions,omitempty"`
 
-	StepChangeAt string `json:"step_change_at,omitempty"`
+	// StepChange: timestamp + magnitude (% shift between first and last thirds).
+	StepChangeAt  string  `json:"step_change_at,omitempty"`
+	StepChangePct float64 `json:"step_change_pct,omitempty"`
+
+	// Spike evidence: z-score of the most extreme point and spike count/ratio.
+	MaxZScore  float64 `json:"max_z_score,omitempty"`
+	SpikeCount int     `json:"spike_count,omitempty"`
+	SpikeRatio float64 `json:"spike_ratio,omitempty"`
+
+	// SaturationDetected is true when the tail of the series is within 5% of
+	// the configured saturation_cap. Mirrors the classification label explicitly.
+	SaturationDetected bool `json:"saturation_detected,omitempty"`
 
 	Percentiles *PercentileInfo     `json:"percentiles,omitempty"`
 	DataQuality metrics.DataQuality `json:"data_quality"`

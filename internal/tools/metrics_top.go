@@ -206,6 +206,7 @@ func RegisterMetricsTop(s *mcp.Server, querier gcpdata.MetricsQuerier, registry 
 					Current:                  f.Current,
 					Baseline:                 f.Baseline,
 					DeltaPct:                 f.DeltaPct,
+					CV:                       f.CV,
 					SLOBreach:                f.SLOBreach,
 					Classification:           safeClassification(f.Classification),
 					ClassificationConfidence: string(f.Confidence),
@@ -292,6 +293,7 @@ type Contributor struct {
 	Baseline                 float64 `json:"baseline"`
 	DeltaPct                 float64 `json:"delta_pct"`
 	ShareOfAnomaly           float64 `json:"share_of_anomaly"`
+	CV                       float64 `json:"cv,omitempty"`
 	SLOBreach                bool    `json:"slo_breach"`
 	Classification           string  `json:"classification"`
 	ClassificationConfidence string  `json:"classification_confidence"`

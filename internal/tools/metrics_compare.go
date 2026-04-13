@@ -277,6 +277,9 @@ func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 			ClassificationB:           safeClassification(fB.Classification),
 			ClassificationConfidenceA: string(fA.Confidence),
 			ClassificationConfidenceB: string(fB.Confidence),
+			TrendScoreA:               fA.TrendScore,
+			TrendScoreB:               fB.TrendScore,
+			StepChangePct:             fB.StepChangePct,
 			SLOBreachIntroduced:       sloBreachIntroduced,
 			Note:                      note,
 		}
@@ -298,11 +301,21 @@ type CompareResult struct {
 	ClassificationB           string   `json:"classification_b"`
 	ClassificationConfidenceA string   `json:"classification_confidence_a"`
 	ClassificationConfidenceB string   `json:"classification_confidence_b"`
-	StepChangeAt              string   `json:"step_change_at,omitempty"`
-	SLOBreachIntroduced       bool     `json:"slo_breach_introduced"`
-	NoData                    bool     `json:"no_data,omitempty"`
-	NoDataWindows             []string `json:"no_data_windows,omitempty"`
-	Note                      string   `json:"note,omitempty"`
+	// TrendScoreA: normalized total drift within window A, expressed as a fraction
+	// of window A's own mean (window A has no external baseline).
+	// TrendScoreB: normalized total drift within window B, expressed as a fraction
+	// of window A's mean (which is used as the baseline for window B).
+	TrendScoreA float64 `json:"trend_score_a,omitempty"`
+	TrendScoreB float64 `json:"trend_score_b,omitempty"`
+	// StepChangeAt is the estimated timestamp of a level shift in window B.
+	// StepChangePct is the magnitude of that shift (% difference between first
+	// and last thirds of window B).
+	StepChangeAt  string  `json:"step_change_at,omitempty"`
+	StepChangePct float64 `json:"step_change_pct,omitempty"`
+	SLOBreachIntroduced bool     `json:"slo_breach_introduced"`
+	NoData              bool     `json:"no_data,omitempty"`
+	NoDataWindows       []string `json:"no_data_windows,omitempty"`
+	Note                string   `json:"note,omitempty"`
 }
 
 func parseRFC3339(s, field string) (time.Time, error) {

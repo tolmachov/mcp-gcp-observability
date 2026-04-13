@@ -1,0 +1,27 @@
+# 2026/04/14 01:38:37.900115 [TestProperty_ComputeBaselineStats_ConstantSignal] [rapid] draw n: 143
+# 2026/04/14 01:38:37.900117 [TestProperty_ComputeBaselineStats_ConstantSignal] [rapid] draw v: 595491.825540595
+# 2026/04/14 01:38:37.900128 [TestProperty_ComputeBaselineStats_ConstantSignal] 
+# 	Error Trace:	/Users/tolmach/Projects/mcp-gcp-observability/internal/metrics/properties_test.go:109
+# 	            				/Users/tolmach/go/pkg/mod/pgregory.net/rapid@v1.2.0/engine.go:371
+# 	            				/Users/tolmach/go/pkg/mod/pgregory.net/rapid@v1.2.0/engine.go:380
+# 	            				/Users/tolmach/go/pkg/mod/pgregory.net/rapid@v1.2.0/engine.go:205
+# 	            				/Users/tolmach/go/pkg/mod/pgregory.net/rapid@v1.2.0/engine.go:120
+# 	            				/Users/tolmach/Projects/mcp-gcp-observability/internal/metrics/properties_test.go:103
+# 	            				/opt/homebrew/Cellar/go/1.26.2/libexec/src/runtime/asm_arm64.s:1447
+# 	Error:      	Max difference between 595491.825540595 and 595491.8255405964 allowed is 1e-09, but difference was -1.3969838619232178e-09
+# 	Test:       	TestProperty_ComputeBaselineStats_ConstantSignal
+# 	Messages:   	mean of constant signal must equal the constant value
+# 
+v0.4.8#10199183290405542196
+0x5a02553816f9b
+0x164e68dd99e79f
+0x8e
+0x1388b3a21a726
+0xbf0fc99d466f9
+0x1624300bf5ef55
+0x1c
+0x1c
+0x13
+0x11623
+0x30
+0x1a6ad41c2

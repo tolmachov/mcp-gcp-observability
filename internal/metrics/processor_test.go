@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -32,6 +33,7 @@ func TestProcessStable(t *testing.T) {
 	assert.Equal(t, ClassStable, f.Classification)
 	assert.InDelta(t, 0, f.DeltaPct, 0.01)
 	assert.Equal(t, 0.5, f.Mean)
+	assert.Equal(t, 0.0, f.MaxZScore, "flat signal should produce MaxZScore=0, not a float64 artifact")
 }
 
 func TestProcessStepRegression(t *testing.T) {
@@ -324,6 +326,56 @@ func TestConfidenceReflectsReliability(t *testing.T) {
 		f := Process(makePoints(values, 60), nil, meta, 60, 60)
 		assert.Equal(t, ConfidenceLow, f.Confidence)
 	})
+}
+
+// TestDeltaPctNearZeroBaseline pins the nearZeroEpsilon boundary in DeltaPct:
+// a baseline below the epsilon must not produce Inf/NaN, and a baseline just
+// above it must use the baseline as denominator (not fall back to current mean).
+func TestDeltaPctNearZeroBaseline(t *testing.T) {
+	current := makePoints(make([]float64, 60), 60)
+	for i := range current {
+		current[i].Value = 1.0
+	}
+	meta := MetricMeta{Kind: KindErrorRate, BetterDirection: DirectionDown}
+
+	t.Run("baseline below epsilon uses current mean as denominator", func(t *testing.T) {
+		baseline := makePoints(make([]float64, 60), 60)
+		for i := range baseline {
+			baseline[i].Value = 5e-7 // below nearZeroEpsilon=1e-6
+		}
+		f := Process(current, baseline, meta, 60, len(baseline))
+		assert.False(t, math.IsInf(f.DeltaPct, 0), "DeltaPct must not be Inf for near-zero baseline")
+		assert.False(t, math.IsNaN(f.DeltaPct), "DeltaPct must not be NaN for near-zero baseline")
+		assert.NotZero(t, f.DeltaPct, "DeltaPct should be non-zero when current differs from near-zero baseline")
+	})
+
+	t.Run("baseline above epsilon uses baseline as denominator", func(t *testing.T) {
+		baseline := makePoints(make([]float64, 60), 60)
+		for i := range baseline {
+			baseline[i].Value = 2e-6 // above nearZeroEpsilon=1e-6
+		}
+		f := Process(current, baseline, meta, 60, len(baseline))
+		assert.False(t, math.IsInf(f.DeltaPct, 0), "DeltaPct must not be Inf")
+		assert.False(t, math.IsNaN(f.DeltaPct), "DeltaPct must not be NaN")
+		// current=1.0, baseline=2e-6 → DeltaPct ≈ (1-2e-6)/2e-6 * 100 ≈ 5e7
+		assert.Greater(t, f.DeltaPct, 1e6, "DeltaPct should be very large when baseline is tiny but above epsilon")
+	})
+}
+
+// TestPercentileEqualAdjacentElements pins the lerp fix: when adjacent sorted
+// values are equal, percentile must return exactly that value with no rounding
+// artifact from the a*(1-t)+b*t form.
+func TestPercentileEqualAdjacentElements(t *testing.T) {
+	// p=0.25 lands between index 0 and 1 — both are 1.0.
+	// Old form: 1*(1-0.25)+1*0.25 can deviate from 1.0 in theory.
+	// New form: 1+(1-1)*0.25 = 1.0 exactly.
+	sorted := []float64{1, 1, 1, 1, 2}
+	assert.Equal(t, 1.0, percentile(sorted, 0.25), "equal adjacent elements should return exact value")
+
+	// p=0.875 straddles the 1→2 boundary — should interpolate correctly.
+	result := percentile(sorted, 0.875)
+	assert.Greater(t, result, 1.0)
+	assert.Less(t, result, 2.0)
 }
 
 func TestDataQualityWithGaps(t *testing.T) {

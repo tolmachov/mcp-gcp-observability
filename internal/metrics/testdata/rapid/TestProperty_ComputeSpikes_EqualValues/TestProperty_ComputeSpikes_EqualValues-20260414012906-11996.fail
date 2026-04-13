@@ -1,0 +1,27 @@
+# 2026/04/14 01:29:06.383842 [TestProperty_ComputeSpikes_EqualValues] [rapid] draw n: 16
+# 2026/04/14 01:29:06.383845 [TestProperty_ComputeSpikes_EqualValues] [rapid] draw v: -1.8830673833809536e-42
+# 2026/04/14 01:29:06.383861 [TestProperty_ComputeSpikes_EqualValues] 
+# 	Error Trace:	/Users/tolmach/Projects/mcp-gcp-observability/internal/metrics/properties_test.go:264
+# 	            				/Users/tolmach/go/pkg/mod/pgregory.net/rapid@v1.2.0/engine.go:371
+# 	            				/Users/tolmach/go/pkg/mod/pgregory.net/rapid@v1.2.0/engine.go:380
+# 	            				/Users/tolmach/go/pkg/mod/pgregory.net/rapid@v1.2.0/engine.go:205
+# 	            				/Users/tolmach/go/pkg/mod/pgregory.net/rapid@v1.2.0/engine.go:120
+# 	            				/Users/tolmach/Projects/mcp-gcp-observability/internal/metrics/properties_test.go:253
+# 	            				/opt/homebrew/Cellar/go/1.26.2/libexec/src/runtime/asm_arm64.s:1447
+# 	Error:      	Not equal: 
+# 	            	expected: 0
+# 	            	actual  : 1
+# 	Test:       	TestProperty_ComputeSpikes_EqualValues
+# 	Messages:   	constant signal must have zero max z-score
+# 
+v0.4.8#11731222175746370892
+0x71832fae4650d
+0x7e9aff6fe73a7
+0x6
+0x1a3919432aed02
+0x1e1ec3385ca198
+0x132225e2805b54
+0x8a
+0x0
+0x31
+0x4ff350831aa7b

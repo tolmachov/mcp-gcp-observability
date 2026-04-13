@@ -1,0 +1,37 @@
+# 2026/04/14 01:41:02.683233 [TestProperty_Process_DeltaPctFinite] [rapid] draw n: 1
+# 2026/04/14 01:41:02.683236 [TestProperty_Process_DeltaPctFinite] [rapid] draw values: []float64{38.658433649401616}
+# 2026/04/14 01:41:02.683256 [TestProperty_Process_DeltaPctFinite] [rapid] draw bvalues: []float64{-1.3909955404535868e-305}
+# 2026/04/14 01:41:02.683265 [TestProperty_Process_DeltaPctFinite] 
+# 	Error Trace:	/Users/tolmach/Projects/mcp-gcp-observability/internal/metrics/properties_test.go:413
+# 	            				/Users/tolmach/go/pkg/mod/pgregory.net/rapid@v1.2.0/engine.go:371
+# 	            				/Users/tolmach/go/pkg/mod/pgregory.net/rapid@v1.2.0/engine.go:380
+# 	            				/Users/tolmach/go/pkg/mod/pgregory.net/rapid@v1.2.0/engine.go:205
+# 	            				/Users/tolmach/go/pkg/mod/pgregory.net/rapid@v1.2.0/engine.go:120
+# 	            				/Users/tolmach/Projects/mcp-gcp-observability/internal/metrics/properties_test.go:400
+# 	            				/opt/homebrew/Cellar/go/1.26.2/libexec/src/runtime/asm_arm64.s:1447
+# 	Error:      	Should be false
+# 	Test:       	TestProperty_Process_DeltaPctFinite
+# 	Messages:   	DeltaPct must not be Inf
+# 
+v0.4.8#16765303153892244992
+0x3ce24ceb5639d
+0x652f65f30513
+0x0
+0xec113242b5f92
+0xed15a27b39237
+0xc483b2dacfa48
+0xb9e52eac79e93
+0x5
+0x6
+0x33
+0x54478dc76208
+0x1ac7b9a881c704
+0x17809540a932d4
+0x19ecc55ae803cf
+0x1ce70a003dc08b
+0x174165bb2c2e3e
+0x3f4
+0x0
+0x1f
+0x3892a9083dcea
+0x1c4897bda3f222
