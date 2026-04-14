@@ -19,25 +19,45 @@ func TestRenderChartHTML(t *testing.T) {
 
 	t.Run("valid html skeleton", func(t *testing.T) {
 		assert.Contains(t, html, "<!DOCTYPE html>")
-		assert.Contains(t, html, "<canvas id=\"c\"")
+		assert.Contains(t, html, "<svg id=\"chart\"")
 	})
 
-	t.Run("cdn domain present", func(t *testing.T) {
-		assert.Contains(t, html, chartCDNDomain)
+	t.Run("no external scripts", func(t *testing.T) {
+		// The widget is self-contained — no CDN or external script tags.
+		assert.NotContains(t, html, "cdn.", "HTML must not reference any CDN")
+		assert.NotContains(t, html, "<script src=", "HTML must not load external scripts")
 	})
 
 	t.Run("bridge initializes with tool name", func(t *testing.T) {
 		assert.Contains(t, html, "metrics_snapshot")
 	})
 
-	t.Run("static uri is not embedded in html", func(t *testing.T) {
-		// HTML is a template; URIs come via bridge, not baked in.
-		assert.NotContains(t, html, "ui://metrics/chart/")
+	t.Run("bridge uses appCapabilities not capabilities", func(t *testing.T) {
+		assert.Contains(t, html, "appCapabilities", "ui/initialize must use appCapabilities field")
 	})
 
-	t.Run("css variables used for colors", func(t *testing.T) {
-		assert.Contains(t, html, "--color-background-primary")
-		assert.Contains(t, html, "--color-text-primary")
+	t.Run("initialized sent unconditionally via finally", func(t *testing.T) {
+		assert.Contains(t, html, "ui/notifications/initialized")
+		assert.Contains(t, html, ".finally(", "initialized must be sent in finally() to cover timeout/error paths")
+	})
+
+	t.Run("static uri is not embedded in html", func(t *testing.T) {
+		// HTML is a template; URIs come via bridge, not baked in.
+		// Test against the exact constant (no trailing slash) to catch the real violation.
+		assert.NotContains(t, html, chartStaticURI)
+	})
+
+	t.Run("dark theme colors present in CSS", func(t *testing.T) {
+		// Dark mode colors must be defined in :root.dark overrides.
+		assert.Contains(t, html, "#0d1117", "dark background color must be present")
+		assert.Contains(t, html, "#e6edf3", "dark primary text color must be present")
+	})
+
+	t.Run("theme follows host via host-context-changed", func(t *testing.T) {
+		// Bridge must handle host-context-changed and call applyTheme so the
+		// widget follows the host's light/dark preference at runtime.
+		assert.Contains(t, html, "host-context-changed", "bridge must handle host-context-changed notification")
+		assert.Contains(t, html, "applyTheme", "applyTheme function must be defined and called")
 	})
 }
 

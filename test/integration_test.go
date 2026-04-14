@@ -466,20 +466,25 @@ func TestLogsSummary(t *testing.T) {
 	t.Logf("logs_summary result: %s", text[:min(len(text), 500)])
 }
 
-// TestMetricsSnapshotMeta verifies that metrics_snapshot returns _meta.ui.resourceUri
-// so that Claude Desktop can render the chart widget inline.
+// TestMetricsSnapshotMeta verifies that metrics_snapshot:
+//   - returns a static _meta.ui.resourceUri pointing to the chart widget resource
+//   - the chart resource returns an MCP-Apps HTML page with the bridge JS
+//   - structuredContent contains chart_points for the UI to render
+//   - LLM-facing content does NOT contain chart_points (raw time-series stays out of context)
 func TestMetricsSnapshotMeta(t *testing.T) {
 	session, ctx, cleanup := setupClient(t)
 	defer cleanup()
 
 	const metricType = "compute.googleapis.com/instance/cpu/utilization"
+	const staticChartURI = "ui://metrics/chart"
 
 	result := callTool(t, session, ctx, "metrics_snapshot", map[string]any{
 		"metric_type": metricType,
 		"window":      "1h",
 	})
+	require.False(t, result.IsError, "metrics_snapshot must not return an error")
 
-	// Verify _meta.ui.resourceUri is present and well-formed.
+	// ── 1. Tool meta: static resource URI ────────────────────────────────────
 	ui, ok := result.Meta["ui"].(map[string]any)
 	require.True(t, ok, "_meta.ui must be a map[string]any; got %T", result.Meta["ui"])
 
@@ -489,21 +494,51 @@ func TestMetricsSnapshotMeta(t *testing.T) {
 
 	t.Logf("_meta.ui.resourceUri = %s", resourceURI)
 
-	assert.Contains(t, resourceURI, "ui://metrics/chart/", "URI must use ui://metrics/chart/ scheme")
-	assert.Contains(t, resourceURI, metricType, "URI must include the metric type")
-	assert.Contains(t, resourceURI, "window=1h", "URI must carry the window parameter")
+	// The URI must be the fixed static address — no metric_type or query params.
+	assert.Equal(t, staticChartURI, resourceURI, "URI must be the static chart widget address")
 
-	// Fetch the chart resource and verify it returns HTML with Chart.js.
-	readResult, err := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: resourceURI})
-	require.NoError(t, err, "resources/read must succeed for the chart URI")
+	// ── 2. Static resource: HTML with MCP Apps bridge ─────────────────────────
+	readResult, err := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: staticChartURI})
+	require.NoError(t, err, "resources/read for the static chart URI must succeed")
 	require.NotEmpty(t, readResult.Contents, "chart resource must have content")
 
-	content := readResult.Contents[0]
-	assert.Equal(t, "text/html;profile=mcp-app", content.MIMEType, "chart MIME type must be text/html;profile=mcp-app")
-	assert.Contains(t, content.Text, "chart.js", "chart HTML must reference Chart.js")
-	assert.Contains(t, content.Text, "__D", "chart HTML must contain embedded data")
+	chartContent := readResult.Contents[0]
+	assert.Equal(t, "text/html;profile=mcp-app", chartContent.MIMEType, "chart MIME type must be text/html;profile=mcp-app")
+	// Widget is self-contained — no external CDN or scripts.
+	assert.NotContains(t, chartContent.Text, "cdn.", "chart HTML must not reference any CDN")
+	assert.NotContains(t, chartContent.Text, "<script src=", "chart HTML must not load external scripts")
+	assert.Contains(t, chartContent.Text, "<svg id=\"chart\"", "chart HTML must contain the SVG container")
+	assert.Contains(t, chartContent.Text, "ui/notifications/tool-result", "chart HTML must listen for MCP Apps bridge notification")
+	assert.Contains(t, chartContent.Text, "structuredContent", "chart HTML must read structuredContent from bridge payload")
+	// Data is never baked into the static resource — it arrives via bridge.
+	assert.NotContains(t, chartContent.Text, metricType, "static chart HTML must not embed metric-specific data")
 
-	t.Logf("Chart resource: %d bytes, MIME=%s", len(content.Text), content.MIMEType)
+	t.Logf("Chart resource: %d bytes, MIME=%s", len(chartContent.Text), chartContent.MIMEType)
+
+	// ── 3. content (LLM): no chart_points ────────────────────────────────────
+	llmText := textFromResult(t, result)
+	assert.NotContains(t, llmText, "chart_points", "LLM-facing content must not include raw time-series data")
+	var llmJSON map[string]any
+	require.NoError(t, json.Unmarshal([]byte(llmText), &llmJSON), "LLM content must be valid JSON")
+	_, hasChartPoints := llmJSON["chart_points"]
+	assert.False(t, hasChartPoints, "chart_points key must be absent from LLM-facing content JSON")
+
+	// ── 4. structuredContent (UI): chart_points present ──────────────────────
+	require.NotNil(t, result.StructuredContent, "structuredContent must be set for the chart widget to receive data")
+
+	// The MCP client deserializes structuredContent into map[string]any.
+	// Marshal it back to JSON so we can inspect it uniformly.
+	scBytes, err := json.Marshal(result.StructuredContent)
+	require.NoError(t, err)
+	var scJSON map[string]any
+	require.NoError(t, json.Unmarshal(scBytes, &scJSON), "structuredContent must be valid JSON")
+
+	chartPoints, hasChartPoints := scJSON["chart_points"]
+	assert.True(t, hasChartPoints, "structuredContent must contain chart_points for the chart widget")
+	if pts, ok := chartPoints.([]any); ok && hasChartPoints {
+		assert.NotEmpty(t, pts, "chart_points should be non-empty for an active metric like cpu/utilization")
+		t.Logf("structuredContent: metric_type=%v, chart_points=%d points", scJSON["metric_type"], len(pts))
+	}
 }
 
 func TestTraceList(t *testing.T) {

@@ -6,44 +6,45 @@
 <title>Metrics Chart</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-html,body{width:100%}
-body{background:var(--color-background-primary,#0d1117);color:var(--color-text-primary,#e6edf3);font-family:var(--font-sans,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif);padding:12px 14px 10px}
-.title{font-size:11px;color:var(--color-text-secondary,#8b949e);margin-bottom:8px;word-break:break-all}
-.wrap{position:relative;width:100%;height:240px}
-#c{width:100%;height:100%}
-.nodata{color:var(--color-text-tertiary,#6e7681);font-size:12px;padding-top:8px}
-.loading{color:var(--color-text-tertiary,#6e7681);font-size:12px;padding-top:8px}
+html,body{width:100%;margin:0}
+/* Light theme defaults; .dark class toggled by host-context-changed notification. */
+:root{color-scheme:light dark}
+:root.dark body{background:#0d1117;color:#e6edf3}
+:root.dark .title{color:#8b949e}
+:root.dark .msg{color:#8b949e}
+body{background:#ffffff;color:#1f2328;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:8px 14px 6px}
+.title{font-size:11px;color:#57606a;margin-bottom:4px;word-break:break-all}
+.wrap{position:relative;width:100%;height:180px}
+svg{display:block;width:100%;height:100%}
+.msg{color:#57606a;font-size:12px;padding-top:8px}
 </style>
 </head>
 <body>
 <div class="title" id="title">Loading…</div>
 <div class="wrap" id="wrap">
-  <p class="loading" id="loading">Waiting for data…</p>
-  <canvas id="c" style="display:none"></canvas>
+  <p class="msg" id="msg">Waiting for data…</p>
+  <svg id="chart" style="display:none" xmlns="http://www.w3.org/2000/svg"></svg>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script>
 (function(){
 'use strict';
 
-// ── Minimal MCP Apps bridge ──────────────────────────────────────────────────
+// ── MCP Apps bridge ──────────────────────────────────────────────────────────
 var pending = {}, reqId = 0;
 
-function send(msg) {
-  window.parent.postMessage(msg, '*');
-}
+function send(msg) { window.parent.postMessage(msg, '*'); }
 
 function request(method, params) {
   return new Promise(function(resolve, reject) {
     var id = ++reqId;
     var timer = setTimeout(function() {
       delete pending[id];
-      reject(new Error('timeout waiting for response to ' + method));
+      reject(new Error('timeout: ' + method));
     }, 5000);
     pending[id] = function(result, err) {
       clearTimeout(timer);
-      if (err) { reject(err); } else { resolve(result); }
+      if (err) reject(err); else resolve(result);
     };
     send({jsonrpc:'2.0', id:id, method:method, params:params||{}});
   });
@@ -53,178 +54,212 @@ window.addEventListener('message', function(e) {
   var msg = e.data;
   if (!msg || msg.jsonrpc !== '2.0') return;
 
-  // Notifications and host requests always carry a method — handle first so a
-  // host request whose id accidentally collides with a pending widget request
-  // is not misrouted into the response branch.
+  // Notifications carry a method — check first to avoid id-collision misrouting.
   if (msg.method) {
+    if (msg.method === 'ui/notifications/host-context-changed') {
+      var theme = msg.params && msg.params.theme;
+      if (theme) applyTheme(theme);
+      return;
+    }
     if (msg.method === 'ui/notifications/tool-result') {
       var sc = msg.params && msg.params.structuredContent;
       if (sc) {
         try {
           renderChart(sc);
-        } catch (e) {
-          var loading = document.getElementById('loading');
-          var canvas  = document.getElementById('c');
-          if (loading) { loading.className = 'nodata'; loading.textContent = 'Chart error: ' + (e && e.message ? e.message : String(e)); loading.style.display = ''; }
-          if (canvas)  { canvas.style.display = 'none'; }
-          if (typeof console !== 'undefined') console.error('[metrics-chart] renderChart threw:', e);
+        } catch(e) {
+          var msgEl2 = document.getElementById('msg');
+          var svgEl2 = document.getElementById('chart');
+          if (msgEl2) { msgEl2.textContent = 'Chart error: ' + (e && e.message ? e.message : String(e)); msgEl2.style.display = ''; }
+          if (svgEl2) svgEl2.style.display = 'none';
+          if (typeof console !== 'undefined') console.error('[metrics-chart] renderChart:', e);
         }
+      } else {
+        if (typeof console !== 'undefined') console.warn('[metrics-chart] tool-result missing structuredContent', msg.params);
       }
     }
     return;
   }
 
-  // Response to our outgoing requests
   if (msg.id != null && pending[msg.id]) {
     var cb = pending[msg.id];
     delete pending[msg.id];
-    if (msg.error) { cb(null, new Error(msg.error.message || 'rpc error')); }
-    else            { cb(msg.result || {}); }
+    if (msg.error) cb(null, new Error(msg.error.message || 'rpc error'));
+    else           cb(msg.result || {});
   }
 });
 
-// Initialize handshake
 request('ui/initialize', {
   protocolVersion: '2026-01-26',
   appInfo: {name:'metrics_snapshot', version:'1.0.0'},
-  capabilities: {}
+  appCapabilities: {}
 }).then(function() {
-  send({jsonrpc:'2.0', method:'ui/notifications/initialized', params:{}});
 }).catch(function(err) {
-  // Host does not support ext-apps; graceful degradation — stay in waiting state.
-  // Log so developers can tell a latency/bug apart from simple missing support.
-  if (typeof console !== 'undefined') console.warn('[metrics-chart] ui/initialize failed (host may not support ext-apps):', err && err.message ? err.message : err);
+  if (typeof console !== 'undefined') {
+    var isTimeout = err && err.message && err.message.indexOf('timeout:') === 0;
+    if (isTimeout) {
+      console.warn('[metrics-chart] ui/initialize timed out, proceeding anyway');
+    } else {
+      console.error('[metrics-chart] ui/initialize protocol error:', err && err.message);
+    }
+  }
+}).finally(function() {
+  // Always send initialized so the host unhides the widget container.
+  // If ui/initialize timed out the host is still waiting for this signal.
+  send({jsonrpc:'2.0', method:'ui/notifications/initialized', params:{}});
 });
 
-// ── Chart rendering ──────────────────────────────────────────────────────────
-var chartInstance = null;
+// Notify the host of content size changes so it can resize the iframe.
+// Dedup: only send when dimensions actually change to avoid feedback loops.
+var lastSzW = 0, lastSzH = 0;
+if (typeof ResizeObserver !== 'undefined') {
+  try {
+    new ResizeObserver(function() {
+      try {
+        var w = document.documentElement.scrollWidth;
+        var h = document.documentElement.scrollHeight;
+        if (w === lastSzW && h === lastSzH) return;
+        lastSzW = w; lastSzH = h;
+        send({jsonrpc:'2.0', method:'ui/notifications/size-changed', params:{width:w, height:h}});
+      } catch(e) {
+        if (typeof console !== 'undefined') console.warn('[metrics-chart] size-changed:', e);
+      }
+    }).observe(document.body);
+  } catch(e) {
+    if (typeof console !== 'undefined') console.warn('[metrics-chart] ResizeObserver:', e);
+  }
+}
+
+// ── Theme ─────────────────────────────────────────────────────────────────────
+// Toggle .dark on <html> so CSS variables switch correctly.
+// Falls back to prefers-color-scheme until the host sends host-context-changed.
+function applyTheme(theme) {
+  document.documentElement.classList.toggle('dark', theme === 'dark');
+}
+
+// Apply OS preference immediately so there's no flash on load.
+if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+  applyTheme('dark');
+}
+
+// ── SVG chart ────────────────────────────────────────────────────────────────
+function escXML(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
 
 function fmt(v, unit) {
   var a = Math.abs(v);
+  // Ratio metrics are most readable as percentages.
+  if (unit === 'ratio') {
+    var pct = v * 100;
+    return (Math.abs(pct) < 10 ? pct.toPrecision(3) : pct.toFixed(1)) + '%';
+  }
+  // Byte units.
+  if (unit === 'By' || unit === 'By/s') {
+    var bsuf = unit === 'By/s' ? 'B/s' : 'B';
+    return a >= 1e9 ? (v/1e9).toFixed(1)+'G'+bsuf
+         : a >= 1e6 ? (v/1e6).toFixed(1)+'M'+bsuf
+         : a >= 1e3 ? (v/1e3).toFixed(1)+'K'+bsuf
+         : v.toFixed(0)+bsuf;
+  }
   var s = a >= 1e9  ? (v/1e9).toFixed(1)+'B'
         : a >= 1e6  ? (v/1e6).toFixed(1)+'M'
         : a >= 1e3  ? (v/1e3).toFixed(1)+'K'
         : a >= 10   ? v.toFixed(1)
-        : a >= 0.1  ? v.toPrecision(3)
+        : a >= 1    ? v.toPrecision(3)
+        : a >= 0.001 ? v.toPrecision(2)
         : v === 0   ? '0'
-                    : v.toExponential(2);
-  return (unit && unit !== '1') ? s+'\u00a0'+unit : s;
-}
-
-function windowLabel(w) {
-  if (!w || !w.from || !w.to) return '';
-  var from = new Date(w.from), to = new Date(w.to);
-  var diffMs = to - from;
-  var diffH = Math.round(diffMs / 36e5);
-  return diffH >= 1 ? diffH+'h' : Math.round(diffMs/6e4)+'m';
+                    : v.toPrecision(2);
+  return (unit && unit !== '1') ? s+'\u00a0'+escXML(unit) : s;
 }
 
 function renderChart(sc) {
-  var pts    = sc.chart_points || [];
-  var metric = sc.metric_type  || '';
-  var unit   = sc.unit         || '';
-  var win    = sc.window       || {};
-  // baseline is the mean of the previous window (float, may be absent)
+  var titleEl = document.getElementById('title');
+  var msgEl   = document.getElementById('msg');
+  var svgEl   = document.getElementById('chart');
+  if (!titleEl || !msgEl || !svgEl) {
+    throw new Error('required DOM elements missing (title/msg/chart)');
+  }
+
+  var pts  = sc.chart_points || [];
+  var metric  = sc.metric_type || '';
+  var unit    = sc.unit || '';
   var baseline = (typeof sc.baseline === 'number' && sc.baseline_reliable) ? sc.baseline : null;
 
-  // Update title
-  document.getElementById('title').textContent = metric;
-
-  var loading = document.getElementById('loading');
-  var canvas  = document.getElementById('c');
+  titleEl.textContent = metric;
 
   if (!pts.length) {
-    loading.className = 'nodata';
-    loading.textContent = 'No data available';
-    loading.style.display = '';
-    canvas.style.display = 'none';
+    msgEl.textContent = 'No data available';
+    msgEl.style.display = '';
+    svgEl.style.display = 'none';
     return;
   }
 
-  // Guard: ensure Chart.js loaded before showing the canvas — avoids a black
-  // square if the CDN is unreachable and Chart is still undefined at render time.
-  if (typeof Chart === 'undefined') {
-    loading.className = 'nodata';
-    loading.textContent = 'Chart library unavailable (CDN unreachable)';
-    loading.style.display = '';
-    return;
-  }
+  msgEl.style.display = 'none';
+  svgEl.style.display = 'block';
 
-  loading.style.display = 'none';
-  canvas.style.display  = '';
-
-  var cs       = getComputedStyle(document.documentElement);
-  var cPrimary = cs.getPropertyValue('--color-chart-line-primary').trim()  || '#4e9af1';
-  var cSecond  = cs.getPropertyValue('--color-chart-line-secondary').trim() || '#f0883e';
-  var cTextSec = cs.getPropertyValue('--color-text-secondary').trim()       || '#8b949e';
-  var cTextT   = cs.getPropertyValue('--color-text-tertiary').trim()        || '#6e7681';
-  var cBgSec   = cs.getPropertyValue('--color-background-secondary').trim() || '#161b22';
-  var cBorder  = cs.getPropertyValue('--color-border-default').trim()       || '#30363d';
-  var cGrid    = cs.getPropertyValue('--color-border-subtle').trim()        || '#21262d';
-  var cText    = cs.getPropertyValue('--color-text-primary').trim()         || '#e6edf3';
-
-  var labels = pts.map(function(p) {
-    return new Date(p.ts * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
-  });
-  var vals = pts.map(function(p) { return p.v; });
-  var winLabel = windowLabel(win);
-
-  var datasets = [{
-    label: 'current' + (winLabel ? ' ('+winLabel+')' : ''),
-    data: vals,
-    borderColor: cPrimary,
-    backgroundColor: cPrimary + '14',
-    borderWidth: 2,
-    pointRadius: 0,
-    tension: 0.3,
-    fill: true
-  }];
-
-  if (baseline !== null) {
-    datasets.push({
-      label: 'baseline (prev window)',
-      data: new Array(vals.length).fill(baseline),
-      borderColor: cSecond,
-      borderWidth: 1.5,
-      borderDash: [6, 3],
-      pointRadius: 0,
-      fill: false
-    });
-  }
-
-  var cfg = {
-    type: 'line',
-    data: {labels: labels, datasets: datasets},
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      animation: false,
-      interaction: {mode:'index', intersect:false},
-      plugins: {
-        legend: {labels:{color:cTextSec, boxWidth:18, padding:10, font:{size:11}}},
-        tooltip: {
-          backgroundColor: cBgSec,
-          borderColor: cBorder,
-          borderWidth: 1,
-          titleColor: cTextSec,
-          bodyColor: cText,
-          callbacks: {label: function(c){ return ' ' + fmt(c.raw, unit); }}
-        }
-      },
-      scales: {
-        x: {ticks:{color:cTextT, maxTicksLimit:6, font:{size:10}}, grid:{color:cGrid}},
-        y: {ticks:{color:cTextT, font:{size:10}, callback:function(v){return fmt(v,unit);}}, grid:{color:cGrid}}
-      }
+  var vals = pts.map(function(p) {
+    if (typeof p.v !== 'number' || !isFinite(p.v)) {
+      throw new Error('invalid point value: ' + JSON.stringify(p.v));
     }
-  };
+    return p.v;
+  });
+  var times = pts.map(function(p){ return p.ts; });
+  var minV = Math.min.apply(null, vals);
+  var maxV = Math.max.apply(null, vals);
+  if (baseline !== null) { minV = Math.min(minV, baseline); maxV = Math.max(maxV, baseline); }
+  var range = maxV - minV || 1;
 
-  if (chartInstance) {
-    chartInstance.destroy();
-    chartInstance = null;
+  // SVG viewport
+  var W = 560, H = 160;
+  var padL = 46, padR = 8, padT = 12, padB = 24;
+  var cW = W - padL - padR, cH = H - padT - padB;
+
+  function xPos(i) { return padL + (i / (pts.length - 1 || 1)) * cW; }
+  function yPos(v) { return padT + (1 - (v - minV) / range) * cH; }
+
+  // Build SVG string
+  // Include id="chart" so getElementById('chart') keeps working on re-renders.
+  var svg = '<svg id="chart" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">';
+
+  // Grid lines (4 horizontal)
+  for (var g = 0; g <= 4; g++) {
+    var gy = padT + (g/4) * cH;
+    var gv = maxV - (g/4) * range;
+    svg += '<line x1="'+padL+'" y1="'+gy+'" x2="'+(W-padR)+'" y2="'+gy+'" stroke="#21262d" stroke-width="1"/>';
+    svg += '<text x="'+(padL-4)+'" y="'+(gy+4)+'" text-anchor="end" fill="#6e7681" font-size="9" font-family="-apple-system,sans-serif">'+fmt(gv,unit)+'</text>';
   }
-  // new Chart() can throw in some environments (e.g. canvas 2D context unavailable).
-  // Re-throw so the caller's try/catch can surface the error to the user.
-  chartInstance = new Chart(canvas, cfg);
+
+  // X-axis labels (up to 6)
+  var step = Math.max(1, Math.floor(pts.length / 6));
+  for (var xi = 0; xi < pts.length; xi += step) {
+    var xp = xPos(xi);
+    var t = new Date(times[xi]*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+    svg += '<text x="'+xp+'" y="'+(H-6)+'" text-anchor="middle" fill="#6e7681" font-size="9" font-family="-apple-system,sans-serif">'+t+'</text>';
+  }
+
+  // Baseline reference line
+  if (baseline !== null) {
+    var by = yPos(baseline);
+    svg += '<line x1="'+padL+'" y1="'+by+'" x2="'+(W-padR)+'" y2="'+by+'" stroke="#f0883e" stroke-width="1.5" stroke-dasharray="6 3" opacity="0.8"/>';
+  }
+
+  // Fill area under line
+  if (pts.length > 1) {
+    var fillPath = 'M'+xPos(0)+','+yPos(vals[0]);
+    for (var fi = 1; fi < pts.length; fi++) fillPath += ' L'+xPos(fi)+','+yPos(vals[fi]);
+    fillPath += ' L'+xPos(pts.length-1)+','+(padT+cH)+' L'+xPos(0)+','+(padT+cH)+' Z';
+    svg += '<path d="'+fillPath+'" fill="#4e9af1" fill-opacity="0.08"/>';
+
+    // Main line
+    var linePath = 'M'+xPos(0)+','+yPos(vals[0]);
+    for (var li = 1; li < pts.length; li++) linePath += ' L'+xPos(li)+','+yPos(vals[li]);
+    svg += '<path d="'+linePath+'" fill="none" stroke="#4e9af1" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
+  } else if (pts.length === 1) {
+    svg += '<circle cx="'+xPos(0)+'" cy="'+yPos(vals[0])+'" r="3" fill="#4e9af1"/>';
+  }
+
+  svg += '</svg>';
+  svgEl.outerHTML = svg;
 }
 
 })();

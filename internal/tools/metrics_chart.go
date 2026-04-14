@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
+	"log/slog"
 	"text/template"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -14,7 +15,6 @@ const (
 	// Declared in the tool definition so hosts can prefetch the template.
 	chartStaticURI = "ui://metrics/chart"
 	chartMIMEType  = "text/html;profile=mcp-app"
-	chartCDNDomain = "cdn.jsdelivr.net"
 )
 
 //go:embed metrics_chart.html
@@ -30,9 +30,9 @@ type chartPoint struct {
 }
 
 // RegisterMetricsChartStaticResource registers the ui://metrics/chart resource.
-// It returns a self-contained HTML page that implements the minimal MCP Apps
-// bridge protocol to receive structuredContent from the host and render a
-// Chart.js time-series widget.
+// It returns a self-contained HTML page that implements the MCP Apps bridge
+// protocol to receive structuredContent from the host and render a pure SVG
+// time-series widget (no external dependencies).
 func RegisterMetricsChartStaticResource(s *mcp.Server) {
 	html := renderChartHTML()
 	s.AddResource(
@@ -41,14 +41,11 @@ func RegisterMetricsChartStaticResource(s *mcp.Server) {
 			Name:     "metrics-chart",
 			MIMEType: chartMIMEType,
 			Description: "Interactive time-series chart for a Cloud Monitoring metric. " +
-				"Rendered as a Chart.js widget. Data is delivered via the MCP Apps bridge " +
+				"Rendered as an inline SVG widget. Data is delivered via the MCP Apps bridge " +
 				"from structuredContent in the metrics_snapshot tool result.",
 		},
 		func(_ context.Context, _ *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 			return &mcp.ReadResourceResult{
-				Meta: mcp.Meta{"ui": map[string]any{
-					"csp": map[string]any{"resourceDomains": []string{chartCDNDomain}},
-				}},
 				Contents: []*mcp.ResourceContents{{
 					URI:      chartStaticURI,
 					MIMEType: chartMIMEType,
@@ -60,12 +57,13 @@ func RegisterMetricsChartStaticResource(s *mcp.Server) {
 }
 
 // renderChartHTML executes the embedded HTML template and returns the result.
-// The template currently has no variables; text/template is used for
+// The template currently has no actions; text/template is used for
 // forward-compatibility (e.g. injecting ToolName or version in the future).
 func renderChartHTML() string {
 	var buf bytes.Buffer
 	if err := chartHTMLTmpl.Execute(&buf, nil); err != nil {
 		// Should never happen: the template has no actions.
+		slog.Error("[metrics-chart] BUG: template execution failed; serving raw HTML", "err", err)
 		return chartHTMLRaw
 	}
 	return buf.String()

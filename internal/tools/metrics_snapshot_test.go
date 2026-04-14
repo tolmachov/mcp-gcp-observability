@@ -40,6 +40,12 @@ func TestSnapshotCallResult(t *testing.T) {
 	t.Run("not an error result", func(t *testing.T) {
 		assert.False(t, cr.IsError)
 	})
+
+	t.Run("meta carries static chart URI", func(t *testing.T) {
+		ui, ok := cr.Meta["ui"].(map[string]any)
+		require.True(t, ok, "_meta.ui must be present")
+		assert.Equal(t, chartStaticURI, ui["resourceUri"])
+	})
 }
 
 // TestEmptyWindowMessage verifies that the "metric exists but window is
