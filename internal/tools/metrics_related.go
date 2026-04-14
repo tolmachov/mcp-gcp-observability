@@ -63,6 +63,7 @@ func RegisterMetricsRelated(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 		InputSchema: inputSchemaWithEnums[MetricsRelatedInput](
 			enumPatch{"window", enumWindow},
 		),
+		OutputSchema: outputSchemaFor[RelatedSignalsResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsRelatedInput) (*mcp.CallToolResult, *RelatedSignalsResult, error) {
 		if in.MetricType == "" {
 			return errResult("metric_type is required"), nil, nil
@@ -142,7 +143,7 @@ func RegisterMetricsRelated(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 					if r := recover(); r != nil {
 						stack := debug.Stack()
 						msg := fmt.Sprintf("panic querying %s: %v\n%s", relMetric, r, stack)
-						notifyErrLog.Load().Printf("metrics_related: %s", msg)
+						notifyErrLog.Load().Error("metrics_related: panic in handler", "metric", relMetric, "panic", r, "stack", string(stack))
 						mcpLog(ctx, req, logLevelError, "metrics_related", msg)
 						addSkip(relMetric, fmt.Sprintf("internal error: %v", r), false)
 					}

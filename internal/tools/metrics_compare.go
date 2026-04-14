@@ -27,6 +27,7 @@ func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
+		OutputSchema: outputSchemaFor[CompareResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsCompareInput) (*mcp.CallToolResult, *CompareResult, error) {
 		if in.MetricType == "" {
 			return errResult("metric_type is required"), nil, nil
@@ -117,7 +118,7 @@ func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 				if r := recover(); r != nil {
 					stack := debug.Stack()
 					msg := fmt.Sprintf("panic querying window A: %v\n%s", r, stack)
-					notifyErrLog.Load().Printf("metrics_compare: %s", msg)
+					notifyErrLog.Load().Error("metrics_compare: panic in window A goroutine", "panic", r, "stack", string(stack))
 					mcpLog(ctx, req, logLevelError, "metrics_compare", msg)
 					errA = fmt.Errorf("internal error: %v", r)
 				}
@@ -134,7 +135,7 @@ func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 				if r := recover(); r != nil {
 					stack := debug.Stack()
 					msg := fmt.Sprintf("panic querying window B: %v\n%s", r, stack)
-					notifyErrLog.Load().Printf("metrics_compare: %s", msg)
+					notifyErrLog.Load().Error("metrics_compare: panic in window B goroutine", "panic", r, "stack", string(stack))
 					mcpLog(ctx, req, logLevelError, "metrics_compare", msg)
 					errB = fmt.Errorf("internal error: %v", r)
 				}

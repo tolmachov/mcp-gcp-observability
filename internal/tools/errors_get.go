@@ -22,6 +22,7 @@ func RegisterErrorsGet(s *mcp.Server, client *gcpclient.Client) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
+		OutputSchema: outputSchemaFor[gcpdata.ErrorGroupDetail](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ErrorsGetInput) (*mcp.CallToolResult, *gcpdata.ErrorGroupDetail, error) {
 		if in.GroupID == "" {
 			return errResult("group_id is required"), nil, nil

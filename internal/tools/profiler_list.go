@@ -27,6 +27,7 @@ func RegisterProfilerList(s *mcp.Server, client *gcpclient.Client) {
 		InputSchema: inputSchemaWithEnums[ProfilerListInput](
 			enumPatch{"profile_type", enumProfileType},
 		),
+		OutputSchema: outputSchemaFor[gcpdata.ProfileListResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerListInput) (*mcp.CallToolResult, *gcpdata.ProfileListResult, error) {
 		project, err := resolveProject(in.ProjectID, client.Config().DefaultProject)
 		if err != nil {

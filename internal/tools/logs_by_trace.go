@@ -23,6 +23,7 @@ func RegisterLogsByTrace(s *mcp.Server, client *gcpclient.Client) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
+		OutputSchema: outputSchemaFor[gcpdata.LogQueryResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsByTraceInput) (*mcp.CallToolResult, *gcpdata.LogQueryResult, error) {
 		if in.TraceID == "" {
 			return errResult("trace_id is required"), nil, nil

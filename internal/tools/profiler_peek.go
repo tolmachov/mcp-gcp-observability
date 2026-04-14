@@ -24,6 +24,7 @@ func RegisterProfilerPeek(s *mcp.Server, client *gcpclient.Client, cache *gcpdat
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
+		OutputSchema: outputSchemaFor[gcpdata.ProfilePeekResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerPeekInput) (*mcp.CallToolResult, *gcpdata.ProfilePeekResult, error) {
 		if in.ProfileID == "" {
 			return errResult("profile_id is required"), nil, nil

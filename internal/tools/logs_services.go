@@ -23,6 +23,7 @@ func RegisterLogsServices(s *mcp.Server, client *gcpclient.Client) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
+		OutputSchema: outputSchemaFor[gcpdata.ServiceList](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsServicesInput) (*mcp.CallToolResult, *gcpdata.ServiceList, error) {
 		project, err := resolveProject(in.ProjectID, client.Config().DefaultProject)
 		if err != nil {

@@ -28,6 +28,7 @@ func RegisterTraceList(s *mcp.Server, client *gcpclient.Client) {
 			enumPatch{"order_by", enumTraceOrderBy},
 			enumPatch{"view", enumTraceView},
 		),
+		OutputSchema: outputSchemaFor[gcpdata.TraceListResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in TraceListInput) (*mcp.CallToolResult, *gcpdata.TraceListResult, error) {
 		project, err := resolveProject(in.ProjectID, client.Config().DefaultProject)
 		if err != nil {

@@ -69,6 +69,10 @@ func snapshotCallResult(result *MetricSnapshotResult) *mcp.CallToolResult {
 		}
 	}
 	return &mcp.CallToolResult{
+		// Signal the static chart widget resource on every call result so hosts
+		// can associate this result with the chart iframe even if they missed the
+		// resource URI in the tool definition (belt-and-suspenders).
+		Meta:    mcp.Meta{"ui": map[string]any{"resourceUri": chartStaticURI}},
 		Content: []mcp.Content{&mcp.TextContent{Text: string(analysisJSON)}},
 	}
 }
@@ -78,6 +82,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, regi
 		Name: "metrics_snapshot",
 		Description: "Get a semantic snapshot of a metric with baseline comparison, trend detection, and classification. " +
 			"Returns current value, baseline delta, trend, SLO breach status, and a classification label. " +
+			"Also renders an interactive time-series chart inline in the chat (hosts that support MCP app widgets). " +
 			"The response includes `available_labels` — the metric.labels.* and resource.labels.* keys this metric accepts — " +
 			"so follow-up calls can construct valid filters without guessing. " +
 			"Use metrics_list first to discover metric_type values. " +
@@ -92,10 +97,11 @@ func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, regi
 		// Static UI resource URI — signals chart support to the host for prefetch.
 		// Per-call data is delivered via structuredContent through the MCP Apps bridge.
 		Meta: mcp.Meta{"ui": map[string]any{"resourceUri": chartStaticURI}},
-		InputSchema: inputSchemaWithEnums[MetricsSnapshotInput](
+		InputSchema:  inputSchemaWithEnums[MetricsSnapshotInput](
 			enumPatch{"window", enumWindow},
 			enumPatch{"baseline_mode", enumBaselineMode},
 		),
+		OutputSchema: outputSchemaFor[MetricSnapshotResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsSnapshotInput) (*mcp.CallToolResult, *MetricSnapshotResult, error) {
 		if in.MetricType == "" {
 			return errResult("metric_type is required"), nil, nil
@@ -458,7 +464,7 @@ func buildRobustWeeklyBaseline(
 			defer func() {
 				if r := recover(); r != nil {
 					stack := debug.Stack()
-					notifyErrLog.Load().Printf("metrics_snapshot: panic in baseline week -%d: %v\n%s", weeksBack, r, stack)
+					notifyErrLog.Load().Error("metrics_snapshot: panic in baseline goroutine", "weeks_back", weeksBack, "panic", r, "stack", string(stack))
 					mu.Lock()
 					errs = append(errs, fmt.Errorf("week -%d: panic: %v", weeksBack, r))
 					mu.Unlock()

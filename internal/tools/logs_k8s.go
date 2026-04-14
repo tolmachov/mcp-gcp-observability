@@ -27,6 +27,7 @@ func RegisterLogsK8s(s *mcp.Server, client *gcpclient.Client) {
 			enumPatch{"severity", enumSeverity},
 			enumPatch{"order", enumSortOrder},
 		),
+		OutputSchema: outputSchemaFor[gcpdata.LogQueryResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsK8sInput) (*mcp.CallToolResult, *gcpdata.LogQueryResult, error) {
 		project, err := resolveProject(in.ProjectID, client.Config().DefaultProject)
 		if err != nil {

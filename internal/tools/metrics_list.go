@@ -30,6 +30,7 @@ func RegisterMetricsList(s *mcp.Server, querier gcpdata.MetricsQuerier, registry
 		InputSchema: inputSchemaWithEnums[MetricsListInput](
 			enumPatch{"kind", toAny(metrics.ValidMetricKindsForInput())},
 		),
+		OutputSchema: outputSchemaFor[MetricsListResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsListInput) (*mcp.CallToolResult, *MetricsListResult, error) {
 		project, err := resolveProject(in.ProjectID, defaultProject)
 		if err != nil {

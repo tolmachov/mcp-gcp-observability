@@ -25,6 +25,7 @@ func RegisterProfilerCompare(s *mcp.Server, client *gcpclient.Client, cache *gcp
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
+		OutputSchema: outputSchemaFor[gcpdata.ProfileCompareResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerCompareInput) (*mcp.CallToolResult, *gcpdata.ProfileCompareResult, error) {
 		if in.ProfileID == "" {
 			return errResult("profile_id is required (current profile)"), nil, nil

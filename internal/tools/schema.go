@@ -4,6 +4,17 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
+// outputSchemaFor generates a JSON schema for type T to use as a tool OutputSchema.
+// Panics if schema generation fails (programming error).
+// Do not use for types that contain self-referential fields — use a hand-written schema instead.
+func outputSchemaFor[T any]() *jsonschema.Schema {
+	schema, err := jsonschema.For[T](nil)
+	if err != nil {
+		panic("outputSchemaFor: " + err.Error())
+	}
+	return schema
+}
+
 // enumPatch injects an enum constraint into a generated JSON schema property.
 type enumPatch struct {
 	property string

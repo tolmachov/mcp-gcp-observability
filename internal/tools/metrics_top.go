@@ -36,6 +36,7 @@ func RegisterMetricsTop(s *mcp.Server, querier gcpdata.MetricsQuerier, registry 
 			enumPatch{"window", enumWindow},
 			enumPatch{"baseline_mode", enumBaselineMode},
 		),
+		OutputSchema: outputSchemaFor[TopContributorsResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsTopInput) (*mcp.CallToolResult, *TopContributorsResult, error) {
 		if in.MetricType == "" {
 			return errResult("metric_type is required"), nil, nil
@@ -365,7 +366,7 @@ func queryContributorBaselines(
 					if r := recover(); r != nil {
 						stack := debug.Stack()
 						msg := fmt.Sprintf("panic in baseline week -%d: %v\n%s", weeksBack, r, stack)
-						notifyErrLog.Load().Printf("metrics_top_contributors: %s", msg)
+						notifyErrLog.Load().Error("metrics_top_contributors: panic in baseline goroutine", "weeks_back", weeksBack, "panic", r, "stack", string(stack))
 						mcpLog(ctx, req, logLevelError, "metrics_top_contributors", msg)
 						mu.Lock()
 						errs = append(errs, fmt.Errorf("week -%d: panic: %v", weeksBack, r))

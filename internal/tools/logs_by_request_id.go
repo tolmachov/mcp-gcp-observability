@@ -24,6 +24,7 @@ func RegisterLogsByRequestID(s *mcp.Server, client *gcpclient.Client) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
+		OutputSchema: outputSchemaFor[gcpdata.LogQueryResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsByRequestIDInput) (*mcp.CallToolResult, *gcpdata.LogQueryResult, error) {
 		if in.RequestID == "" {
 			return errResult("request_id is required"), nil, nil
