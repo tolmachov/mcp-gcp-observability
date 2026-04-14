@@ -189,7 +189,7 @@ func (s *Server) Run(ctx context.Context, transport Transport, httpAddr string) 
 	tools.RegisterProfilerCompare(s.mcpServer, client, profileCache)
 	tools.RegisterProfilerTrends(s.mcpServer, client, profileCache)
 
-	if err := s.registerResources(client, reg, querier, defaultProject); err != nil {
+	if err := s.registerResources(client, reg); err != nil {
 		return err
 	}
 	s.registerPrompts()
@@ -259,7 +259,7 @@ func (s *Server) runHTTP(ctx context.Context, addr string, errLogger *log.Logger
 }
 
 // registerResources adds MCP resources to the server.
-func (s *Server) registerResources(client *gcpclient.Client, reg *metrics.Registry, querier gcpdata.MetricsQuerier, defaultProject string) error {
+func (s *Server) registerResources(client *gcpclient.Client, reg *metrics.Registry) error {
 	cfg := client.Config()
 	configJSON, err := json.Marshal(map[string]any{
 		"default_project":        cfg.DefaultProject,
@@ -290,7 +290,7 @@ func (s *Server) registerResources(client *gcpclient.Client, reg *metrics.Regist
 		},
 	)
 
-	tools.RegisterMetricsChartResource(s.mcpServer, querier, reg, defaultProject)
+	tools.RegisterMetricsChartStaticResource(s.mcpServer)
 	return nil
 }
 

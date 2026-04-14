@@ -1,10 +1,46 @@
 package tools
 
 import (
+	"encoding/json"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// TestSnapshotCallResult verifies that snapshotCallResult excludes chart_points
+// from the LLM-facing content while leaving the original struct intact.
+func TestSnapshotCallResult(t *testing.T) {
+	pts := []chartPoint{{TS: 1700000000, V: 1.0}, {TS: 1700000060, V: 2.0}}
+	result := &MetricSnapshotResult{
+		MetricType:  "test/metric",
+		Kind:        "GAUGE",
+		Unit:        "1",
+		Trend:       "stable",
+		ChartPoints: pts,
+	}
+
+	cr := snapshotCallResult(result)
+
+	t.Run("content does not contain chart_points", func(t *testing.T) {
+		require.Len(t, cr.Content, 1)
+		text := cr.Content[0].(*mcp.TextContent).Text
+		assert.NotContains(t, text, "chart_points", "LLM content must not include raw time-series data")
+		var parsed map[string]any
+		require.NoError(t, json.Unmarshal([]byte(text), &parsed))
+		_, hasChartPoints := parsed["chart_points"]
+		assert.False(t, hasChartPoints, "chart_points key must be absent from marshaled content")
+	})
+
+	t.Run("original struct is not mutated", func(t *testing.T) {
+		assert.Equal(t, pts, result.ChartPoints, "snapshotCallResult must not modify the caller's struct")
+	})
+
+	t.Run("not an error result", func(t *testing.T) {
+		assert.False(t, cr.IsError)
+	})
+}
 
 // TestEmptyWindowMessage verifies that the "metric exists but window is
 // empty" error message is tailored per metric kind and acknowledges the

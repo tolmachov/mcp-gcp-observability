@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Metrics Chart</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%}
+body{background:var(--color-background-primary,#0d1117);color:var(--color-text-primary,#e6edf3);font-family:var(--font-sans,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif);padding:12px 14px 10px}
+.title{font-size:11px;color:var(--color-text-secondary,#8b949e);margin-bottom:8px;word-break:break-all}
+.wrap{position:relative;width:100%;height:240px}
+#c{width:100%;height:100%}
+.nodata{color:var(--color-text-tertiary,#6e7681);font-size:12px;padding-top:8px}
+.loading{color:var(--color-text-tertiary,#6e7681);font-size:12px;padding-top:8px}
+</style>
+</head>
+<body>
+<div class="title" id="title">Loading…</div>
+<div class="wrap" id="wrap">
+  <p class="loading" id="loading">Waiting for data…</p>
+  <canvas id="c" style="display:none"></canvas>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script>
+(function(){
+'use strict';
+
+// ── Minimal MCP Apps bridge ──────────────────────────────────────────────────
+var pending = {}, reqId = 0;
+
+function send(msg) {
+  window.parent.postMessage(msg, '*');
+}
+
+function request(method, params) {
+  return new Promise(function(resolve, reject) {
+    var id = ++reqId;
+    var timer = setTimeout(function() {
+      delete pending[id];
+      reject(new Error('timeout waiting for response to ' + method));
+    }, 5000);
+    pending[id] = function(result, err) {
+      clearTimeout(timer);
+      if (err) { reject(err); } else { resolve(result); }
+    };
+    send({jsonrpc:'2.0', id:id, method:method, params:params||{}});
+  });
+}
+
+window.addEventListener('message', function(e) {
+  var msg = e.data;
+  if (!msg || msg.jsonrpc !== '2.0') return;
+
+  // Notifications and host requests always carry a method — handle first so a
+  // host request whose id accidentally collides with a pending widget request
+  // is not misrouted into the response branch.
+  if (msg.method) {
+    if (msg.method === 'ui/notifications/tool-result') {
+      var sc = msg.params && msg.params.structuredContent;
+      if (sc) {
+        try {
+          renderChart(sc);
+        } catch (e) {
+          var loading = document.getElementById('loading');
+          var canvas  = document.getElementById('c');
+          if (loading) { loading.className = 'nodata'; loading.textContent = 'Chart error: ' + (e && e.message ? e.message : String(e)); loading.style.display = ''; }
+          if (canvas)  { canvas.style.display = 'none'; }
+          if (typeof console !== 'undefined') console.error('[metrics-chart] renderChart threw:', e);
+        }
+      }
+    }
+    return;
+  }
+
+  // Response to our outgoing requests
+  if (msg.id != null && pending[msg.id]) {
+    var cb = pending[msg.id];
+    delete pending[msg.id];
+    if (msg.error) { cb(null, new Error(msg.error.message || 'rpc error')); }
+    else            { cb(msg.result || {}); }
+  }
+});
+
+// Initialize handshake
+request('ui/initialize', {
+  protocolVersion: '2026-01-26',
+  appInfo: {name:'metrics_snapshot', version:'1.0.0'},
+  capabilities: {}
+}).then(function() {
+  send({jsonrpc:'2.0', method:'ui/notifications/initialized', params:{}});
+}).catch(function(err) {
+  // Host does not support ext-apps; graceful degradation — stay in waiting state.
+  // Log so developers can tell a latency/bug apart from simple missing support.
+  if (typeof console !== 'undefined') console.warn('[metrics-chart] ui/initialize failed (host may not support ext-apps):', err && err.message ? err.message : err);
+});
+
+// ── Chart rendering ──────────────────────────────────────────────────────────
+var chartInstance = null;
+
+function fmt(v, unit) {
+  var a = Math.abs(v);
+  var s = a >= 1e9  ? (v/1e9).toFixed(1)+'B'
+        : a >= 1e6  ? (v/1e6).toFixed(1)+'M'
+        : a >= 1e3  ? (v/1e3).toFixed(1)+'K'
+        : a >= 10   ? v.toFixed(1)
+        : a >= 0.1  ? v.toPrecision(3)
+        : v === 0   ? '0'
+                    : v.toExponential(2);
+  return (unit && unit !== '1') ? s+'\u00a0'+unit : s;
+}
+
+function windowLabel(w) {
+  if (!w || !w.from || !w.to) return '';
+  var from = new Date(w.from), to = new Date(w.to);
+  var diffMs = to - from;
+  var diffH = Math.round(diffMs / 36e5);
+  return diffH >= 1 ? diffH+'h' : Math.round(diffMs/6e4)+'m';
+}
+
+function renderChart(sc) {
+  var pts    = sc.chart_points || [];
+  var metric = sc.metric_type  || '';
+  var unit   = sc.unit         || '';
+  var win    = sc.window       || {};
+  // baseline is the mean of the previous window (float, may be absent)
+  var baseline = (typeof sc.baseline === 'number' && sc.baseline_reliable) ? sc.baseline : null;
+
+  // Update title
+  document.getElementById('title').textContent = metric;
+
+  var loading = document.getElementById('loading');
+  var canvas  = document.getElementById('c');
+
+  if (!pts.length) {
+    loading.className = 'nodata';
+    loading.textContent = 'No data available';
+    loading.style.display = '';
+    canvas.style.display = 'none';
+    return;
+  }
+
+  // Guard: ensure Chart.js loaded before showing the canvas — avoids a black
+  // square if the CDN is unreachable and Chart is still undefined at render time.
+  if (typeof Chart === 'undefined') {
+    loading.className = 'nodata';
+    loading.textContent = 'Chart library unavailable (CDN unreachable)';
+    loading.style.display = '';
+    return;
+  }
+
+  loading.style.display = 'none';
+  canvas.style.display  = '';
+
+  var cs       = getComputedStyle(document.documentElement);
+  var cPrimary = cs.getPropertyValue('--color-chart-line-primary').trim()  || '#4e9af1';
+  var cSecond  = cs.getPropertyValue('--color-chart-line-secondary').trim() || '#f0883e';
+  var cTextSec = cs.getPropertyValue('--color-text-secondary').trim()       || '#8b949e';
+  var cTextT   = cs.getPropertyValue('--color-text-tertiary').trim()        || '#6e7681';
+  var cBgSec   = cs.getPropertyValue('--color-background-secondary').trim() || '#161b22';
+  var cBorder  = cs.getPropertyValue('--color-border-default').trim()       || '#30363d';
+  var cGrid    = cs.getPropertyValue('--color-border-subtle').trim()        || '#21262d';
+  var cText    = cs.getPropertyValue('--color-text-primary').trim()         || '#e6edf3';
+
+  var labels = pts.map(function(p) {
+    return new Date(p.ts * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  });
+  var vals = pts.map(function(p) { return p.v; });
+  var winLabel = windowLabel(win);
+
+  var datasets = [{
+    label: 'current' + (winLabel ? ' ('+winLabel+')' : ''),
+    data: vals,
+    borderColor: cPrimary,
+    backgroundColor: cPrimary + '14',
+    borderWidth: 2,
+    pointRadius: 0,
+    tension: 0.3,
+    fill: true
+  }];
+
+  if (baseline !== null) {
+    datasets.push({
+      label: 'baseline (prev window)',
+      data: new Array(vals.length).fill(baseline),
+      borderColor: cSecond,
+      borderWidth: 1.5,
+      borderDash: [6, 3],
+      pointRadius: 0,
+      fill: false
+    });
+  }
+
+  var cfg = {
+    type: 'line',
+    data: {labels: labels, datasets: datasets},
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: {mode:'index', intersect:false},
+      plugins: {
+        legend: {labels:{color:cTextSec, boxWidth:18, padding:10, font:{size:11}}},
+        tooltip: {
+          backgroundColor: cBgSec,
+          borderColor: cBorder,
+          borderWidth: 1,
+          titleColor: cTextSec,
+          bodyColor: cText,
+          callbacks: {label: function(c){ return ' ' + fmt(c.raw, unit); }}
+        }
+      },
+      scales: {
+        x: {ticks:{color:cTextT, maxTicksLimit:6, font:{size:10}}, grid:{color:cGrid}},
+        y: {ticks:{color:cTextT, font:{size:10}, callback:function(v){return fmt(v,unit);}}, grid:{color:cGrid}}
+      }
+    }
+  };
+
+  if (chartInstance) {
+    chartInstance.destroy();
+    chartInstance = null;
+  }
+  // new Chart() can throw in some environments (e.g. canvas 2D context unavailable).
+  // Re-throw so the caller's try/catch can surface the error to the user.
+  chartInstance = new Chart(canvas, cfg);
+}
+
+})();
+</script>
+</body>
+</html>

@@ -2,8 +2,10 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -38,6 +40,39 @@ func (m BaselineMode) Validate(eventTime string) error {
 	return nil
 }
 
+// toChartPoints converts metric points to the compact chartPoint slice used by
+// the chart widget, filtering out NaN and Inf values.
+func toChartPoints(pts []metrics.Point) []chartPoint {
+	out := make([]chartPoint, 0, len(pts))
+	for _, p := range pts {
+		if !math.IsNaN(p.Value) && !math.IsInf(p.Value, 0) {
+			out = append(out, chartPoint{TS: p.Timestamp.Unix(), V: p.Value})
+		}
+	}
+	return out
+}
+
+// snapshotCallResult builds the CallToolResult for metrics_snapshot. It sets
+// Content to the JSON of the analysis result without chart_points, so that
+// raw time-series data stays in structuredContent only and never reaches the LLM.
+func snapshotCallResult(result *MetricSnapshotResult) *mcp.CallToolResult {
+	// Shallow copy so we can zero ChartPoints without mutating the caller's struct.
+	// The caller returns result as structuredContent (with ChartPoints intact).
+	clone := *result
+	clone.ChartPoints = nil
+	analysisJSON, err := json.Marshal(&clone)
+	if err != nil {
+		// Should never happen: all fields are JSON-safe types.
+		return &mcp.CallToolResult{
+			IsError: true,
+			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("internal error: failed to marshal result: %v", err)}},
+		}
+	}
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: string(analysisJSON)}},
+	}
+}
+
 func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "metrics_snapshot",
@@ -54,7 +89,9 @@ func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, regi
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
-		Meta: mcp.Meta{"ui": map[string]any{"resourceUri": chartURITemplate}},
+		// Static UI resource URI — signals chart support to the host for prefetch.
+		// Per-call data is delivered via structuredContent through the MCP Apps bridge.
+		Meta: mcp.Meta{"ui": map[string]any{"resourceUri": chartStaticURI}},
 		InputSchema: inputSchemaWithEnums[MetricsSnapshotInput](
 			enumPatch{"window", enumWindow},
 			enumPatch{"baseline_mode", enumBaselineMode},
@@ -165,8 +202,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, regi
 				},
 				AvailableLabels: availableLabelsFromDescriptor(ctx, req, querier, project, in.MetricType, descriptor),
 			}
-			chartURI := buildChartURL(in.MetricType, in.Filter, windowStr, stepSeconds, project)
-			return &mcp.CallToolResult{Meta: mcp.Meta{"ui": map[string]any{"resourceUri": chartURI}}}, r, nil
+			return snapshotCallResult(r), r, nil
 		}
 
 		sendProgress(ctx, req, 3, 4, "Querying baseline ("+string(baselineMode)+")")
@@ -265,8 +301,8 @@ func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, regi
 
 		result.AvailableLabels = availableLabelsFromDescriptor(ctx, req, querier, project, in.MetricType, descriptor)
 
-		chartURI := buildChartURL(in.MetricType, in.Filter, windowStr, stepSeconds, project)
-		return &mcp.CallToolResult{Meta: mcp.Meta{"ui": map[string]any{"resourceUri": chartURI}}}, result, nil
+		result.ChartPoints = toChartPoints(currentPoints)
+		return snapshotCallResult(result), result, nil
 	})
 }
 
@@ -324,6 +360,11 @@ type MetricSnapshotResult struct {
 	Window      WindowInfo          `json:"window"`
 
 	AvailableLabels *AvailableLabels `json:"available_labels,omitempty"`
+
+	// ChartPoints holds the raw time-series points for the UI chart widget.
+	// Included in structuredContent; snapshotCallResult excludes it from the
+	// LLM-facing content field by marshaling a shallow copy with ChartPoints=nil.
+	ChartPoints []chartPoint `json:"chart_points,omitempty"`
 }
 
 type PercentileInfo struct {
