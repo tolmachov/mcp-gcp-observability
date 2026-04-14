@@ -721,6 +721,94 @@ func TestMetricsCompare(t *testing.T) {
 	t.Logf("delta_pct=%.2f trend_shift=%s", parsed.DeltaPct, parsed.TrendShift)
 }
 
+// TestMetricsCompareMeta verifies that metrics_compare:
+//   - returns a static _meta.ui.resourceUri pointing to the compare chart widget resource
+//   - the chart resource returns an MCP-Apps HTML page with the bridge JS
+//   - structuredContent contains chart_points_a and chart_points_b for the UI to render
+//   - LLM-facing content does NOT contain chart_points_a/b (raw time-series stays out of context)
+func TestMetricsCompareMeta(t *testing.T) {
+	session, ctx, cleanup := setupClient(t)
+	defer cleanup()
+
+	const metricType = "compute.googleapis.com/instance/cpu/utilization"
+	const staticCompareURI = "ui://metrics/compare"
+
+	now := time.Now().UTC()
+	result := callTool(t, session, ctx, "metrics_compare", map[string]any{
+		"metric_type":    metricType,
+		"window_a_from":  now.Add(-2 * time.Hour).Format(time.RFC3339),
+		"window_a_to":    now.Add(-1 * time.Hour).Format(time.RFC3339),
+		"window_b_from":  now.Add(-1 * time.Hour).Format(time.RFC3339),
+		"window_b_to":    now.Format(time.RFC3339),
+		"window_a_label": "prev_hour",
+		"window_b_label": "last_hour",
+	})
+	require.False(t, result.IsError, "metrics_compare must not return an error")
+
+	// ── 1. Tool meta: static resource URI ────────────────────────────────────
+	ui, ok := result.Meta["ui"].(map[string]any)
+	require.True(t, ok, "_meta.ui must be a map[string]any; got %T", result.Meta["ui"])
+
+	resourceURI, ok := ui["resourceUri"].(string)
+	require.True(t, ok, "_meta.ui.resourceUri must be a string; got %T", ui["resourceUri"])
+	require.NotEmpty(t, resourceURI, "_meta.ui.resourceUri must not be empty")
+
+	t.Logf("_meta.ui.resourceUri = %s", resourceURI)
+	assert.Equal(t, staticCompareURI, resourceURI, "URI must be the static compare chart widget address")
+
+	// ── 2. Static resource: HTML with MCP Apps bridge ─────────────────────────
+	readResult, err := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: staticCompareURI})
+	require.NoError(t, err, "resources/read for the static compare chart URI must succeed")
+	require.NotEmpty(t, readResult.Contents, "compare chart resource must have content")
+
+	chartContent := readResult.Contents[0]
+	assert.Equal(t, "text/html;profile=mcp-app", chartContent.MIMEType, "compare chart MIME type must be text/html;profile=mcp-app")
+	assert.NotContains(t, chartContent.Text, "cdn.", "compare chart HTML must not reference any CDN")
+	assert.NotContains(t, chartContent.Text, "<script src=", "compare chart HTML must not load external scripts")
+	assert.Contains(t, chartContent.Text, "<svg id=\"chart\"", "compare chart HTML must contain the SVG container")
+	assert.Contains(t, chartContent.Text, "chart_points_a", "compare chart HTML must reference chart_points_a")
+	assert.Contains(t, chartContent.Text, "chart_points_b", "compare chart HTML must reference chart_points_b")
+	assert.Contains(t, chartContent.Text, "ui/notifications/tool-result", "compare chart HTML must listen for MCP Apps bridge notification")
+	assert.NotContains(t, chartContent.Text, metricType, "static compare chart HTML must not embed metric-specific data")
+
+	t.Logf("Compare chart resource: %d bytes, MIME=%s", len(chartContent.Text), chartContent.MIMEType)
+
+	// ── 3. content (LLM): no chart_points_a/b ───────────────────────────────
+	llmText := textFromResult(t, result)
+	var llmJSON map[string]any
+	require.NoError(t, json.Unmarshal([]byte(llmText), &llmJSON), "LLM content must be valid JSON")
+	_, hasA := llmJSON["chart_points_a"]
+	_, hasB := llmJSON["chart_points_b"]
+	assert.False(t, hasA, "chart_points_a must be absent from LLM-facing content")
+	assert.False(t, hasB, "chart_points_b must be absent from LLM-facing content")
+	// Verify that analysis fields are present.
+	assert.Equal(t, metricType, llmJSON["metric_type"], "metric_type must be present in LLM content")
+	assert.NotEmpty(t, llmJSON["trend_shift"], "trend_shift must be present in LLM content")
+
+	// ── 4. structuredContent (UI): chart_points_a and chart_points_b present ─
+	require.NotNil(t, result.StructuredContent, "structuredContent must be set for the compare chart widget to receive data")
+
+	scBytes, err := json.Marshal(result.StructuredContent)
+	require.NoError(t, err)
+	var scJSON map[string]any
+	require.NoError(t, json.Unmarshal(scBytes, &scJSON), "structuredContent must be valid JSON")
+
+	ptsA, hasPtsA := scJSON["chart_points_a"]
+	ptsB, hasPtsB := scJSON["chart_points_b"]
+	assert.True(t, hasPtsA, "structuredContent must contain chart_points_a for the compare widget")
+	assert.True(t, hasPtsB, "structuredContent must contain chart_points_b for the compare widget")
+	if pts, ok := ptsA.([]any); ok && hasPtsA {
+		assert.NotEmpty(t, pts, "chart_points_a should be non-empty for an active metric")
+		t.Logf("structuredContent: chart_points_a=%d points, chart_points_b=%d points",
+			len(pts), func() int {
+				if p, ok := ptsB.([]any); ok {
+					return len(p)
+				}
+				return 0
+			}())
+	}
+}
+
 func TestProfilerList(t *testing.T) {
 	session, ctx, cleanup := setupClient(t)
 	defer cleanup()

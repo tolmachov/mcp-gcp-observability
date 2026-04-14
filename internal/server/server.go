@@ -285,6 +285,7 @@ func (s *Server) registerResources(client *gcpclient.Client, reg *metrics.Regist
 	)
 
 	tools.RegisterMetricsChartStaticResource(s.mcpServer)
+	tools.RegisterMetricsCompareChartStaticResource(s.mcpServer)
 	return nil
 }
 

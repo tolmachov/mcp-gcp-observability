@@ -2,8 +2,10 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -15,18 +17,48 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
 
+// compareCallResult builds the LLM-facing CallToolResult for metrics_compare.
+// It strips chart_points_a/b from the JSON text in Content so raw time-series
+// data is never sent to the LLM. The caller returns the unmodified *CompareResult
+// as the second handler value; the SDK serializes it into StructuredContent,
+// making chart_points_a/b available to the UI widget.
+func compareCallResult(result *CompareResult) *mcp.CallToolResult {
+	// Shallow copy so we can zero ChartPoints without mutating the caller's struct.
+	// The caller returns result as structuredContent (with ChartPoints intact).
+	clone := *result
+	clone.ChartPointsA = nil
+	clone.ChartPointsB = nil
+	analysisJSON, err := json.Marshal(&clone)
+	if err != nil {
+		slog.Error("[metrics-compare] BUG: failed to marshal result", "err", err)
+		return &mcp.CallToolResult{
+			IsError: true,
+			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("internal error: failed to marshal result: %v", err)}},
+		}
+	}
+	return &mcp.CallToolResult{
+		Meta:    mcp.Meta{"ui": map[string]any{"resourceUri": compareChartStaticURI}},
+		Content: []mcp.Content{&mcp.TextContent{Text: string(analysisJSON)}},
+	}
+}
+
 func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "metrics_compare",
 		Description: "Compare two arbitrary time windows for the same metric. " +
 			"Useful for deploy diff, before/after comparisons, or ad-hoc analysis. " +
 			"Returns mean values, delta, trend shift, and classification for each window. " +
+			"Also renders an interactive dual-series chart inline in the chat (hosts that support MCP app widgets). " +
 			"For automatic baseline comparison (prev_window, same_weekday_hour), use metrics_snapshot instead.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
+		// Meta here and in compareCallResult both carry the same URI deliberately:
+		// this declaration lets hosts prefetch the resource from tools/list;
+		// the per-call Meta binds the widget for hosts that skip tools/list caching.
+		Meta:         mcp.Meta{"ui": map[string]any{"resourceUri": compareChartStaticURI}},
 		OutputSchema: outputSchemaFor[CompareResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsCompareInput) (*mcp.CallToolResult, *CompareResult, error) {
 		if in.MetricType == "" {
@@ -223,6 +255,8 @@ func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 				NoData:                    true,
 				NoDataWindows:             emptyLabels,
 				Note:                      noDataNote,
+				MetricType:                in.MetricType,
+				Unit:                      meta.Unit,
 			}
 			if len(pointsA) > 0 {
 				expectedA := expectedPointsForWindow(aTo.Sub(aFrom), int(stepSeconds))
@@ -238,7 +272,11 @@ func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 				result.ClassificationB = safeClassification(fB.Classification)
 				result.ClassificationConfidenceB = string(fB.Confidence)
 			}
-			return nil, result, nil
+			callResult := compareCallResult(result)
+			if callResult.IsError {
+				return callResult, nil, nil
+			}
+			return callResult, result, nil
 		}
 
 		sendProgress(ctx, req, 3, 4, "Processing results")
@@ -287,7 +325,15 @@ func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 		if fB.StepChangeAt != nil {
 			cmp.StepChangeAt = fB.StepChangeAt.Format(time.RFC3339)
 		}
-		return nil, cmp, nil
+		cmp.MetricType = in.MetricType
+		cmp.Unit = meta.Unit
+		cmp.ChartPointsA = toChartPoints(pointsA)
+		cmp.ChartPointsB = toChartPoints(pointsB)
+		callResult := compareCallResult(cmp)
+		if callResult.IsError {
+			return callResult, nil, nil
+		}
+		return callResult, cmp, nil
 	})
 }
 
@@ -317,6 +363,17 @@ type CompareResult struct {
 	NoData              bool     `json:"no_data,omitempty"`
 	NoDataWindows       []string `json:"no_data_windows,omitempty"`
 	Note                string   `json:"note,omitempty"`
+
+	// MetricType and Unit are included in both LLM content and structuredContent
+	// so hosts and the LLM can interpret values correctly.
+	MetricType string `json:"metric_type,omitempty"`
+	Unit       string `json:"unit,omitempty"`
+
+	// Chart data: present in structuredContent (the SDK serializes the second handler return value);
+	// excluded from LLM content by compareCallResult (zeroed on the shallow copy).
+	// Also nil on error returns and on the no-data path, where chart points are never populated.
+	ChartPointsA []chartPoint `json:"chart_points_a,omitempty"`
+	ChartPointsB []chartPoint `json:"chart_points_b,omitempty"`
 }
 
 func parseRFC3339(s, field string) (time.Time, error) {

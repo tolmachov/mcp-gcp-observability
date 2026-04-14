@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
+	"fmt"
 	"log/slog"
 	"text/template"
 
@@ -12,15 +13,26 @@ import (
 
 const (
 	// chartStaticURI is the fixed MCP resource URI for the metrics chart widget.
-	// Declared in the tool definition so hosts can prefetch the template.
+	// Used in both the tool definition (so hosts can prefetch the resource) and
+	// in per-call results (so hosts that skip tools/list caching still bind the widget).
 	chartStaticURI = "ui://metrics/chart"
 	chartMIMEType  = "text/html;profile=mcp-app"
+
+	// compareChartStaticURI is the fixed MCP resource URI for the metrics compare widget.
+	// Used in both the tool definition (so hosts can prefetch the resource) and
+	// in per-call results (so hosts that skip tools/list caching still bind the widget).
+	compareChartStaticURI = "ui://metrics/compare"
+	compareChartMIMEType  = "text/html;profile=mcp-app"
 )
 
 //go:embed metrics_chart.html
 var chartHTMLRaw string
 
+//go:embed metrics_compare_chart.html
+var compareChartHTMLRaw string
+
 var chartHTMLTmpl = template.Must(template.New("metrics-chart").Parse(chartHTMLRaw))
+var compareChartHTMLTmpl = template.Must(template.New("metrics-compare-chart").Parse(compareChartHTMLRaw))
 
 // chartPoint is the compact JSON representation of a time-series point
 // sent in structuredContent for the UI to render.
@@ -54,6 +66,7 @@ func RegisterMetricsChartStaticResource(s *mcp.Server) {
 			}, nil
 		},
 	)
+	slog.Info("[metrics-chart] static resource registered", "uri", chartStaticURI)
 }
 
 // renderChartHTML executes the embedded HTML template and returns the result.
@@ -63,8 +76,48 @@ func renderChartHTML() string {
 	var buf bytes.Buffer
 	if err := chartHTMLTmpl.Execute(&buf, nil); err != nil {
 		// Should never happen: the template has no actions.
-		slog.Error("[metrics-chart] BUG: template execution failed; serving raw HTML", "err", err)
-		return chartHTMLRaw
+		// Panic (like template.Must) rather than silently serving broken HTML.
+		panic(fmt.Sprintf("[metrics-chart] BUG: template execution failed: %v", err))
+	}
+	return buf.String()
+}
+
+// RegisterMetricsCompareChartStaticResource registers the ui://metrics/compare resource.
+// It returns a self-contained HTML page that implements the MCP Apps bridge protocol
+// to receive structuredContent and render a dual-series SVG comparing two windows.
+func RegisterMetricsCompareChartStaticResource(s *mcp.Server) {
+	html := renderCompareChartHTML()
+	s.AddResource(
+		&mcp.Resource{
+			URI:      compareChartStaticURI,
+			Name:     "metrics-compare-chart",
+			MIMEType: compareChartMIMEType,
+			Description: "Interactive dual-series chart for a Cloud Monitoring metrics comparison. " +
+				"Rendered as an inline SVG widget showing two time windows side by side. " +
+				"Data is delivered via the MCP Apps bridge from structuredContent in the metrics_compare tool result.",
+		},
+		func(_ context.Context, _ *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+			return &mcp.ReadResourceResult{
+				Contents: []*mcp.ResourceContents{{
+					URI:      compareChartStaticURI,
+					MIMEType: compareChartMIMEType,
+					Text:     html,
+				}},
+			}, nil
+		},
+	)
+	slog.Info("[metrics-compare-chart] static resource registered", "uri", compareChartStaticURI)
+}
+
+// renderCompareChartHTML executes the embedded compare HTML template and returns the result.
+// The template currently has no actions; text/template is used for
+// forward-compatibility (e.g. injecting ToolName or version in the future).
+func renderCompareChartHTML() string {
+	var buf bytes.Buffer
+	if err := compareChartHTMLTmpl.Execute(&buf, nil); err != nil {
+		// Should never happen: the template has no actions.
+		// Panic (like template.Must) rather than silently serving broken HTML.
+		panic(fmt.Sprintf("[metrics-compare-chart] BUG: template execution failed: %v", err))
 	}
 	return buf.String()
 }

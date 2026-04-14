@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Metrics Compare</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;margin:0}
+/* Light theme defaults; .dark class toggled by host-context-changed notification. */
+:root{color-scheme:light dark}
+:root.dark body{background:#0d1117;color:#e6edf3}
+:root.dark .title{color:#8b949e}
+:root.dark .delta{color:#8b949e}
+:root.dark .msg{color:#8b949e}
+:root.dark .legend-label{color:#8b949e}
+body{background:#ffffff;color:#1f2328;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:8px 14px 6px}
+.header{display:flex;align-items:baseline;gap:6px;margin-bottom:4px}
+.title{font-size:11px;color:#57606a;word-break:break-all;flex:1;min-width:0}
+.delta{font-size:11px;font-weight:600;white-space:nowrap}
+.delta.degraded{color:#f85149}
+.delta.improved{color:#3fb950}
+.delta.unchanged{color:#8b949e}
+.wrap{position:relative;width:100%;height:200px}
+svg{display:block;width:100%;height:100%}
+.msg{color:#57606a;font-size:12px;padding-top:8px}
+.legend{display:flex;gap:14px;margin-top:4px;flex-wrap:wrap}
+.legend-item{display:flex;align-items:center;gap:4px;font-size:10px}
+.legend-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.legend-dot.a{background:#4e9af1}
+.legend-dot.b{background:#3fb950}
+.legend-label{color:#57606a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px}
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="title" id="title">Loading…</div>
+  <div class="delta" id="delta"></div>
+</div>
+<div class="wrap" id="wrap">
+  <p class="msg" id="msg">Waiting for data…</p>
+  <svg id="chart" style="display:none" xmlns="http://www.w3.org/2000/svg"></svg>
+</div>
+<div class="legend" id="legend" style="display:none">
+  <div class="legend-item"><div class="legend-dot a"></div><div class="legend-label" id="label-a"></div></div>
+  <div class="legend-item"><div class="legend-dot b"></div><div class="legend-label" id="label-b"></div></div>
+</div>
+
+<script>
+(function(){
+'use strict';
+
+// ── MCP Apps bridge ──────────────────────────────────────────────────────────
+var pending = {}, reqId = 0;
+
+function send(msg) { window.parent.postMessage(msg, '*'); }
+
+function request(method, params) {
+  return new Promise(function(resolve, reject) {
+    var id = ++reqId;
+    var timer = setTimeout(function() {
+      delete pending[id];
+      reject(new Error('timeout: ' + method));
+    }, 5000);
+    pending[id] = function(result, err) {
+      clearTimeout(timer);
+      if (err) reject(err); else resolve(result);
+    };
+    send({jsonrpc:'2.0', id:id, method:method, params:params||{}});
+  });
+}
+
+window.addEventListener('message', function(e) {
+  var msg = e.data;
+  if (!msg || msg.jsonrpc !== '2.0') return;
+
+  // Notifications carry a method — check first to avoid id-collision misrouting.
+  if (msg.method) {
+    if (msg.method === 'ui/notifications/host-context-changed') {
+      var theme = msg.params && msg.params.theme;
+      if (theme) applyTheme(theme);
+      return;
+    }
+    if (msg.method === 'ui/notifications/tool-result') {
+      var sc = msg.params && msg.params.structuredContent;
+      if (sc) {
+        try {
+          renderChart(sc);
+        } catch(e) {
+          var msgEl2 = document.getElementById('msg');
+          var svgEl2 = document.getElementById('chart');
+          if (msgEl2) { msgEl2.textContent = 'Chart error: ' + (e && e.message ? e.message : String(e)); msgEl2.style.display = ''; }
+          if (svgEl2) svgEl2.style.display = 'none';
+          if (typeof console !== 'undefined') console.error('[metrics-compare] renderChart:', e);
+        }
+      } else {
+        if (typeof console !== 'undefined') console.warn('[metrics-compare] tool-result missing structuredContent', msg.params);
+      }
+    }
+    return;
+  }
+
+  if (msg.id != null && pending[msg.id]) {
+    var cb = pending[msg.id];
+    delete pending[msg.id];
+    if (msg.error) cb(null, new Error(msg.error.message || 'rpc error'));
+    else           cb(msg.result || {});
+  }
+});
+
+request('ui/initialize', {
+  protocolVersion: '2026-01-26',
+  appInfo: {name:'metrics_compare', version:'1.0.0'},
+  appCapabilities: {}
+}).then(function() {
+}).catch(function(err) {
+  if (typeof console !== 'undefined') {
+    var isTimeout = err && err.message && err.message.indexOf('timeout:') === 0;
+    if (isTimeout) {
+      console.warn('[metrics-compare] ui/initialize timed out, proceeding anyway');
+    } else {
+      console.error('[metrics-compare] ui/initialize protocol error:', err && err.message);
+    }
+  }
+}).finally(function() {
+  send({jsonrpc:'2.0', method:'ui/notifications/initialized', params:{}});
+});
+
+// Notify the host of content size changes so it can resize the iframe.
+var lastSzW = 0, lastSzH = 0;
+if (typeof ResizeObserver !== 'undefined') {
+  try {
+    new ResizeObserver(function() {
+      try {
+        var w = document.documentElement.scrollWidth;
+        var h = document.documentElement.scrollHeight;
+        if (w === lastSzW && h === lastSzH) return;
+        lastSzW = w; lastSzH = h;
+        send({jsonrpc:'2.0', method:'ui/notifications/size-changed', params:{width:w, height:h}});
+      } catch(e) {
+        if (typeof console !== 'undefined') console.warn('[metrics-compare] size-changed:', e);
+      }
+    }).observe(document.body);
+  } catch(e) {
+    if (typeof console !== 'undefined') console.warn('[metrics-compare] ResizeObserver:', e);
+  }
+}
+
+// ── Theme ─────────────────────────────────────────────────────────────────────
+function applyTheme(theme) {
+  document.documentElement.classList.toggle('dark', theme === 'dark');
+}
+
+// Apply OS preference immediately so there's no flash on load.
+if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+  applyTheme('dark');
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function escXML(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function fmt(v, unit) {
+  var a = Math.abs(v);
+  if (unit === 'ratio') {
+    var pct = v * 100;
+    return (Math.abs(pct) < 10 ? pct.toPrecision(3) : pct.toFixed(1)) + '%';
+  }
+  if (unit === 'By' || unit === 'By/s') {
+    var bsuf = unit === 'By/s' ? 'B/s' : 'B';
+    return a >= 1e9 ? (v/1e9).toFixed(1)+'G'+bsuf
+         : a >= 1e6 ? (v/1e6).toFixed(1)+'M'+bsuf
+         : a >= 1e3 ? (v/1e3).toFixed(1)+'K'+bsuf
+         : v.toFixed(0)+bsuf;
+  }
+  var s = a >= 1e9  ? (v/1e9).toFixed(1)+'B'
+        : a >= 1e6  ? (v/1e6).toFixed(1)+'M'
+        : a >= 1e3  ? (v/1e3).toFixed(1)+'K'
+        : a >= 10   ? v.toFixed(1)
+        : a >= 1    ? v.toPrecision(3)
+        : a >= 0.001 ? v.toPrecision(2)
+        : v === 0   ? '0'
+                    : v.toPrecision(2);
+  return (unit && unit !== '1') ? s+'\u00a0'+escXML(unit) : s;
+}
+
+// ── SVG chart ────────────────────────────────────────────────────────────────
+function renderChart(sc) {
+  var titleEl  = document.getElementById('title');
+  var deltaEl  = document.getElementById('delta');
+  var msgEl    = document.getElementById('msg');
+  var svgEl    = document.getElementById('chart');
+  var legendEl = document.getElementById('legend');
+  var labelA   = document.getElementById('label-a');
+  var labelB   = document.getElementById('label-b');
+  if (!titleEl || !deltaEl || !msgEl || !svgEl || !legendEl || !labelA || !labelB) {
+    throw new Error('required DOM elements missing');
+  }
+
+  var ptsA = sc.chart_points_a || [];
+  var ptsB = sc.chart_points_b || [];
+  var metric   = sc.metric_type || '';
+  var unit     = sc.unit || '';
+  var winA     = sc.window_a_label || 'Window A';
+  var winB     = sc.window_b_label || 'Window B';
+  var deltaPct = typeof sc.delta_pct === 'number' ? sc.delta_pct : null;
+  var shift    = sc.trend_shift || 'unchanged';
+
+  titleEl.textContent = metric;
+
+  // Delta badge.
+  if (deltaPct !== null) {
+    var sign = deltaPct > 0 ? '+' : '';
+    deltaEl.textContent = sign + deltaPct.toFixed(1) + '%';
+    deltaEl.className = 'delta ' + shift;
+  } else {
+    deltaEl.textContent = '';
+  }
+
+  // Legend labels.
+  labelA.textContent = winA;
+  labelB.textContent = winB;
+
+  if (!ptsA.length && !ptsB.length) {
+    msgEl.textContent = 'No data available';
+    msgEl.style.display = '';
+    svgEl.style.display = 'none';
+    legendEl.style.display = 'none';
+    return;
+  }
+
+  msgEl.style.display = 'none';
+  svgEl.style.display = 'block';
+  legendEl.style.display = 'flex';
+
+  // Validate and extract values from both series.
+  function extractVals(pts) {
+    return pts.map(function(p) {
+      if (typeof p.v !== 'number' || !isFinite(p.v)) {
+        throw new Error('invalid point value: ' + JSON.stringify(p.v));
+      }
+      return p.v;
+    });
+  }
+  var valsA = extractVals(ptsA);
+  var valsB = extractVals(ptsB);
+
+  // Shared Y scale across both series.
+  var allVals = valsA.concat(valsB);
+  var minV = Math.min.apply(null, allVals);
+  var maxV = Math.max.apply(null, allVals);
+  var range = maxV - minV || 1;
+
+  // SVG viewport.
+  var W = 560, H = 180;
+  var padL = 46, padR = 8, padT = 12, padB = 28;
+  var cW = W - padL - padR, cH = H - padT - padB;
+
+  // X-position normalizes each series by its own point count.
+  function xPos(i, n) { return padL + (i / (n - 1 || 1)) * cW; }
+  function yPos(v)     { return padT + (1 - (v - minV) / range) * cH; }
+
+  var svg = '<svg id="chart" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">';
+
+  // Grid lines (4 horizontal).
+  for (var g = 0; g <= 4; g++) {
+    var gy = padT + (g/4) * cH;
+    var gv = maxV - (g/4) * range;
+    svg += '<line x1="'+padL+'" y1="'+gy+'" x2="'+(W-padR)+'" y2="'+gy+'" stroke="#21262d" stroke-width="1"/>';
+    svg += '<text x="'+(padL-4)+'" y="'+(gy+4)+'" text-anchor="end" fill="#6e7681" font-size="9" font-family="-apple-system,sans-serif">'+fmt(gv,unit)+'</text>';
+  }
+
+  // X-axis labels: relative minutes from start of series A (the reference window).
+  // Both series cover the same duration, so labels apply to both.
+  var nA = ptsA.length, nB = ptsB.length;
+  var refPts = nA > 0 ? ptsA : ptsB;
+  var refN   = refPts.length;
+  var t0     = refPts[0].ts;
+  var step   = Math.max(1, Math.floor(refN / 6));
+  for (var xi = 0; xi < refN; xi += step) {
+    var xp = xPos(xi, refN);
+    var elapsedMin = Math.round((refPts[xi].ts - t0) / 60);
+    svg += '<text x="'+xp+'" y="'+(H-6)+'" text-anchor="middle" fill="#6e7681" font-size="9" font-family="-apple-system,sans-serif">'+elapsedMin+'m</text>';
+  }
+
+  // Series A: blue fill + line.
+  if (nA > 1) {
+    var fillA = 'M'+xPos(0,nA)+','+yPos(valsA[0]);
+    for (var fi = 1; fi < nA; fi++) fillA += ' L'+xPos(fi,nA)+','+yPos(valsA[fi]);
+    fillA += ' L'+xPos(nA-1,nA)+','+(padT+cH)+' L'+xPos(0,nA)+','+(padT+cH)+' Z';
+    svg += '<path d="'+fillA+'" fill="#4e9af1" fill-opacity="0.07"/>';
+    var lineA = 'M'+xPos(0,nA)+','+yPos(valsA[0]);
+    for (var li = 1; li < nA; li++) lineA += ' L'+xPos(li,nA)+','+yPos(valsA[li]);
+    svg += '<path d="'+lineA+'" fill="none" stroke="#4e9af1" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
+  } else if (nA === 1) {
+    svg += '<circle cx="'+xPos(0,nA)+'" cy="'+yPos(valsA[0])+'" r="3" fill="#4e9af1"/>';
+  }
+
+  // Series B: green fill + line.
+  if (nB > 1) {
+    var fillB = 'M'+xPos(0,nB)+','+yPos(valsB[0]);
+    for (var fj = 1; fj < nB; fj++) fillB += ' L'+xPos(fj,nB)+','+yPos(valsB[fj]);
+    fillB += ' L'+xPos(nB-1,nB)+','+(padT+cH)+' L'+xPos(0,nB)+','+(padT+cH)+' Z';
+    svg += '<path d="'+fillB+'" fill="#3fb950" fill-opacity="0.07"/>';
+    var lineB = 'M'+xPos(0,nB)+','+yPos(valsB[0]);
+    for (var lj = 1; lj < nB; lj++) lineB += ' L'+xPos(lj,nB)+','+yPos(valsB[lj]);
+    svg += '<path d="'+lineB+'" fill="none" stroke="#3fb950" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
+  } else if (nB === 1) {
+    svg += '<circle cx="'+xPos(0,nB)+'" cy="'+yPos(valsB[0])+'" r="3" fill="#3fb950"/>';
+  }
+
+  svg += '</svg>';
+  svgEl.outerHTML = svg;
+}
+
+})();
+</script>
+</body>
+</html>
