@@ -13,9 +13,9 @@ import (
 func RegisterLogsFindRequests(s *mcp.Server, client *gcpclient.Client) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "logs.find_requests",
+		Name: "logs_find_requests",
 		Description: "Find examples of HTTP requests by URL pattern. " +
-			"Returns trace_id and request_id for each request, enabling deeper investigation with logs.by_trace, logs.by_request_id, or trace.get.",
+			"Returns trace_id and request_id for each request, enabling deeper investigation with logs_by_trace, logs_by_request_id, or trace_get.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),
@@ -50,7 +50,7 @@ func RegisterLogsFindRequests(s *mcp.Server, client *gcpclient.Client) {
 
 		result, err := gcpdata.FindRequests(ctx, client.LoggingClient(), project, in.URLPattern, in.Method, in.StatusCode, in.TracedOnly, timeFilter, limit)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "logs.find_requests", fmt.Sprintf("find requests failed: %v", err))
+			mcpLog(ctx, req, logLevelError, "logs_find_requests", fmt.Sprintf("find requests failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to find requests: %v. Verify the project_id and that the URL pattern is correct.", err)), nil, nil
 		}
 

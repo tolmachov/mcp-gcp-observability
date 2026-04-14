@@ -13,12 +13,12 @@ import (
 func RegisterProfilerTrends(s *mcp.Server, client *gcpclient.Client, cache *gcpdata.ProfileCache) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "profiler.trends",
+		Name: "profiler_trends",
 		Description: "Show how function costs change over time across multiple profiles (Profile history). " +
 			"Analyzes multiple profiles of the same type and target to build a time series of " +
 			"self and cumulative cost for top functions. Useful for detecting performance regressions " +
 			"or improvements over time. Both profile_type and target are required. " +
-			"Use function_filter to focus on specific functions from profiler.top results.",
+			"Use function_filter to focus on specific functions from profiler_top results.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),
@@ -35,7 +35,7 @@ func RegisterProfilerTrends(s *mcp.Server, client *gcpclient.Client, cache *gcpd
 			return errResult("value_index must be non-negative"), nil, nil
 		}
 		if in.Target == "" {
-			return errResult("target is required (service name from profiler.list results)"), nil, nil
+			return errResult("target is required (service name from profiler_list results)"), nil, nil
 		}
 		project, err := resolveProject(in.ProjectID, client.Config().DefaultProject)
 		if err != nil {
@@ -56,7 +56,7 @@ func RegisterProfilerTrends(s *mcp.Server, client *gcpclient.Client, cache *gcpd
 			in.ProfileType, in.Target, in.FunctionFilter,
 			in.ValueIndex, maxProfiles, maxFunctions, progressFn)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "profiler.trends", fmt.Sprintf("compute trends failed: %v", err))
+			mcpLog(ctx, req, logLevelError, "profiler_trends", fmt.Sprintf("compute trends failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to compute trends: %v", err)), nil, nil
 		}
 

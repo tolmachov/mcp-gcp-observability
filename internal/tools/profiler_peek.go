@@ -13,12 +13,12 @@ import (
 func RegisterProfilerPeek(s *mcp.Server, client *gcpclient.Client, cache *gcpdata.ProfileCache) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "profiler.peek",
+		Name: "profiler_peek",
 		Description: "Show callers and callees of a specific function in a profile (like pprof peek). " +
 			"Navigates the call graph: who calls this function, and what does it call? " +
-			"Use function names from profiler.top results. Substring matching is used. " +
+			"Use function names from profiler_top results. Substring matching is used. " +
 			"If the name is ambiguous, the error will list matching candidates — use a more specific name. " +
-			"Works with both regular profile_id and diff_id from profiler.compare.",
+			"Works with both regular profile_id and diff_id from profiler_compare.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),
@@ -45,7 +45,7 @@ func RegisterProfilerPeek(s *mcp.Server, client *gcpclient.Client, cache *gcpdat
 
 		p, meta, err := gcpdata.GetOrFetchProfile(ctx, client.ProfilerService(), cache, project, in.ProfileID)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "profiler.peek", fmt.Sprintf("fetch profile failed: %v", err))
+			mcpLog(ctx, req, logLevelError, "profiler_peek", fmt.Sprintf("fetch profile failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to fetch profile: %v", err)), nil, nil
 		}
 
@@ -59,7 +59,7 @@ func RegisterProfilerPeek(s *mcp.Server, client *gcpclient.Client, cache *gcpdat
 
 		funcInfo, callers, callees, err := gcpdata.PeekFunction(p, in.FunctionName, in.ValueIndex, limit)
 		if err != nil {
-			mcpLog(ctx, req, logLevelWarning, "profiler.peek", fmt.Sprintf("analysis failed: %v", err))
+			mcpLog(ctx, req, logLevelWarning, "profiler_peek", fmt.Sprintf("analysis failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to peek function: %v", err)), nil, nil
 		}
 

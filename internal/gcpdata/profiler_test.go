@@ -6,9 +6,12 @@ import (
 	"testing"
 	"time"
 
+	"cloud.google.com/go/cloudprofiler/apiv2/cloudprofilerpb"
 	"github.com/google/pprof/profile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // buildTestProfile creates a synthetic profile for testing.
@@ -706,4 +709,73 @@ func TestValidateProfileType_CaseInsensitive(t *testing.T) {
 	assert.NoError(t, ValidateProfileType("WALL"))
 	assert.NoError(t, ValidateProfileType("heap_alloc"))
 	assert.Error(t, ValidateProfileType("INVALID_TYPE"))
+}
+
+func TestProfileFromAPI(t *testing.T) {
+	t.Run("full fields", func(t *testing.T) {
+		ts := timestamppb.New(time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC))
+		dur := durationpb.New(30 * time.Second)
+		p := &cloudprofilerpb.Profile{
+			Name:        "projects/my-project/profiles/abc123",
+			ProfileType: cloudprofilerpb.ProfileType_CPU,
+			Duration:    dur,
+			StartTime:   ts,
+			Deployment: &cloudprofilerpb.Deployment{
+				Target: "my-service",
+				Labels: map[string]string{"zone": "us-central1"},
+			},
+			Labels: map[string]string{"version": "1.0"},
+		}
+		meta := profileFromAPI(p)
+		assert.Equal(t, "projects/my-project/profiles/abc123", meta.ProfileID)
+		assert.Equal(t, "CPU", meta.ProfileType)
+		assert.Equal(t, "30s", meta.Duration)
+		assert.Equal(t, "2024-06-01T12:00:00Z", meta.StartTime)
+		assert.Equal(t, "my-service", meta.Target)
+		assert.Equal(t, map[string]string{"zone": "us-central1"}, meta.DeploymentLabels)
+		assert.Equal(t, map[string]string{"version": "1.0"}, meta.Labels)
+	})
+
+	t.Run("nil Duration and StartTime", func(t *testing.T) {
+		p := &cloudprofilerpb.Profile{
+			Name:        "projects/p/profiles/x",
+			ProfileType: cloudprofilerpb.ProfileType_HEAP,
+		}
+		meta := profileFromAPI(p)
+		assert.Equal(t, "HEAP", meta.ProfileType)
+		assert.Empty(t, meta.Duration)
+		assert.Empty(t, meta.StartTime)
+		assert.Empty(t, meta.Target)
+	})
+
+	t.Run("PROFILE_TYPE_UNSPECIFIED yields empty ProfileType", func(t *testing.T) {
+		p := &cloudprofilerpb.Profile{
+			Name:        "projects/p/profiles/y",
+			ProfileType: cloudprofilerpb.ProfileType_PROFILE_TYPE_UNSPECIFIED,
+		}
+		meta := profileFromAPI(p)
+		assert.Empty(t, meta.ProfileType)
+	})
+
+	t.Run("unrecognised enum value does not expose raw proto representation", func(t *testing.T) {
+		// Simulate a future profile type that the current proto descriptor doesn't know.
+		// proto.String() returns the decimal string "999" for unknown values.
+		p := &cloudprofilerpb.Profile{
+			Name:        "projects/p/profiles/z",
+			ProfileType: cloudprofilerpb.ProfileType(999),
+		}
+		meta := profileFromAPI(p)
+		assert.Empty(t, meta.ProfileType, "unrecognised enum value should yield empty ProfileType, not the raw numeric string")
+	})
+
+	t.Run("nil Deployment", func(t *testing.T) {
+		p := &cloudprofilerpb.Profile{
+			Name:        "projects/p/profiles/nd",
+			ProfileType: cloudprofilerpb.ProfileType_CPU,
+			Deployment:  nil,
+		}
+		meta := profileFromAPI(p)
+		assert.Empty(t, meta.Target)
+		assert.Nil(t, meta.DeploymentLabels)
+	})
 }

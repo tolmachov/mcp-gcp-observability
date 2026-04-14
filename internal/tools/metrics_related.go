@@ -49,12 +49,12 @@ func classifyErr(err error) (reason string, benign bool) {
 
 func RegisterMetricsRelated(s *mcp.Server, querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string) {
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "metrics.related",
+		Name: "metrics_related",
 		Description: "Check all related metrics (configured in the semantic registry) for the given metric and return which are anomalous. " +
 			"Returns all related signals, not just anomalous ones, so you can see the full context. " +
 			"Requires the metric to be configured in the registry with related_metrics. " +
-			"Use this after metrics.snapshot to understand whether correlated signals moved together. " +
-			"For breaking down a single metric by dimension, use metrics.top_contributors instead.",
+			"Use this after metrics_snapshot to understand whether correlated signals moved together. " +
+			"For breaking down a single metric by dimension, use metrics_top_contributors instead.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),
@@ -142,8 +142,8 @@ func RegisterMetricsRelated(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 					if r := recover(); r != nil {
 						stack := debug.Stack()
 						msg := fmt.Sprintf("panic querying %s: %v\n%s", relMetric, r, stack)
-						notifyErrLog.Load().Printf("metrics.related: %s", msg)
-						mcpLog(ctx, req, logLevelError, "metrics.related", msg)
+						notifyErrLog.Load().Printf("metrics_related: %s", msg)
+						mcpLog(ctx, req, logLevelError, "metrics_related", msg)
 						addSkip(relMetric, fmt.Sprintf("internal error: %v", r), false)
 					}
 				}()
@@ -158,7 +158,7 @@ func RegisterMetricsRelated(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 
 				relDesc, err := querier.GetMetricDescriptor(ctx, project, relMetric)
 				if err != nil {
-					mcpLog(ctx, req, logLevelWarning, "metrics.related",
+					mcpLog(ctx, req, logLevelWarning, "metrics_related",
 						fmt.Sprintf("descriptor lookup failed for %s: %v", relMetric, err))
 					reason, benign := classifyErr(err)
 					addSkip(relMetric, fmt.Sprintf("failed to get metric descriptor: %s", reason), benign)
@@ -178,23 +178,23 @@ func RegisterMetricsRelated(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 
 				relAggSpec := relMeta.ResolveAggregation()
 				if err := relAggSpec.Validate(); err != nil {
-					mcpLog(ctx, req, logLevelError, "metrics.related",
+					mcpLog(ctx, req, logLevelError, "metrics_related",
 						fmt.Sprintf("registry misconfiguration for %s: %v", relMetric, err))
 					addSkip(relMetric, formatRegistryMisconfigError(relMetric, err), false)
 					return
 				}
 
 				currentSeries, currentWarnings, qErr := querier.QueryTimeSeriesAggregated(ctx, params, relAggSpec)
-				logAggregationWarnings(ctx, req, "metrics.related", relMetric, "current", currentWarnings)
+				logAggregationWarnings(ctx, req, "metrics_related", relMetric, "current", currentWarnings)
 				addWarningNote(aggregationWarningsNote(relMetric, "current", currentWarnings))
 				if qErr != nil {
-					mcpLog(ctx, req, logLevelWarning, "metrics.related",
+					mcpLog(ctx, req, logLevelWarning, "metrics_related",
 						fmt.Sprintf("current window query failed for %s: %v", relMetric, qErr))
 					reason, benign := classifyErr(qErr)
 					addSkip(relMetric, fmt.Sprintf("query failed: %s", reason), benign)
 					return
 				}
-				reportUnsupportedPoints(ctx, req, "metrics.related", relMetric, currentSeries)
+				reportUnsupportedPoints(ctx, req, "metrics_related", relMetric, currentSeries)
 
 				currentPoints := mergePoints(currentSeries)
 				if len(currentPoints) == 0 {
@@ -213,10 +213,10 @@ func RegisterMetricsRelated(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 				baselineParams.End = start
 				baselineParams.Start = start.Add(-windowDur)
 				baselineSeries, baselineWarnings, qErr := querier.QueryTimeSeriesAggregated(ctx, baselineParams, relAggSpec)
-				logAggregationWarnings(ctx, req, "metrics.related", relMetric, "baseline", baselineWarnings)
+				logAggregationWarnings(ctx, req, "metrics_related", relMetric, "baseline", baselineWarnings)
 				addWarningNote(aggregationWarningsNote(relMetric, "baseline", baselineWarnings))
 				if qErr != nil {
-					mcpLog(ctx, req, logLevelWarning, "metrics.related",
+					mcpLog(ctx, req, logLevelWarning, "metrics_related",
 						fmt.Sprintf("baseline query failed for %s: %v", relMetric, qErr))
 					reason, benign := classifyErr(qErr)
 					addSkip(relMetric, fmt.Sprintf("baseline query failed: %s", reason), benign)
@@ -258,7 +258,7 @@ func RegisterMetricsRelated(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 			reasons := distinctRpcFailureReasons(skipped)
 			msg := fmt.Sprintf("All related signal queries failed (or were skipped) and %d had real RPC failures — correlation coverage is unavailable. Reasons: %s",
 				rpcFailures, strings.Join(reasons, "; "))
-			mcpLog(ctx, req, logLevelError, "metrics.related", msg)
+			mcpLog(ctx, req, logLevelError, "metrics_related", msg)
 			return errResult(msg), nil, nil
 		}
 
@@ -267,7 +267,7 @@ func RegisterMetricsRelated(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 			reasons := distinctRpcFailureReasons(skipped)
 			partialNote = fmt.Sprintf("%d related signal(s) could not be queried due to RPC failures and are excluded from results. Reasons: %s",
 				rpcFailures, strings.Join(reasons, "; "))
-			mcpLog(ctx, req, logLevelWarning, "metrics.related", partialNote)
+			mcpLog(ctx, req, logLevelWarning, "metrics_related", partialNote)
 		}
 		partialNote = joinNote(partialNote, joinNote(warningNotes...))
 		return nil, &RelatedSignalsResult{

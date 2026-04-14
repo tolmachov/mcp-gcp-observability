@@ -14,8 +14,8 @@ import (
 	errorreporting "cloud.google.com/go/errorreporting/apiv1beta1"
 	logging "cloud.google.com/go/logging/apiv2"
 	monitoring "cloud.google.com/go/monitoring/apiv3/v2"
+	cloudprofiler "cloud.google.com/go/cloudprofiler/apiv2"
 	cloudtrace "cloud.google.com/go/trace/apiv1"
-	cloudprofiler "google.golang.org/api/cloudprofiler/v2"
 )
 
 // Client wraps GCP API clients for Logging, Error Reporting, Cloud Trace, Cloud Monitoring, and Cloud Profiler.
@@ -24,7 +24,7 @@ type Client struct {
 	errors     *errorreporting.ErrorStatsClient
 	trace      *cloudtrace.Client
 	monitoring *monitoring.MetricClient
-	profiler   *cloudprofiler.Service
+	profiler   *cloudprofiler.ExportClient
 	config     *Config
 	closeOnce  sync.Once
 	closeErr   error
@@ -42,8 +42,8 @@ func (c *Client) TraceClient() *cloudtrace.Client { return c.trace }
 // MonitoringClient returns the Cloud Monitoring API client.
 func (c *Client) MonitoringClient() *monitoring.MetricClient { return c.monitoring }
 
-// ProfilerService returns the Cloud Profiler REST API service.
-func (c *Client) ProfilerService() *cloudprofiler.Service { return c.profiler }
+// ProfilerClient returns the Cloud Profiler gRPC export client.
+func (c *Client) ProfilerService() *cloudprofiler.ExportClient { return c.profiler }
 
 // Config returns a copy of the client configuration.
 func (c *Client) Config() Config { return *c.config }
@@ -80,14 +80,9 @@ func New(ctx context.Context, cfg *Config) (*Client, error) {
 		return nil, errors.Join(fmt.Errorf("creating monitoring client: %w", err), loggingClient.Close(), errorsClient.Close(), traceClient.Close())
 	}
 
-	// Cloud Profiler uses a REST (HTTP) client, not gRPC, so we create it
-	// with default credentials (custom DNS dialer is gRPC-only).
-	// The cloudprofiler.Service has no Close() method — it uses an OAuth2
-	// HTTP client from Application Default Credentials and does not hold
-	// resources that need cleanup.
-	profilerService, err := cloudprofiler.NewService(ctx)
+	profilerClient, err := cloudprofiler.NewExportClient(ctx, opts...)
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("creating profiler service: %w", err), loggingClient.Close(), errorsClient.Close(), traceClient.Close(), monitoringClient.Close())
+		return nil, errors.Join(fmt.Errorf("creating profiler client: %w", err), loggingClient.Close(), errorsClient.Close(), traceClient.Close(), monitoringClient.Close())
 	}
 
 	cfgCopy := *cfg
@@ -96,7 +91,7 @@ func New(ctx context.Context, cfg *Config) (*Client, error) {
 		errors:     errorsClient,
 		trace:      traceClient,
 		monitoring: monitoringClient,
-		profiler:   profilerService,
+		profiler:   profilerClient,
 		config:     &cfgCopy,
 	}, nil
 }
@@ -116,6 +111,9 @@ func (c *Client) Close() error {
 		}
 		if c.monitoring != nil {
 			errs = append(errs, c.monitoring.Close())
+		}
+		if c.profiler != nil {
+			errs = append(errs, c.profiler.Close())
 		}
 		c.closeErr = errors.Join(errs...)
 	})

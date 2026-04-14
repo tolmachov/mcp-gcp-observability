@@ -94,7 +94,7 @@ func TestSnapshotEvidenceFields(t *testing.T) {
 			ts.connect(ctx)
 			defer ts.close()
 
-			result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{"metric_type": cpuMetric})
+			result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{"metric_type": cpuMetric})
 			require.NoError(t, err)
 
 			var snap MetricSnapshotResult
@@ -162,7 +162,7 @@ func TestCompareEvidenceFields(t *testing.T) {
 			ts.connect(ctx)
 			defer ts.close()
 
-			result, err := ts.callTool(ctx, "metrics.compare", map[string]any{
+			result, err := ts.callTool(ctx, "metrics_compare", map[string]any{
 				"metric_type":   cpuMetric,
 				"window_a_from": aFrom.Format(time.RFC3339),
 				"window_a_to":   aTo.Format(time.RFC3339),
@@ -197,7 +197,7 @@ func TestRelatedSignalEvidence_TrendScoreCV(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.related", map[string]any{"metric_type": cpuMetric})
+	result, err := ts.callTool(ctx, "metrics_related", map[string]any{"metric_type": cpuMetric})
 	require.NoError(t, err)
 
 	var res RelatedSignalsResult
@@ -248,7 +248,7 @@ func TestContributorEvidence_CV(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.top_contributors", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_top_contributors", map[string]any{
 		"metric_type": cpuMetric,
 		"dimension":   "metric.labels.instance_id",
 	})

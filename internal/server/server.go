@@ -59,28 +59,28 @@ func New(cfg *gcpclient.Config, version string, stdin io.Reader, stdout, errOut 
 		},
 		&mcp.ServerOptions{
 			Instructions: "Recommended workflow: " +
-				"1) logs.services — discover available services. " +
-				"2) logs.summary — get severity distribution, top errors, and top services for initial triage. " +
-				"3) errors.list — list error groups sorted by count. " +
-				"4) logs.query or logs.k8s — investigate specific logs with filters. " +
-				"5) logs.by_trace — follow a single request across services using a trace ID from logs.find_requests or logs.query results. " +
-				"6) trace.list — search for traces by span name, latency, or time range without knowing trace IDs. " +
-				"7) trace.get — get detailed span tree for a trace to understand request timing and dependencies. " +
-				"Always prefer logs.k8s over logs.query when investigating Kubernetes workloads. " +
+				"1) logs_services — discover available services. " +
+				"2) logs_summary — get severity distribution, top errors, and top services for initial triage. " +
+				"3) errors_list — list error groups sorted by count. " +
+				"4) logs_query or logs_k8s — investigate specific logs with filters. " +
+				"5) logs_by_trace — follow a single request across services using a trace ID from logs_find_requests or logs_query results. " +
+				"6) trace_list — search for traces by span name, latency, or time range without knowing trace IDs. " +
+				"7) trace_get — get detailed span tree for a trace to understand request timing and dependencies. " +
+				"Always prefer logs_k8s over logs_query when investigating Kubernetes workloads. " +
 				"For metrics analysis: " +
-				"1) metrics.list — discover available metrics. " +
-				"2) metrics.snapshot — get semantic snapshot with baseline comparison, trend detection, and classification. " +
-				"3) metrics.top_contributors — break down by label dimension to find which values contribute most to an anomaly. " +
-				"4) metrics.related — check correlated signals configured in the registry. " +
-				"5) metrics.compare — compare two arbitrary time windows (e.g. before/after deploy). " +
-					"For profiling analysis: " +
-					"1) profiler.list — discover available profiles by service and type. " +
-					"2) profiler.top — see top functions by resource consumption. " +
-					"3) profiler.peek — understand a hotspot's callers and callees. " +
-					"4) profiler.flamegraph — view bounded subtree of the call graph. " +
-					"5) profiler.compare — compare two profiles to find regressions (use diff_id with top/peek/flamegraph). " +
-					"6) profiler.trends — track how function costs change over time across multiple profiles. " +
-					"Use profiler.compare for point-in-time A/B comparison; use profiler.trends for historical cost evolution.",
+				"1) metrics_list — discover available metrics. " +
+				"2) metrics_snapshot — get semantic snapshot with baseline comparison, trend detection, and classification. " +
+				"3) metrics_top_contributors — break down by label dimension to find which values contribute most to an anomaly. " +
+				"4) metrics_related — check correlated signals configured in the registry. " +
+				"5) metrics_compare — compare two arbitrary time windows (e.g. before/after deploy). " +
+				"For profiling analysis: " +
+				"1) profiler_list — discover available profiles by service and type. " +
+				"2) profiler_top — see top functions by resource consumption. " +
+				"3) profiler_peek — understand a hotspot's callers and callees. " +
+				"4) profiler_flamegraph — view bounded subtree of the call graph. " +
+				"5) profiler_compare — compare two profiles to find regressions (use diff_id with top/peek/flamegraph). " +
+				"6) profiler_trends — track how function costs change over time across multiple profiles. " +
+				"Use profiler_compare for point-in-time A/B comparison; use profiler_trends for historical cost evolution.",
 			Logger:            logger,
 			CompletionHandler: completer.Handle,
 		},
@@ -189,7 +189,7 @@ func (s *Server) Run(ctx context.Context, transport Transport, httpAddr string) 
 	tools.RegisterProfilerCompare(s.mcpServer, client, profileCache)
 	tools.RegisterProfilerTrends(s.mcpServer, client, profileCache)
 
-	if err := s.registerResources(client, reg); err != nil {
+	if err := s.registerResources(client, reg, querier, defaultProject); err != nil {
 		return err
 	}
 	s.registerPrompts()
@@ -259,7 +259,7 @@ func (s *Server) runHTTP(ctx context.Context, addr string, errLogger *log.Logger
 }
 
 // registerResources adds MCP resources to the server.
-func (s *Server) registerResources(client *gcpclient.Client, reg *metrics.Registry) error {
+func (s *Server) registerResources(client *gcpclient.Client, reg *metrics.Registry, querier gcpdata.MetricsQuerier, defaultProject string) error {
 	cfg := client.Config()
 	configJSON, err := json.Marshal(map[string]any{
 		"default_project":        cfg.DefaultProject,
@@ -289,6 +289,8 @@ func (s *Server) registerResources(client *gcpclient.Client, reg *metrics.Regist
 			}, nil
 		},
 	)
+
+	tools.RegisterMetricsChartResource(s.mcpServer, querier, reg, defaultProject)
 	return nil
 }
 
@@ -303,13 +305,13 @@ func (s *Server) registerPrompts() {
 	}, func(_ context.Context, request *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
 		service := request.Params.Arguments["service"]
 		msg := "Investigate the top errors in the project:\n" +
-			"1. Use errors.list to find the most frequent error groups"
+			"1. Use errors_list to find the most frequent error groups"
 		if service != "" {
 			msg += fmt.Sprintf(" (filter by service: %s)", service)
 		}
-		msg += "\n2. Use errors.get on the top error group to see stack traces and individual events" +
-			"\n3. Use logs.query or logs.k8s to find related logs around the same time" +
-			"\n4. If trace IDs are available, use logs.by_trace to follow the request flow" +
+		msg += "\n2. Use errors_get on the top error group to see stack traces and individual events" +
+			"\n3. Use logs_query or logs_k8s to find related logs around the same time" +
+			"\n4. If trace IDs are available, use logs_by_trace to follow the request flow" +
 			"\n5. Summarize the root cause and suggest next steps"
 		return &mcp.GetPromptResult{
 			Messages: []*mcp.PromptMessage{
@@ -327,10 +329,10 @@ func (s *Server) registerPrompts() {
 	}, func(_ context.Context, request *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
 		urlPattern := request.Params.Arguments["url_pattern"]
 		msg := fmt.Sprintf("Trace a request matching URL pattern %q:\n", urlPattern) +
-			"1. Use logs.find_requests to find matching HTTP requests with their trace IDs\n" +
+			"1. Use logs_find_requests to find matching HTTP requests with their trace IDs\n" +
 			"2. Pick the most interesting request (e.g. slowest or with an error status)\n" +
-			"3. Use trace.get to see the full span tree and identify slow spans\n" +
-			"4. Use logs.by_trace to see all logs associated with that trace\n" +
+			"3. Use trace_get to see the full span tree and identify slow spans\n" +
+			"4. Use logs_by_trace to see all logs associated with that trace\n" +
 			"5. Summarize the request flow, highlighting any issues or bottlenecks"
 		return &mcp.GetPromptResult{
 			Messages: []*mcp.PromptMessage{
@@ -351,7 +353,7 @@ func (s *Server) registerPrompts() {
 		service := request.Params.Arguments["service"]
 		msg := "Investigate a metric anomaly:\n"
 		if metricType == "" {
-			msg += "1. Use metrics.list to discover available metrics"
+			msg += "1. Use metrics_list to discover available metrics"
 			if service != "" {
 				msg += fmt.Sprintf(" (filter by '%s')", service)
 			}
@@ -359,9 +361,9 @@ func (s *Server) registerPrompts() {
 		} else {
 			msg += fmt.Sprintf("1. The metric to investigate is: %s\n", metricType)
 		}
-		msg += "3. Use metrics.snapshot to get a semantic snapshot with baseline comparison\n" +
-			"4. If the classification shows a regression, use metrics.top_contributors to find which dimension contributes most\n" +
-			"5. Use metrics.related to check correlated signals\n" +
+		msg += "3. Use metrics_snapshot to get a semantic snapshot with baseline comparison\n" +
+			"4. If the classification shows a regression, use metrics_top_contributors to find which dimension contributes most\n" +
+			"5. Use metrics_related to check correlated signals\n" +
 			"6. Summarize the findings: what changed, when, likely cause, and recommended action"
 		return &mcp.GetPromptResult{
 			Messages: []*mcp.PromptMessage{
@@ -375,10 +377,10 @@ func (s *Server) registerPrompts() {
 		Description: "Check the health of services: discover services, summarize logs, and identify issues",
 	}, func(_ context.Context, _ *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
 		msg := "Check the health of services in the project:\n" +
-			"1. Use logs.services to discover all available services\n" +
-			"2. Use logs.summary to get an overview of severity distribution and top errors\n" +
-			"3. Use errors.list to see the most frequent error groups\n" +
-			"4. For any concerning services, use logs.k8s or logs.query to investigate further\n" +
+			"1. Use logs_services to discover all available services\n" +
+			"2. Use logs_summary to get an overview of severity distribution and top errors\n" +
+			"3. Use errors_list to see the most frequent error groups\n" +
+			"4. For any concerning services, use logs_k8s or logs_query to investigate further\n" +
 			"5. Provide a health summary with any issues found and recommended actions"
 		return &mcp.GetPromptResult{
 			Messages: []*mcp.PromptMessage{
@@ -398,16 +400,16 @@ func (s *Server) registerPrompts() {
 		service := request.Params.Arguments["service"]
 		profileType := request.Params.Arguments["profile_type"]
 		msg := "Investigate performance hotspots using Cloud Profiler:\n" +
-			"1. Use profiler.list to discover available profiles"
+			"1. Use profiler_list to discover available profiles"
 		if service != "" {
 			msg += fmt.Sprintf(" (filter by target: %s)", service)
 		}
 		if profileType != "" {
 			msg += fmt.Sprintf(" (filter by type: %s)", profileType)
 		}
-		msg += "\n2. Use profiler.top on the most recent profile to identify the hottest functions" +
-			"\n3. Use profiler.peek on the top hotspot to understand who calls it and what it calls" +
-			"\n4. Use profiler.flamegraph to see the call subtree around the hotspot" +
+		msg += "\n2. Use profiler_top on the most recent profile to identify the hottest functions" +
+			"\n3. Use profiler_peek on the top hotspot to understand who calls it and what it calls" +
+			"\n4. Use profiler_flamegraph to see the call subtree around the hotspot" +
 			"\n5. Summarize the findings: which functions consume the most resources, potential optimizations"
 		return &mcp.GetPromptResult{
 			Messages: []*mcp.PromptMessage{
@@ -450,7 +452,7 @@ Search the codebase for metric client-library calls. Cover multiple languages:
   - Rust:   prometheus or metrics crate register_counter!/histogram!/...
 For each hit record: metric name, type (counter/gauge/histogram/summary), label names, help text, unit, and the code context.
 
-STEP 2 — Map each metric to how it ACTUALLY appears in GCP using metrics.list.
+STEP 2 — Map each metric to how it ACTUALLY appears in GCP using metrics_list.
 
 STEP 3 — Produce a YAML overlay. Required fields: kind, better_direction. Optional: unit, slo_threshold, saturation_cap, related_metrics, keywords, thresholds, aggregation.
 

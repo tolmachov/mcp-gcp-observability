@@ -19,14 +19,14 @@ import (
 
 func RegisterMetricsTop(s *mcp.Server, querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string) {
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "metrics.top_contributors",
+		Name: "metrics_top_contributors",
 		Description: "Break down a metric by a label dimension to find which label values contribute most to an anomaly. " +
 			"Shows each contributor's delta from baseline and share of the total anomaly. " +
 			"The `dimension` parameter must be a fully-qualified label key — e.g. `metric.labels.response_code` or " +
-			"`resource.labels.instance_id`. Call metrics.snapshot first to see `available_labels` " +
+			"`resource.labels.instance_id`. Call metrics_snapshot first to see `available_labels` " +
 			"if you're unsure which namespace a label is in. " +
-			"Use this after metrics.snapshot shows a regression — it answers 'which route/instance/status_code is responsible?' " +
-			"For comparing time windows (e.g. before/after deploy), use metrics.compare instead.",
+			"Use this after metrics_snapshot shows a regression — it answers 'which route/instance/status_code is responsible?' " +
+			"For comparing time windows (e.g. before/after deploy), use metrics_compare instead.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),
@@ -77,20 +77,20 @@ func RegisterMetricsTop(s *mcp.Server, querier gcpdata.MetricsQuerier, registry 
 
 		descriptor, err := querier.GetMetricDescriptor(ctx, project, in.MetricType)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "metrics.top_contributors", fmt.Sprintf("metric descriptor lookup failed: %v", err))
+			mcpLog(ctx, req, logLevelError, "metrics_top_contributors", fmt.Sprintf("metric descriptor lookup failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to look up metric descriptor: %v. Verify the metric_type.", err)), nil, nil
 		}
 		availableLabels := availableLabelsFromDescriptor(ctx, req, querier, project, in.MetricType, descriptor)
 
 		aggSpec := meta.ResolveAggregation()
 		if err := aggSpec.Validate(); err != nil {
-			mcpLog(ctx, req, logLevelError, "metrics.top_contributors",
+			mcpLog(ctx, req, logLevelError, "metrics_top_contributors",
 				fmt.Sprintf("registry misconfiguration for %s: %v", in.MetricType, err))
 			return errResult(formatRegistryMisconfigError(in.MetricType, err)), nil, nil
 		}
 		if aggSpec.IsTwoStage() {
-			mcpLog(ctx, req, logLevelWarning, "metrics.top_contributors",
-				fmt.Sprintf("metric %q has two-stage aggregation (group_by=%v, within_group=%s, across_groups=%s); top_contributors only applies %s across the chosen dimension %q and ignores the within_group dedup stage. Per-contributor totals may differ from metrics.snapshot — fix by overriding the dimension or trust snapshot for headline numbers.",
+			mcpLog(ctx, req, logLevelWarning, "metrics_top_contributors",
+				fmt.Sprintf("metric %q has two-stage aggregation (group_by=%v, within_group=%s, across_groups=%s); top_contributors only applies %s across the chosen dimension %q and ignores the within_group dedup stage. Per-contributor totals may differ from metrics_snapshot — fix by overriding the dimension or trust snapshot for headline numbers.",
 					in.MetricType, aggSpec.GroupBy, aggSpec.WithinGroup, aggSpec.AcrossGroups, aggSpec.AcrossGroups, in.Dimension))
 		}
 		reducer := gcpdata.ReducerToGCP(aggSpec.AcrossGroups)
@@ -111,7 +111,7 @@ func RegisterMetricsTop(s *mcp.Server, querier gcpdata.MetricsQuerier, registry 
 		}
 		currentSeries, err := querier.QueryTimeSeries(ctx, currentParams)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "metrics.top_contributors", fmt.Sprintf("current window query failed: %v", err))
+			mcpLog(ctx, req, logLevelError, "metrics_top_contributors", fmt.Sprintf("current window query failed: %v", err))
 			if isInvalidFilterError(err) {
 				return errResult(enrichInvalidFilterError(ctx, req, querier, project, in.MetricType, in.Filter, err)), nil, nil
 			}
@@ -119,11 +119,11 @@ func RegisterMetricsTop(s *mcp.Server, querier gcpdata.MetricsQuerier, registry 
 		}
 		currentSeries, truncated := stripTruncatedSeries(currentSeries)
 		if truncated {
-			mcpLog(ctx, req, logLevelWarning, "metrics.top_contributors",
+			mcpLog(ctx, req, logLevelWarning, "metrics_top_contributors",
 				fmt.Sprintf("metric %q (current): query hit the server-side time-series cap (%d series); contributors are computed from a partial set of series only. Narrow the filter or choose a lower-cardinality dimension before trusting shares.",
 					in.MetricType, gcpdata.MaxTimeSeries))
 		}
-		unsupportedCount := reportUnsupportedPoints(ctx, req, "metrics.top_contributors", in.MetricType, currentSeries)
+		unsupportedCount := reportUnsupportedPoints(ctx, req, "metrics_top_contributors", in.MetricType, currentSeries)
 
 		if len(currentSeries) == 0 {
 			msg := emptyWindowMessage(in.MetricType, windowStr, descriptor.Kind, in.Filter)
@@ -143,7 +143,7 @@ func RegisterMetricsTop(s *mcp.Server, querier gcpdata.MetricsQuerier, registry 
 		var baselineErrNote string
 		baselineByLabel, baselinePartialNote, err := queryContributorBaselines(ctx, req, querier, currentParams, windowDur, baselineMode, in.EventTime, in.Dimension)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "metrics.top_contributors", fmt.Sprintf("baseline query failed: %v", err))
+			mcpLog(ctx, req, logLevelError, "metrics_top_contributors", fmt.Sprintf("baseline query failed: %v", err))
 			baselineByLabel = map[string]contributorBaseline{}
 			baselineErrNote = fmt.Sprintf("Baseline query (%s) failed: %v. Returning current-window contributors only; delta_pct and share_of_anomaly are not meaningful.",
 				string(baselineMode), err)
@@ -174,7 +174,7 @@ func RegisterMetricsTop(s *mcp.Server, querier gcpdata.MetricsQuerier, registry 
 
 		if missingCount == totalSeries {
 			return errResult(fmt.Sprintf(
-				"Dimension %q was not found in any series labels. Call metrics.snapshot on this metric_type and check `available_labels` for the valid keys (e.g. 'metric.labels.response_code' or 'resource.labels.instance_id').",
+				"Dimension %q was not found in any series labels. Call metrics_snapshot on this metric_type and check `available_labels` for the valid keys (e.g. 'metric.labels.response_code' or 'resource.labels.instance_id').",
 				in.Dimension,
 			)), nil, nil
 		}
@@ -185,7 +185,7 @@ func RegisterMetricsTop(s *mcp.Server, querier gcpdata.MetricsQuerier, registry 
 				"Partial dimension coverage: %d of %d series did not expose %q and were excluded from share_of_anomaly. Shares below sum to 100%% over the remaining %d attributable series.",
 				missingCount, totalSeries, in.Dimension, len(attributed),
 			)
-			mcpLog(ctx, req, logLevelWarning, "metrics.top_contributors", partialCoverageNote)
+			mcpLog(ctx, req, logLevelWarning, "metrics_top_contributors", partialCoverageNote)
 		}
 
 		type processedContrib struct {
@@ -259,7 +259,7 @@ func RegisterMetricsTop(s *mcp.Server, querier gcpdata.MetricsQuerier, registry 
 		appendNote(baselinePartialNote)
 		appendNote(partialCoverageNote)
 		if aggSpec.IsTwoStage() {
-			appendNote(fmt.Sprintf("This metric uses two-stage aggregation in the registry (group_by=%v, within_group=%s, across_groups=%s). `metrics.top_contributors` applies only %s across the requested dimension %q and does not run the within_group dedup stage, so contributor totals may differ from `metrics.snapshot` and `metrics.compare`.",
+			appendNote(fmt.Sprintf("This metric uses two-stage aggregation in the registry (group_by=%v, within_group=%s, across_groups=%s). `metrics_top_contributors` applies only %s across the requested dimension %q and does not run the within_group dedup stage, so contributor totals may differ from `metrics_snapshot` and `metrics_compare`.",
 				aggSpec.GroupBy, aggSpec.WithinGroup, aggSpec.AcrossGroups, aggSpec.AcrossGroups, in.Dimension))
 		}
 		if truncated {
@@ -365,8 +365,8 @@ func queryContributorBaselines(
 					if r := recover(); r != nil {
 						stack := debug.Stack()
 						msg := fmt.Sprintf("panic in baseline week -%d: %v\n%s", weeksBack, r, stack)
-						notifyErrLog.Load().Printf("metrics.top_contributors: %s", msg)
-						mcpLog(ctx, req, logLevelError, "metrics.top_contributors", msg)
+						notifyErrLog.Load().Printf("metrics_top_contributors: %s", msg)
+						mcpLog(ctx, req, logLevelError, "metrics_top_contributors", msg)
 						mu.Lock()
 						errs = append(errs, fmt.Errorf("week -%d: panic: %v", weeksBack, r))
 						mu.Unlock()
@@ -390,7 +390,7 @@ func queryContributorBaselines(
 					return
 				}
 				if truncated {
-					mcpLog(ctx, req, logLevelWarning, "metrics.top_contributors",
+					mcpLog(ctx, req, logLevelWarning, "metrics_top_contributors",
 						fmt.Sprintf("baseline week -%d: time series result was truncated at server limit; baseline may be incomplete", weeksBack))
 				}
 				perWeek[weeksBack-1] = series
@@ -410,7 +410,7 @@ func queryContributorBaselines(
 			return nil, "", fmt.Errorf("all %d baseline queries failed; first error: %w", len(errs), errors.Join(errs...))
 		}
 		if len(errs) > 0 && nonEmpty > 0 {
-			mcpLog(ctx, req, logLevelWarning, "metrics.top_contributors",
+			mcpLog(ctx, req, logLevelWarning, "metrics_top_contributors",
 				fmt.Sprintf("baseline partial failure: %d of %d weeks failed (%v); using %d weeks of data",
 					len(errs), weeks, errors.Join(errs...), nonEmpty))
 			partialNote = fmt.Sprintf("Baseline partial failure (%s): %d of %d weekly samples could not be fetched; baseline computed from %d weeks. Results may be less reliable.",
@@ -432,7 +432,7 @@ func queryContributorBaselines(
 		}
 		series, truncated := stripTruncatedSeries(series)
 		if truncated {
-			mcpLog(ctx, req, logLevelWarning, "metrics.top_contributors",
+			mcpLog(ctx, req, logLevelWarning, "metrics_top_contributors",
 				"pre_event baseline: time series result was truncated at server limit; baseline may be incomplete")
 		}
 		addBucket(0, 1, series)
@@ -448,7 +448,7 @@ func queryContributorBaselines(
 		}
 		series, truncated := stripTruncatedSeries(series)
 		if truncated {
-			mcpLog(ctx, req, logLevelWarning, "metrics.top_contributors",
+			mcpLog(ctx, req, logLevelWarning, "metrics_top_contributors",
 				"prev_window baseline: time series result was truncated at server limit; baseline may be incomplete")
 		}
 		addBucket(0, 1, series)

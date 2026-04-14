@@ -40,20 +40,21 @@ func (m BaselineMode) Validate(eventTime string) error {
 
 func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string) {
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "metrics.snapshot",
+		Name: "metrics_snapshot",
 		Description: "Get a semantic snapshot of a metric with baseline comparison, trend detection, and classification. " +
 			"Returns current value, baseline delta, trend, SLO breach status, and a classification label. " +
 			"The response includes `available_labels` — the metric.labels.* and resource.labels.* keys this metric accepts — " +
 			"so follow-up calls can construct valid filters without guessing. " +
-			"Use metrics.list first to discover metric_type values. " +
-			"After getting a snapshot, use metrics.top_contributors to drill down by dimension, " +
-			"or metrics.related to check correlated signals. " +
-			"For comparing two specific time windows (e.g. before/after deploy), use metrics.compare instead.",
+			"Use metrics_list first to discover metric_type values. " +
+			"After getting a snapshot, use metrics_top_contributors to drill down by dimension, " +
+			"or metrics_related to check correlated signals. " +
+			"For comparing two specific time windows (e.g. before/after deploy), use metrics_compare instead.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
+		Meta: mcp.Meta{"ui": map[string]any{"resourceUri": chartURITemplate}},
 		InputSchema: inputSchemaWithEnums[MetricsSnapshotInput](
 			enumPatch{"window", enumWindow},
 			enumPatch{"baseline_mode", enumBaselineMode},
@@ -100,7 +101,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, regi
 
 		descriptor, err := querier.GetMetricDescriptor(ctx, project, in.MetricType)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "metrics.snapshot", fmt.Sprintf("metric descriptor lookup failed: %v", err))
+			mcpLog(ctx, req, logLevelError, "metrics_snapshot", fmt.Sprintf("metric descriptor lookup failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to look up metric descriptor: %v. Verify the metric_type.", err)), nil, nil
 		}
 
@@ -108,7 +109,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, regi
 
 		aggSpec := meta.ResolveAggregation()
 		if err := aggSpec.Validate(); err != nil {
-			mcpLog(ctx, req, logLevelError, "metrics.snapshot",
+			mcpLog(ctx, req, logLevelError, "metrics_snapshot",
 				fmt.Sprintf("registry misconfiguration for %s: %v", in.MetricType, err))
 			return errResult(formatRegistryMisconfigError(in.MetricType, err)), nil, nil
 		}
@@ -125,10 +126,10 @@ func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, regi
 			ValueType:   descriptor.ValueType,
 		}
 		currentSeries, currentWarnings, err := querier.QueryTimeSeriesAggregated(ctx, currentParams, aggSpec)
-		logAggregationWarnings(ctx, req, "metrics.snapshot", in.MetricType, "current", currentWarnings)
+		logAggregationWarnings(ctx, req, "metrics_snapshot", in.MetricType, "current", currentWarnings)
 		currentWarningsNote := aggregationWarningsNote(in.MetricType, "current", currentWarnings)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "metrics.snapshot", fmt.Sprintf("current window query failed: %v", err))
+			mcpLog(ctx, req, logLevelError, "metrics_snapshot", fmt.Sprintf("current window query failed: %v", err))
 			if invalidAggregationSpecError(err) {
 				return errResult(formatRegistryMisconfigError(in.MetricType, err)), nil, nil
 			}
@@ -137,7 +138,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, regi
 			}
 			return errResult(fmt.Sprintf("Failed to query metric: %v", err)), nil, nil
 		}
-		unsupportedCount := reportUnsupportedPoints(ctx, req, "metrics.snapshot", in.MetricType, currentSeries)
+		unsupportedCount := reportUnsupportedPoints(ctx, req, "metrics_snapshot", in.MetricType, currentSeries)
 
 		currentPoints := mergePoints(currentSeries)
 		if len(currentPoints) == 0 {
@@ -164,7 +165,8 @@ func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, regi
 				},
 				AvailableLabels: availableLabelsFromDescriptor(ctx, req, querier, project, in.MetricType, descriptor),
 			}
-			return nil, r, nil
+			chartURI := buildChartURL(in.MetricType, in.Filter, windowStr, stepSeconds, project)
+			return &mcp.CallToolResult{Meta: mcp.Meta{"ui": map[string]any{"resourceUri": chartURI}}}, r, nil
 		}
 
 		sendProgress(ctx, req, 3, 4, "Querying baseline ("+string(baselineMode)+")")
@@ -172,7 +174,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, regi
 		var baselineErrNote string
 		baseline, baselinePartialNote, err := buildBaselineStats(ctx, req, querier, currentParams, aggSpec, windowDur, baselineMode, in.EventTime, int(stepSeconds))
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "metrics.snapshot", fmt.Sprintf("baseline query failed: %v", err))
+			mcpLog(ctx, req, logLevelError, "metrics_snapshot", fmt.Sprintf("baseline query failed: %v", err))
 			baseline = metrics.BaselineStats{}
 			// Classify error type to help user understand whether to retry or fix configuration
 			if invalidAggregationSpecError(err) {
@@ -263,7 +265,8 @@ func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, regi
 
 		result.AvailableLabels = availableLabelsFromDescriptor(ctx, req, querier, project, in.MetricType, descriptor)
 
-		return nil, result, nil
+		chartURI := buildChartURL(in.MetricType, in.Filter, windowStr, stepSeconds, project)
+		return &mcp.CallToolResult{Meta: mcp.Meta{"ui": map[string]any{"resourceUri": chartURI}}}, result, nil
 	})
 }
 
@@ -366,7 +369,7 @@ func buildBaselineStats(
 		p.End = eventTime
 		p.Start = eventTime.Add(-30 * time.Minute)
 		series, warnings, err := querier.QueryTimeSeriesAggregated(ctx, p, aggSpec)
-		logAggregationWarnings(ctx, req, "metrics.snapshot", params.MetricType, "baseline (pre_event)", warnings)
+		logAggregationWarnings(ctx, req, "metrics_snapshot", params.MetricType, "baseline (pre_event)", warnings)
 		if err != nil {
 			return metrics.BaselineStats{}, "", fmt.Errorf("querying pre_event baseline: %w", err)
 		}
@@ -379,7 +382,7 @@ func buildBaselineStats(
 		p.End = params.Start
 		p.Start = params.Start.Add(-windowDur)
 		series, warnings, err := querier.QueryTimeSeriesAggregated(ctx, p, aggSpec)
-		logAggregationWarnings(ctx, req, "metrics.snapshot", params.MetricType, "baseline (prev_window)", warnings)
+		logAggregationWarnings(ctx, req, "metrics_snapshot", params.MetricType, "baseline (prev_window)", warnings)
 		if err != nil {
 			return metrics.BaselineStats{}, "", fmt.Errorf("querying prev_window baseline: %w", err)
 		}
@@ -414,7 +417,7 @@ func buildRobustWeeklyBaseline(
 			defer func() {
 				if r := recover(); r != nil {
 					stack := debug.Stack()
-					notifyErrLog.Load().Printf("metrics.snapshot: panic in baseline week -%d: %v\n%s", weeksBack, r, stack)
+					notifyErrLog.Load().Printf("metrics_snapshot: panic in baseline week -%d: %v\n%s", weeksBack, r, stack)
 					mu.Lock()
 					errs = append(errs, fmt.Errorf("week -%d: panic: %v", weeksBack, r))
 					mu.Unlock()
@@ -430,7 +433,7 @@ func buildRobustWeeklyBaseline(
 			p.Start = params.Start.AddDate(0, 0, -7*weeksBack)
 			p.End = params.End.AddDate(0, 0, -7*weeksBack)
 			series, warnings, err := querier.QueryTimeSeriesAggregated(ctx, p, aggSpec)
-			logAggregationWarnings(ctx, req, "metrics.snapshot", params.MetricType,
+			logAggregationWarnings(ctx, req, "metrics_snapshot", params.MetricType,
 				fmt.Sprintf("baseline (same_weekday_hour week -%d)", weeksBack), warnings)
 			warningNote := aggregationWarningsNote(params.MetricType,
 				fmt.Sprintf("baseline (same_weekday_hour week -%d)", weeksBack), warnings)
@@ -469,13 +472,13 @@ func buildRobustWeeklyBaseline(
 			}
 		}
 		if hasPanic {
-			mcpLog(ctx, req, logLevelError, "metrics.snapshot",
+			mcpLog(ctx, req, logLevelError, "metrics_snapshot",
 				fmt.Sprintf("baseline partial failure: UNEXPECTED PANICS in %d of %d weeks; %v",
 					len(errs), weeks, errors.Join(errs...)))
 			partialNote = fmt.Sprintf("Baseline partial failure (%s): UNEXPECTED PANICS occurred in %d of %d weekly queries. This is a bug in the code, not a transient failure. Baseline computed from %d weeks, but results may be unreliable. Please report this issue.",
 				string(BaselineModeSameWeekdayHour), len(errs), weeks, nonEmpty)
 		} else {
-			mcpLog(ctx, req, logLevelWarning, "metrics.snapshot",
+			mcpLog(ctx, req, logLevelWarning, "metrics_snapshot",
 				fmt.Sprintf("baseline partial failure: %d of %d weeks failed (%v); using %d weeks of data",
 					len(errs), weeks, errors.Join(errs...), nonEmpty))
 			partialNote = fmt.Sprintf("Baseline partial failure (%s): %d of %d weekly samples could not be fetched; baseline computed from %d weeks. Results may be less reliable.",

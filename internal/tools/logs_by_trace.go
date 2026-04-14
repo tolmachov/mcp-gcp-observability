@@ -13,11 +13,11 @@ import (
 func RegisterLogsByTrace(s *mcp.Server, client *gcpclient.Client) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "logs.by_trace",
+		Name: "logs_by_trace",
 		Description: "Find all log entries associated with a specific trace ID. " +
 			"Returns logs sorted by timestamp ascending to show the request flow. " +
-			"Get trace IDs from logs.find_requests results or from the trace field in logs.query output. " +
-			"If you have a request_id instead of a trace_id, use logs.by_request_id.",
+			"Get trace IDs from logs_find_requests results or from the trace field in logs_query output. " +
+			"If you have a request_id instead of a trace_id, use logs_by_request_id.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),
@@ -42,8 +42,8 @@ func RegisterLogsByTrace(s *mcp.Server, client *gcpclient.Client) {
 
 		result, err := gcpdata.QueryLogsByTrace(ctx, client.LoggingClient(), project, in.TraceID, timeFilter, limit, in.PageToken)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "logs.by_trace", fmt.Sprintf("trace query failed for %s: %v", in.TraceID, err))
-			return errResult(fmt.Sprintf("Failed to query logs by trace: %v. Verify the trace_id format (hex string, not full resource path). Use logs.find_requests to discover valid trace IDs.", err)), nil, nil
+			mcpLog(ctx, req, logLevelError, "logs_by_trace", fmt.Sprintf("trace query failed for %s: %v", in.TraceID, err))
+			return errResult(fmt.Sprintf("Failed to query logs by trace: %v. Verify the trace_id format (hex string, not full resource path). Use logs_find_requests to discover valid trace IDs.", err)), nil, nil
 		}
 
 		return nil, result, nil

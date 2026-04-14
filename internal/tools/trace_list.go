@@ -14,9 +14,9 @@ import (
 func RegisterTraceList(s *mcp.Server, client *gcpclient.Client) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "trace.list",
+		Name: "trace_list",
 		Description: "Search for traces by criteria such as span name, latency, or time range. " +
-			"Returns trace summaries with root span info — use trace.get with a returned trace_id for full span details. " +
+			"Returns trace summaries with root span info — use trace_get with a returned trace_id for full span details. " +
 			"Supports structured filters (root_name, span_name, min_latency) or raw Cloud Trace filter syntax. " +
 			"Default time range is the last 1 hour. Requires Cloud Trace API to be enabled.",
 		Annotations: &mcp.ToolAnnotations{
@@ -55,11 +55,11 @@ func RegisterTraceList(s *mcp.Server, client *gcpclient.Client) {
 		result, err := gcpdata.ListTraces(ctx, client.TraceClient(), project,
 			filter, in.View, in.OrderBy, startTime, endTime, pageSize, in.PageToken)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "trace.list", fmt.Sprintf("list traces failed: %v", err))
+			mcpLog(ctx, req, logLevelError, "trace_list", fmt.Sprintf("list traces failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to list traces: %v. Verify the project_id, filter syntax, and that Cloud Trace API is enabled.", err)), nil, nil
 		}
 		if result.Truncated && result.TruncationHint != "" {
-			mcpLog(ctx, req, logLevelWarning, "trace.list", result.TruncationHint)
+			mcpLog(ctx, req, logLevelWarning, "trace_list", result.TruncationHint)
 		}
 
 		return nil, result, nil

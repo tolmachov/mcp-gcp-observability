@@ -11,7 +11,7 @@ import (
 )
 
 // TestRelatedAggregationResolve is the compare/related analog of
-// TestSnapshotAggregationResolve. metrics.related looks up each correlated
+// TestSnapshotAggregationResolve. metrics_related looks up each correlated
 // metric's OWN aggregation spec (they may be different kinds — a latency
 // histogram next to a business_kpi counter), so the critical regression
 // to guard against is one related metric silently inheriting the
@@ -65,14 +65,14 @@ func testRelatedExplicitTwoStage(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	_, err := ts.callTool(ctx, "metrics.related", map[string]any{
+	_, err := ts.callTool(ctx, "metrics_related", map[string]any{
 		"metric_type": primary,
 		"project_id":  "test-project",
 		"window":      "15m",
 	})
 	require.NoError(t, err, "callTool")
 
-	// metrics.related fires two queries per related metric (current +
+	// metrics_related fires two queries per related metric (current +
 	// baseline). Both must carry the two-stage spec.
 	require.GreaterOrEqual(t, len(fq.aggregatedSpecs), 2, "expected ≥2 aggregated calls")
 	for i, spec := range fq.aggregatedSpecs {

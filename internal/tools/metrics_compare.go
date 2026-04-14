@@ -17,11 +17,11 @@ import (
 
 func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string) {
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "metrics.compare",
+		Name: "metrics_compare",
 		Description: "Compare two arbitrary time windows for the same metric. " +
 			"Useful for deploy diff, before/after comparisons, or ad-hoc analysis. " +
 			"Returns mean values, delta, trend shift, and classification for each window. " +
-			"For automatic baseline comparison (prev_window, same_weekday_hour), use metrics.snapshot instead.",
+			"For automatic baseline comparison (prev_window, same_weekday_hour), use metrics_snapshot instead.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),
@@ -76,7 +76,7 @@ func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 
 		descriptor, err := querier.GetMetricDescriptor(ctx, project, in.MetricType)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "metrics.compare", fmt.Sprintf("metric descriptor lookup failed: %v", err))
+			mcpLog(ctx, req, logLevelError, "metrics_compare", fmt.Sprintf("metric descriptor lookup failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to look up metric descriptor: %v. Verify the metric_type.", err)), nil, nil
 		}
 
@@ -84,7 +84,7 @@ func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 
 		aggSpec := meta.ResolveAggregation()
 		if err := aggSpec.Validate(); err != nil {
-			mcpLog(ctx, req, logLevelError, "metrics.compare",
+			mcpLog(ctx, req, logLevelError, "metrics_compare",
 				fmt.Sprintf("registry misconfiguration for %s: %v", in.MetricType, err))
 			return errResult(formatRegistryMisconfigError(in.MetricType, err)), nil, nil
 		}
@@ -117,8 +117,8 @@ func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 				if r := recover(); r != nil {
 					stack := debug.Stack()
 					msg := fmt.Sprintf("panic querying window A: %v\n%s", r, stack)
-					notifyErrLog.Load().Printf("metrics.compare: %s", msg)
-					mcpLog(ctx, req, logLevelError, "metrics.compare", msg)
+					notifyErrLog.Load().Printf("metrics_compare: %s", msg)
+					mcpLog(ctx, req, logLevelError, "metrics_compare", msg)
 					errA = fmt.Errorf("internal error: %v", r)
 				}
 			}()
@@ -134,8 +134,8 @@ func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 				if r := recover(); r != nil {
 					stack := debug.Stack()
 					msg := fmt.Sprintf("panic querying window B: %v\n%s", r, stack)
-					notifyErrLog.Load().Printf("metrics.compare: %s", msg)
-					mcpLog(ctx, req, logLevelError, "metrics.compare", msg)
+					notifyErrLog.Load().Printf("metrics_compare: %s", msg)
+					mcpLog(ctx, req, logLevelError, "metrics_compare", msg)
 					errB = fmt.Errorf("internal error: %v", r)
 				}
 			}()
@@ -146,8 +146,8 @@ func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 			seriesB, warningsB, errB = querier.QueryTimeSeriesAggregated(ctx, paramsB, aggSpec)
 		}()
 		wg.Wait()
-		logAggregationWarnings(ctx, req, "metrics.compare", in.MetricType, windowALabel, warningsA)
-		logAggregationWarnings(ctx, req, "metrics.compare", in.MetricType, windowBLabel, warningsB)
+		logAggregationWarnings(ctx, req, "metrics_compare", in.MetricType, windowALabel, warningsA)
+		logAggregationWarnings(ctx, req, "metrics_compare", in.MetricType, windowBLabel, warningsB)
 		warningsNote := joinNote(
 			aggregationWarningsNote(in.MetricType, windowALabel, warningsA),
 			aggregationWarningsNote(in.MetricType, windowBLabel, warningsB),
@@ -161,7 +161,7 @@ func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 				msgs = append(msgs, fmt.Sprintf("window B: %v", errB))
 			}
 			msg := strings.Join(msgs, "; ")
-			mcpLog(ctx, req, logLevelError, "metrics.compare", msg)
+			mcpLog(ctx, req, logLevelError, "metrics_compare", msg)
 			if invalidAggregationSpecError(errA) || invalidAggregationSpecError(errB) {
 				return errResult(formatRegistryMisconfigError(in.MetricType, errors.Join(errA, errB))), nil, nil
 			}
@@ -171,8 +171,8 @@ func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 			return errResult(fmt.Sprintf("Failed to query: %s", msg)), nil, nil
 		}
 
-		unsupportedCount := reportUnsupportedPoints(ctx, req, "metrics.compare", in.MetricType, seriesA) +
-			reportUnsupportedPoints(ctx, req, "metrics.compare", in.MetricType, seriesB)
+		unsupportedCount := reportUnsupportedPoints(ctx, req, "metrics_compare", in.MetricType, seriesA) +
+			reportUnsupportedPoints(ctx, req, "metrics_compare", in.MetricType, seriesB)
 
 		pointsA := mergePoints(seriesA)
 		pointsB := mergePoints(seriesB)
@@ -291,16 +291,16 @@ func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 }
 
 type CompareResult struct {
-	WindowALabel              string   `json:"window_a_label"`
-	WindowBLabel              string   `json:"window_b_label"`
-	WindowAMean               float64  `json:"window_a_mean"`
-	WindowBMean               float64  `json:"window_b_mean"`
-	DeltaPct                  float64  `json:"delta_pct"`
-	TrendShift                string   `json:"trend_shift"`
-	ClassificationA           string   `json:"classification_a"`
-	ClassificationB           string   `json:"classification_b"`
-	ClassificationConfidenceA string   `json:"classification_confidence_a"`
-	ClassificationConfidenceB string   `json:"classification_confidence_b"`
+	WindowALabel              string  `json:"window_a_label"`
+	WindowBLabel              string  `json:"window_b_label"`
+	WindowAMean               float64 `json:"window_a_mean"`
+	WindowBMean               float64 `json:"window_b_mean"`
+	DeltaPct                  float64 `json:"delta_pct"`
+	TrendShift                string  `json:"trend_shift"`
+	ClassificationA           string  `json:"classification_a"`
+	ClassificationB           string  `json:"classification_b"`
+	ClassificationConfidenceA string  `json:"classification_confidence_a"`
+	ClassificationConfidenceB string  `json:"classification_confidence_b"`
 	// TrendScoreA: normalized total drift within window A, expressed as a fraction
 	// of window A's own mean (window A has no external baseline).
 	// TrendScoreB: normalized total drift within window B, expressed as a fraction
@@ -310,8 +310,8 @@ type CompareResult struct {
 	// StepChangeAt is the estimated timestamp of a level shift in window B.
 	// StepChangePct is the magnitude of that shift (% difference between first
 	// and last thirds of window B).
-	StepChangeAt  string  `json:"step_change_at,omitempty"`
-	StepChangePct float64 `json:"step_change_pct,omitempty"`
+	StepChangeAt        string   `json:"step_change_at,omitempty"`
+	StepChangePct       float64  `json:"step_change_pct,omitempty"`
 	SLOBreachIntroduced bool     `json:"slo_breach_introduced"`
 	NoData              bool     `json:"no_data,omitempty"`
 	NoDataWindows       []string `json:"no_data_windows,omitempty"`

@@ -54,10 +54,10 @@ var traceDetailSchema = &jsonschema.Schema{
 func RegisterTraceGet(s *mcp.Server, client *gcpclient.Client) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "trace.get",
+		Name: "trace_get",
 		Description: "Get trace details with all spans by trace ID. " +
 			"Returns a span tree (parent-child hierarchy) sorted by start time, showing the full request execution flow. " +
-			"Use trace IDs from logs.find_requests results or the trace field in logs.query output. " +
+			"Use trace IDs from logs_find_requests results or the trace field in logs_query output. " +
 			"Requires Cloud Trace API to be enabled in the project.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
@@ -78,7 +78,7 @@ func RegisterTraceGet(s *mcp.Server, client *gcpclient.Client) {
 
 		result, err := gcpdata.GetTrace(ctx, client.TraceClient(), project, in.TraceID)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "trace.get", fmt.Sprintf("get trace %s failed: %v", in.TraceID, err))
+			mcpLog(ctx, req, logLevelError, "trace_get", fmt.Sprintf("get trace %s failed: %v", in.TraceID, err))
 			return errResult(formatTraceGetError(in.TraceID, err)), nil, nil
 		}
 
@@ -97,7 +97,7 @@ func formatTraceGetError(traceID string, err error) string {
 	if st, ok := status.FromError(err); ok {
 		switch st.Code() {
 		case codes.InvalidArgument:
-			return base + " Verify the trace_id is a valid 32-character hex string (not the full resource path). Use logs.find_requests to discover valid trace IDs."
+			return base + " Verify the trace_id is a valid 32-character hex string (not the full resource path). Use logs_find_requests to discover valid trace IDs."
 		case codes.NotFound:
 			return base + " The trace does not exist in this project, may have aged out of retention, or the trace_id/project_id pair is wrong."
 		case codes.PermissionDenied, codes.Unauthenticated:

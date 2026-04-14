@@ -17,13 +17,13 @@ import (
 // AvailableLabels lists the labels a metric exposes for filtering and
 // grouping, split by Cloud Monitoring namespace.
 type AvailableLabels struct {
-	Metric          []string            `json:"metric,omitempty"`
-	Resource        map[string][]string `json:"resource,omitempty"`
+	Metric   []string            `json:"metric,omitempty"`
+	Resource map[string][]string `json:"resource,omitempty"`
 	// IncompleteTypes lists monitored resource types whose label keys could
 	// not be fetched (GetResourceLabels RPC failed). When non-empty, the
 	// Resource map is partial and consumers should not assume unlisted label
 	// keys are absent.
-	IncompleteTypes []string            `json:"incomplete_resource_types,omitempty"`
+	IncompleteTypes []string `json:"incomplete_resource_types,omitempty"`
 }
 
 // availableLabelsFromDescriptor builds an AvailableLabels value from a metric

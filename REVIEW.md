@@ -2,7 +2,7 @@
 
 ## Overview
 
-Substantial feature adding Cloud Monitoring support to the MCP server. Introduces 5 new tools (`metrics.list`, `metrics.snapshot`, `metrics.top_contributors`, `metrics.related`, `metrics.compare`) with a semantic analysis layer — a signal processor that classifies metric behavior (stable, spike, regression, saturation, etc.) rather than dumping raw time series data.
+Substantial feature adding Cloud Monitoring support to the MCP server. Introduces 5 new tools (`metrics_list`, `metrics_snapshot`, `metrics_top_contributors`, `metrics_related`, `metrics_compare`) with a semantic analysis layer — a signal processor that classifies metric behavior (stable, spike, regression, saturation, etc.) rather than dumping raw time series data.
 
 ## Architecture — Well Done
 
@@ -97,13 +97,13 @@ Replace with `strings.CutPrefix` — clearer and safer.
 
 Strings `"prev_window"`, `"same_weekday_hour"`, `"pre_event"` are repeated across multiple files in enum definitions, default values, and switch cases. Should be extracted as package-level constants.
 
-### MEDIUM: Missing `business_kpi` in `metrics.list` kind enum
+### MEDIUM: Missing `business_kpi` in `metrics_list` kind enum
 
 **File:** `internal/tools/metrics_list.go:43-44`
 
 The `Enum` for the `kind` parameter lists 6 kinds but omits `business_kpi`, which is a valid `MetricKind`. If a user has `business_kpi` metrics in their registry, they can't filter for them.
 
-### MEDIUM: `metrics.list` kind filter under-fetches from API
+### MEDIUM: `metrics_list` kind filter under-fetches from API
 
 **File:** `internal/tools/metrics_list.go:97-142`
 
@@ -222,7 +222,7 @@ Not bugs, but these should have brief comments explaining the rationale.
 
 - Import alias cleanup in `errors.go`, `helpers.go`, `logs.go`, `traces.go`, `traces_test.go` — removing unnecessary `pkg "path"` aliases. Good hygiene.
 - README table reorganization is a clear improvement.
-- Tool descriptions with cross-references ("use metrics.snapshot instead", "use metrics.list first") are excellent MCP design — helps LLMs navigate between tools.
+- Tool descriptions with cross-references ("use metrics_snapshot instead", "use metrics_list first") are excellent MCP design — helps LLMs navigate between tools.
 
 ## Test Coverage
 
@@ -240,9 +240,9 @@ Strong coverage overall. The new `metrics_integration_test.go` (954 lines) provi
 **Remaining gaps (lower priority):**
 
 - `same_weekday_hour` baseline mode at handler level (4 concurrent goroutines, partial-failure tolerance)
-- `metrics.top_contributors` reducer selection (REDUCE_SUM for throughput vs REDUCE_MEAN)
-- `metrics.compare` no-data in one window only
-- `metrics.related` query error (vs. no-data) skip path
+- `metrics_top_contributors` reducer selection (REDUCE_SUM for throughput vs REDUCE_MEAN)
+- `metrics_compare` no-data in one window only
+- `metrics_related` query error (vs. no-data) skip path
 - `labelValueFromSeries` fallback to "(unknown)"
 - `mergePoints` direct unit test
 - `MetricMeta.Validate()` edge cases: negative SLO threshold, zero saturation cap

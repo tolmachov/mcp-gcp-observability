@@ -3,8 +3,8 @@
 # single source of truth for the shipped registry. To override entries at
 # runtime, pass --metrics-registry your-overlay.yaml (field-level merge).
 #
-# This feeds metrics.snapshot / metrics.top_contributors / metrics.related /
-# metrics.compare. Metrics not listed here fall back to the registry's
+# This feeds metrics_snapshot / metrics_top_contributors / metrics_related /
+# metrics_compare. Metrics not listed here fall back to the registry's
 # auto-detector in internal/metrics/registry.go, which only matches on name
 # substrings and cannot set slo_threshold / saturation_cap / related_metrics.
 #
@@ -41,7 +41,7 @@
 #                        Must be in the same unit as the metric's raw values.
 #   saturation_cap     — optional; enables the `saturation` classification
 #                        when the metric mean is within 5% of the cap.
-#   related_metrics    — optional; drives metrics.related (static correlations).
+#   related_metrics    — optional; drives metrics_related (static correlations).
 #   thresholds         — optional; per-metric override of the kind defaults
 #                        (significant_delta_pct, breach_ratio_for_regression,
 #                        cv_for_noisy, spike_zscore).
@@ -416,7 +416,7 @@ metrics:
   # =========================================================================
 
   "kubernetes.io/container/cpu/core_usage_time":
-    # CUMULATIVE counter — raw value grows forever. metrics.snapshot's
+    # CUMULATIVE counter — raw value grows forever. metrics_snapshot's
     # alignment reducer converts this to a rate automatically.
     kind: resource_utilization
     unit: seconds
@@ -629,7 +629,7 @@ metrics:
 
   "pubsub.googleapis.com/topic/send_request_count":
     # Grouped by response_code label — filter result=ok for throughput,
-    # result!=ok via metrics.top_contributors(dimension="metric.labels.response_code")
+    # result!=ok via metrics_top_contributors(dimension="metric.labels.response_code")
     # to expose error breakdowns.
     kind: throughput
     unit: count
@@ -958,7 +958,7 @@ metrics:
   # =========================================================================
 
   "loadbalancing.googleapis.com/https/request_count":
-    # Top-of-funnel request rate. Use metrics.top_contributors with
+    # Top-of-funnel request rate. Use metrics_top_contributors with
     # dimension="metric.labels.response_code_class" to expose 5xx ratios.
     kind: throughput
     unit: count
@@ -2105,7 +2105,7 @@ metrics:
   # =========================================================================
 
   "storage.googleapis.com/api/request_count":
-    # Labeled by method and response_code. Use metrics.top_contributors with
+    # Labeled by method and response_code. Use metrics_top_contributors with
     # dimension="metric.labels.response_code" to split errors.
     kind: throughput
     unit: count

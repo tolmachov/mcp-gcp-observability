@@ -13,10 +13,10 @@ import (
 func RegisterLogsSummary(s *mcp.Server, client *gcpclient.Client) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "logs.summary",
+		Name: "logs_summary",
 		Description: "Get an aggregated summary of logs (based on up to 1000 sampled entries): severity distribution, top services, top errors, and sample entries. " +
-			"Useful for initial triage before drilling down with logs.query or logs.k8s. " +
-			"Does NOT return full log entries — use logs.query for that.",
+			"Useful for initial triage before drilling down with logs_query or logs_k8s. " +
+			"Does NOT return full log entries — use logs_query for that.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),
@@ -43,7 +43,7 @@ func RegisterLogsSummary(s *mcp.Server, client *gcpclient.Client) {
 					fmt.Sprintf("Scanned %d/%d entries", scanned, total))
 			})
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "logs.summary", fmt.Sprintf("summarize failed for project %s: %v", project, err))
+			mcpLog(ctx, req, logLevelError, "logs_summary", fmt.Sprintf("summarize failed for project %s: %v", project, err))
 			return errResult(fmt.Sprintf("Failed to summarize logs: %v. Verify the project_id and filter syntax.", err)), nil, nil
 		}
 

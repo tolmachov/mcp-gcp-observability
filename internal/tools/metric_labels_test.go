@@ -202,7 +202,7 @@ func TestMetricsSnapshot_AttachesAvailableLabels(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type": "pubsub.googleapis.com/subscription/sent_message_count",
 		"window":      "1h",
 	})
@@ -251,7 +251,7 @@ func TestMetricsSnapshot_LabelEnrichmentSoftDegradation(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type": "pubsub.googleapis.com/subscription/sent_message_count",
 		"window":      "1h",
 	})
@@ -293,7 +293,7 @@ func TestMetricsSnapshot_EnrichedErrorOnInvalidFilter(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type": "pubsub.googleapis.com/subscription/sent_message_count",
 		"filter":      `resource.labels.topic_id = "ad-events"`,
 	})

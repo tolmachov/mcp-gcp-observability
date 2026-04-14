@@ -21,7 +21,7 @@ type ProfileSummary struct {
 	CountByTarget map[string]int `json:"count_by_target"`
 }
 
-// ProfileListResult is the response for profiler.list.
+// ProfileListResult is the response for profiler_list.
 type ProfileListResult struct {
 	Count         int            `json:"count"`
 	Profiles      []ProfileMeta  `json:"profiles"`
@@ -48,15 +48,15 @@ type TopFunction struct {
 	CumulativePct   float64 `json:"cumulative_pct"`
 }
 
-// ProfileTopResult is the response for profiler.top.
+// ProfileTopResult is the response for profiler_top.
 type ProfileTopResult struct {
-	ProfileMeta    ProfileMeta     `json:"profile_meta"`
-	ValueType      ValueTypeInfo   `json:"value_type"`
+	ProfileMeta     ProfileMeta     `json:"profile_meta"`
+	ValueType       ValueTypeInfo   `json:"value_type"`
 	AvailableValues []ValueTypeInfo `json:"available_values"`
-	TotalValue     int64           `json:"total_value"`
-	TopFunctions   []TopFunction   `json:"top_functions"`
-	Truncated      bool            `json:"truncated,omitempty"`
-	TruncationHint string          `json:"truncation_hint,omitempty"`
+	TotalValue      int64           `json:"total_value"`
+	TopFunctions    []TopFunction   `json:"top_functions"`
+	Truncated       bool            `json:"truncated,omitempty"`
+	TruncationHint  string          `json:"truncation_hint,omitempty"`
 }
 
 // PeekEntry is a caller or callee of the target function.
@@ -75,7 +75,7 @@ type PeekFunctionInfo struct {
 	Cumulative int64  `json:"cumulative"`
 }
 
-// ProfilePeekResult is the response for profiler.peek.
+// ProfilePeekResult is the response for profiler_peek.
 type ProfilePeekResult struct {
 	ProfileMeta      ProfileMeta      `json:"profile_meta"`
 	ValueType        ValueTypeInfo    `json:"value_type"`
@@ -97,7 +97,7 @@ type FlamegraphNode struct {
 	Children   []FlamegraphNode `json:"children,omitempty"`
 }
 
-// ProfileFlamegraphResult is the response for profiler.flamegraph.
+// ProfileFlamegraphResult is the response for profiler_flamegraph.
 type ProfileFlamegraphResult struct {
 	ProfileMeta ProfileMeta    `json:"profile_meta"`
 	ValueType   ValueTypeInfo  `json:"value_type"`
@@ -119,15 +119,15 @@ type CompareTopEntry struct {
 
 // CompareSummary provides high-level stats about the profile diff.
 type CompareSummary struct {
-	TotalCurrent int64 `json:"total_current"`
-	TotalBase    int64 `json:"total_base"`
-	TotalDelta   int64 `json:"total_delta"`
-	TotalDeltaPct float64 `json:"total_delta_pct"`
-	FunctionsRegressed int `json:"functions_regressed"`
-	FunctionsImproved  int `json:"functions_improved"`
+	TotalCurrent       int64   `json:"total_current"`
+	TotalBase          int64   `json:"total_base"`
+	TotalDelta         int64   `json:"total_delta"`
+	TotalDeltaPct      float64 `json:"total_delta_pct"`
+	FunctionsRegressed int     `json:"functions_regressed"`
+	FunctionsImproved  int     `json:"functions_improved"`
 }
 
-// ProfileCompareResult is the response for profiler.compare.
+// ProfileCompareResult is the response for profiler_compare.
 type ProfileCompareResult struct {
 	DiffID          string            `json:"diff_id"`
 	CurrentMeta     ProfileMeta       `json:"current_meta"`
@@ -143,10 +143,10 @@ type ProfileCompareResult struct {
 
 // TrendsDataPoint is a single point in a function's history over time.
 type TrendsDataPoint struct {
-	ProfileID string  `json:"profile_id"`
-	Timestamp string  `json:"timestamp"`
-	SelfValue int64   `json:"self_value"`
-	SelfPct   float64 `json:"self_pct"`
+	ProfileID       string  `json:"profile_id"`
+	Timestamp       string  `json:"timestamp"`
+	SelfValue       int64   `json:"self_value"`
+	SelfPct         float64 `json:"self_pct"`
 	CumulativeValue int64   `json:"cumulative_value"`
 	CumulativePct   float64 `json:"cumulative_pct"`
 }
@@ -158,7 +158,7 @@ type TrendsFunctionSeries struct {
 	DataPoints []TrendsDataPoint `json:"data_points"`
 }
 
-// ProfileTrendsResult is the response for profiler.trends.
+// ProfileTrendsResult is the response for profiler_trends.
 type ProfileTrendsResult struct {
 	Target            string                 `json:"target"`
 	ProfileType       string                 `json:"profile_type"`

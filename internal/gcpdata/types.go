@@ -64,7 +64,7 @@ type RequestInfo struct {
 	ResourceType string `json:"resource_type"`
 }
 
-// RequestList is the response for logs.find_requests.
+// RequestList is the response for logs_find_requests.
 // Count always equals len(Requests).
 type RequestList struct {
 	Count          int           `json:"count"`
@@ -84,7 +84,7 @@ type ErrorGroup struct {
 	AffectedVersions []string `json:"affected_versions,omitempty"`
 }
 
-// ErrorGroupList is the response for errors.list.
+// ErrorGroupList is the response for errors_list.
 // Count always equals len(Groups).
 type ErrorGroupList struct {
 	Count          int          `json:"count"`
@@ -125,7 +125,7 @@ type ErrorSourceLocation struct {
 	FunctionName string `json:"function_name,omitempty"`
 }
 
-// ErrorGroupDetail is the response for errors.get.
+// ErrorGroupDetail is the response for errors_get.
 // Instances is guaranteed non-empty. Message and Service are derived from the first instance.
 type ErrorGroupDetail struct {
 	GroupID        string          `json:"group_id"`
@@ -145,7 +145,7 @@ type ServiceInfo struct {
 	Namespace    string `json:"namespace,omitempty"`
 }
 
-// ServiceList is the response for logs.services.
+// ServiceList is the response for logs_services.
 // Count always equals len(Services).
 type ServiceList struct {
 	Count          int           `json:"count"`
@@ -154,7 +154,7 @@ type ServiceList struct {
 	TruncationHint string        `json:"truncation_hint,omitempty"`
 }
 
-// LogsSummary is the response for logs.summary.
+// LogsSummary is the response for logs_summary.
 // TruncationHint is non-empty only when Truncated is true.
 type LogsSummary struct {
 	TotalEntries         int            `json:"total_entries"`
@@ -192,7 +192,7 @@ type TraceSpan struct {
 	Children  []TraceSpan       `json:"children,omitempty"`
 }
 
-// TraceSummary is a single trace in a trace.list result.
+// TraceSummary is a single trace in a trace_list result.
 // With ROOTSPAN view, RootSpanName/StartTime/EndTime/Duration/Labels come from the root span.
 type TraceSummary struct {
 	TraceID      string            `json:"trace_id"`
@@ -204,7 +204,7 @@ type TraceSummary struct {
 	Labels       map[string]string `json:"labels,omitempty"`
 }
 
-// TraceListResult is the response for trace.list.
+// TraceListResult is the response for trace_list.
 type TraceListResult struct {
 	Count          int            `json:"count"`
 	Traces         []TraceSummary `json:"traces"`
@@ -213,7 +213,7 @@ type TraceListResult struct {
 	TruncationHint string         `json:"truncation_hint,omitempty"`
 }
 
-// TraceDetail is the response for trace.get.
+// TraceDetail is the response for trace_get.
 // Count is the total number of spans across the entire tree (not just len(Spans), which counts only roots).
 type TraceDetail struct {
 	TraceID string      `json:"trace_id"`

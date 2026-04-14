@@ -3,15 +3,17 @@ package gcpdata
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
 	"strings"
 	"time"
 
+	cloudprofiler "cloud.google.com/go/cloudprofiler/apiv2"
+	"cloud.google.com/go/cloudprofiler/apiv2/cloudprofilerpb"
 	"github.com/google/pprof/profile"
-	cloudprofiler "google.golang.org/api/cloudprofiler/v2"
+	"google.golang.org/api/iterator"
 )
 
 const profilerQueryTimeout = 60 * time.Second
@@ -35,13 +37,13 @@ func ValidateProfileType(profileType string) error {
 }
 
 // ListProfiles lists profile metadata without downloading profile bytes.
-// As of 2026-04, the Cloud Profiler API does not support server-side filtering
-// by profile_type, target, or time range, so filtering is applied client-side. To ensure the
+// The Cloud Profiler API does not support server-side filtering by profile_type,
+// target, or time range, so filtering is applied client-side. To ensure the
 // caller receives up to pageSize matching results, this function paginates
-// internally through API pages until enough matches are found.
+// internally until enough matches are found or the scan limit is reached.
 func ListProfiles(
 	ctx context.Context,
-	svc *cloudprofiler.Service,
+	svc *cloudprofiler.ExportClient,
 	project string,
 	profileType, target, startTime, endTime string,
 	pageSize int,
@@ -64,47 +66,47 @@ func ListProfiles(
 		},
 	}
 
-	// When filtering client-side, fetch larger API pages to reduce round-trips.
-	apiPageSize := int64(pageSize)
+	// When filtering client-side, request large pages to reduce round-trips.
+	apiPageSize := int32(pageSize)
 	if needsFilter && apiPageSize < 1000 {
 		apiPageSize = 1000
 	}
 
-	const maxListPages = 20
-	currentToken := pageToken
-	pagesScanned := 0
-	for range maxListPages {
-		pagesScanned++
-		call := svc.Projects.Profiles.List("projects/" + project).
-			PageSize(apiPageSize).
-			Context(ctx)
-		if currentToken != "" {
-			call = call.PageToken(currentToken)
-		}
+	// maxScan caps total profiles examined to bound latency.
+	const maxScan = 20_000
+	scanned := 0
 
-		resp, err := call.Do()
+	it := svc.ListProfiles(ctx, &cloudprofilerpb.ListProfilesRequest{
+		Parent:    "projects/" + project,
+		PageSize:  apiPageSize,
+		PageToken: pageToken,
+	})
+
+	for scanned < maxScan {
+		p, err := it.Next()
+		if errors.Is(err, iterator.Done) {
+			break
+		}
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil, fmt.Errorf("listing profiles: timed out after %d pages (%d matches so far); try narrowing filters: %w", pagesScanned, len(result.Profiles), err)
+				return nil, fmt.Errorf("listing profiles: timed out after %d profiles (%d matches so far); try narrowing filters: %w", scanned, len(result.Profiles), err)
 			}
 			return nil, fmt.Errorf("listing profiles: %w", err)
 		}
+		scanned++
 
-		for _, p := range resp.Profiles {
-			meta := profileFromAPI(p)
-
-			ok, wasParseErr := matchesProfileFilter(meta, profileType, target, startT, endT)
-			if !ok {
-				if wasParseErr {
-					result.ExcludedCount++
-				}
-				continue
+		meta := profileFromAPI(p)
+		ok, wasParseErr := matchesProfileFilter(meta, profileType, target, startT, endT)
+		if !ok {
+			if wasParseErr {
+				result.ExcludedCount++
 			}
-
-			result.Profiles = append(result.Profiles, meta)
-			result.Summary.CountByType[meta.ProfileType]++
-			result.Summary.CountByTarget[meta.Target]++
+			continue
 		}
+
+		result.Profiles = append(result.Profiles, meta)
+		result.Summary.CountByType[meta.ProfileType]++
+		result.Summary.CountByTarget[meta.Target]++
 
 		// Trim to exactly pageSize to honour the caller's contract.
 		if len(result.Profiles) >= pageSize {
@@ -116,21 +118,23 @@ func ListProfiles(
 				result.Summary.CountByType[m.ProfileType]++
 				result.Summary.CountByTarget[m.Target]++
 			}
-			if resp.NextPageToken != "" {
-				result.NextPageToken = resp.NextPageToken
+			// Surface a resumption token only when no client-side filtering is
+			// active. In that case apiPageSize == pageSize, so the iterator page
+			// boundary aligns with the result set and the token is safe to use.
+			// With client-side filtering the iterator has already buffered more
+			// profiles past the returned set; it.PageInfo().Token points to the
+			// next API page boundary, not to the next item, so using it would
+			// silently skip the remaining items in the current buffer.
+			if !needsFilter {
+				result.NextPageToken = it.PageInfo().Token
 			}
 			result.Count = len(result.Profiles)
 			return result, nil
 		}
-
-		if resp.NextPageToken == "" {
-			break
-		}
-		currentToken = resp.NextPageToken
 	}
 
-	if needsFilter && currentToken != "" && len(result.Profiles) < pageSize {
-		result.Warning = fmt.Sprintf("Scanned %d API pages without finding %d matching profiles (found %d). Try narrowing your filters or increasing limit.", maxListPages, pageSize, len(result.Profiles))
+	if needsFilter && scanned >= maxScan && len(result.Profiles) < pageSize {
+		result.Warning = fmt.Sprintf("Scanned %d profiles without finding %d matching results (found %d). Try narrowing your filters or increasing limit.", maxScan, pageSize, len(result.Profiles))
 	}
 
 	result.Count = len(result.Profiles)
@@ -190,9 +194,12 @@ func matchesProfileFilter(meta ProfileMeta, profileType, target string, startT, 
 }
 
 // GetOrFetchProfile retrieves a parsed profile from cache or downloads it.
+// Cloud Profiler API v2 has no direct GET endpoint; profiles are found by
+// scanning list results. The ExportClient always returns the profile name
+// (resource ID) in list responses, so no synthetic ID fallback is needed.
 func GetOrFetchProfile(
 	ctx context.Context,
-	svc *cloudprofiler.Service,
+	svc *cloudprofiler.ExportClient,
 	cache *ProfileCache,
 	project, profileName string,
 ) (*profile.Profile, ProfileMeta, error) {
@@ -202,9 +209,9 @@ func GetOrFetchProfile(
 	}
 
 	// Diff profiles only exist in the in-memory cache. If we missed,
-	// the user needs to re-run profiler.compare to regenerate.
+	// the user needs to re-run profiler_compare to regenerate.
 	if strings.HasPrefix(profileName, "diff:") {
-		return nil, ProfileMeta{}, fmt.Errorf("diff profile %q not in cache (expired or evicted). Re-run profiler.compare to regenerate it", profileName)
+		return nil, ProfileMeta{}, fmt.Errorf("diff profile %q not in cache (expired or evicted). Re-run profiler_compare to regenerate it", profileName)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, profilerQueryTimeout)
@@ -217,51 +224,48 @@ func GetOrFetchProfile(
 		resourceName = "projects/" + project + "/profiles/" + profileName
 	}
 
-	// As of Cloud Profiler API v2 (checked 2026-04), there is no direct GET
-	// endpoint for a single profile by ID, so we paginate through list results
-	// and request profileBytes explicitly via Fields(). If the API adds a direct
-	// GET, replace this scan with a direct fetch.
-	const maxPages = 10
-	var found *cloudprofiler.Profile
-	pageToken := ""
-	for range maxPages {
-		call := svc.Projects.Profiles.List("projects/" + project).
-			PageSize(1000).
-			Fields("profiles(name,profileType,deployment,startTime,duration,labels,profileBytes)", "nextPageToken").
-			Context(ctx)
-		if pageToken != "" {
-			call = call.PageToken(pageToken)
-		}
-		resp, err := call.Do()
-		if err != nil {
-			return nil, ProfileMeta{}, fmt.Errorf("fetching profile: %w", err)
-		}
-		for _, p := range resp.Profiles {
-			if p.Name == resourceName || p.Name == profileName {
-				found = p
-				break
-			}
-		}
-		if found != nil || resp.NextPageToken == "" {
+	// Scan up to maxScan profiles to find the one matching by name.
+	const maxScan = 10_000
+	var found *cloudprofilerpb.Profile
+	scanned := 0
+	exhausted := false
+
+	it := svc.ListProfiles(ctx, &cloudprofilerpb.ListProfilesRequest{
+		Parent:   "projects/" + project,
+		PageSize: 1000,
+	})
+	for scanned < maxScan {
+		p, err := it.Next()
+		if errors.Is(err, iterator.Done) {
+			exhausted = true
 			break
 		}
-		pageToken = resp.NextPageToken
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ProfileMeta{}, fmt.Errorf("scanning profiles: timed out after %d profiles: %w", scanned, err)
+			}
+			return nil, ProfileMeta{}, fmt.Errorf("fetching profile: %w", err)
+		}
+		scanned++
+		if p.Name == resourceName || p.Name == profileName {
+			found = p
+			break
+		}
 	}
 
 	if found == nil {
-		return nil, ProfileMeta{}, fmt.Errorf("profile %q not found in project %q within the first %d API pages (~%d profiles). The profile may exist further back; try a more recent profile from profiler.list results", profileName, project, maxPages, maxPages*1000)
+		if exhausted {
+			return nil, ProfileMeta{}, fmt.Errorf("profile %q not found in project %q (scanned all %d available profiles)", profileName, project, scanned)
+		}
+		return nil, ProfileMeta{}, fmt.Errorf("profile %q not found in project %q within the first %d profiles scanned; the profile may exist further back — try a more recent profile from profiler_list results", profileName, project, maxScan)
 	}
 
-	if found.ProfileBytes == "" {
-		return nil, ProfileMeta{}, fmt.Errorf("profile %q has no profile bytes (metadata-only response)", profileName)
+	if len(found.ProfileBytes) == 0 {
+		return nil, ProfileMeta{}, fmt.Errorf("profile %q has no profile bytes", profileName)
 	}
 
-	data, err := base64.StdEncoding.DecodeString(found.ProfileBytes)
-	if err != nil {
-		return nil, ProfileMeta{}, fmt.Errorf("decoding profile bytes: %w", err)
-	}
-
-	p, err := profile.Parse(bytes.NewReader(data))
+	// ProfileBytes is gzip-compressed pprof proto; profile.Parse handles decompression.
+	p, err := profile.Parse(bytes.NewReader(found.ProfileBytes))
 	if err != nil {
 		return nil, ProfileMeta{}, fmt.Errorf("parsing pprof data: %w", err)
 	}
@@ -456,11 +460,11 @@ func PeekFunction(p *profile.Profile, functionName string, valueIndex, limit int
 
 // trieNode is an internal node for building call trees.
 type trieNode struct {
-	name     string
-	file     string
-	self     int64
+	name       string
+	file       string
+	self       int64
 	cumulative int64
-	children map[string]*trieNode
+	children   map[string]*trieNode
 }
 
 // Flamegraph builds a bounded call tree rooted at a function (or the profile root),
@@ -555,7 +559,7 @@ func Flamegraph(p *profile.Profile, rootFunction string, valueIndex, maxDepth in
 // CompareProfiles creates a diff profile (current - base) and returns comparison results.
 func CompareProfiles(
 	ctx context.Context,
-	svc *cloudprofiler.Service,
+	svc *cloudprofiler.ExportClient,
 	cache *ProfileCache,
 	project, currentID, baseID string,
 	valueIndex, topN int,
@@ -659,14 +663,14 @@ func CompareProfiles(
 		Truncated:       truncated,
 	}
 	if truncated {
-		result.TruncationHint = fmt.Sprintf("Showing top %d regressions and improvements. Use profiler.top with the diff_id for full function ranking.", topN)
+		result.TruncationHint = fmt.Sprintf("Showing top %d regressions and improvements. Use profiler_top with the diff_id for full function ranking.", topN)
 	}
 
 	// Build a diff profile for use with top/peek/flamegraph.
 	diffProfile, err := buildDiffProfile(currentProfile, baseProfile)
 	if err != nil {
 		// Return comparison stats (still useful) but no diff profile.
-		result.Warning = fmt.Sprintf("Comparison stats are valid but diff profile could not be built: %v. Use profiler.top on each profile individually to drill down.", err)
+		result.Warning = fmt.Sprintf("Comparison stats are valid but diff profile could not be built: %v. Use profiler_top on each profile individually to drill down.", err)
 		return result, nil, nil
 	}
 
@@ -708,67 +712,53 @@ type prefetchResult struct {
 // profiles that were already discovered via a metadata-only ListProfiles call.
 func prefetchProfiles(
 	ctx context.Context,
-	svc *cloudprofiler.Service,
+	svc *cloudprofiler.ExportClient,
 	cache *ProfileCache,
 	project string,
 	wanted map[string]bool,
 ) prefetchResult {
-	const maxPages = 20
+	const maxScan = 20_000
 	var res prefetchResult
 	remaining := len(wanted)
-	pageToken := ""
-	for range maxPages {
-		if remaining <= 0 || ctx.Err() != nil {
-			return res
+
+	it := svc.ListProfiles(ctx, &cloudprofilerpb.ListProfilesRequest{
+		Parent:   "projects/" + project,
+		PageSize: 1000,
+	})
+	for scanned := 0; scanned < maxScan && remaining > 0 && ctx.Err() == nil; scanned++ {
+		p, err := it.Next()
+		if errors.Is(err, iterator.Done) {
+			break
 		}
-		call := svc.Projects.Profiles.List("projects/"+project).
-			PageSize(1000).
-			Fields("profiles(name,profileType,deployment,startTime,duration,labels,profileBytes)", "nextPageToken").
-			Context(ctx)
-		if pageToken != "" {
-			call = call.PageToken(pageToken)
-		}
-		resp, err := call.Do()
 		if err != nil {
 			res.Errors++
 			res.Last = fmt.Errorf("list API call failed: %w", err)
 			return res
 		}
-		for _, p := range resp.Profiles {
-			if !wanted[p.Name] {
-				continue
-			}
-			key := project + "/" + p.Name
-			if _, _, ok := cache.Get(key); ok {
-				remaining--
-				res.Cached++
-				continue
-			}
-			if p.ProfileBytes == "" {
-				res.Errors++
-				res.Last = fmt.Errorf("profile %s: empty profile bytes", p.Name)
-				continue
-			}
-			data, err := base64.StdEncoding.DecodeString(p.ProfileBytes)
-			if err != nil {
-				res.Errors++
-				res.Last = fmt.Errorf("profile %s: base64 decode: %w", p.Name, err)
-				continue
-			}
-			parsed, err := profile.Parse(bytes.NewReader(data))
-			if err != nil {
-				res.Errors++
-				res.Last = fmt.Errorf("profile %s: pprof parse: %w", p.Name, err)
-				continue
-			}
-			cache.Put(key, parsed, profileFromAPI(p))
+		if !wanted[p.Name] {
+			continue
+		}
+		key := project + "/" + p.Name
+		if _, _, ok := cache.Get(key); ok {
 			remaining--
 			res.Cached++
+			continue
 		}
-		if resp.NextPageToken == "" {
-			return res
+		if len(p.ProfileBytes) == 0 {
+			res.Errors++
+			res.Last = fmt.Errorf("profile %s: empty profile bytes", p.Name)
+			remaining-- // can't satisfy this entry; stop waiting for it
+			continue
 		}
-		pageToken = resp.NextPageToken
+		parsed, err := profile.Parse(bytes.NewReader(p.ProfileBytes))
+		if err != nil {
+			res.Errors++
+			res.Last = fmt.Errorf("profile %s: pprof parse: %w", p.Name, err)
+			continue
+		}
+		cache.Put(key, parsed, profileFromAPI(p))
+		remaining--
+		res.Cached++
 	}
 	return res
 }
@@ -791,7 +781,7 @@ func ProfileValueTypes(p *profile.Profile) []ValueTypeInfo {
 // functions, which are then tracked across all profiles.
 func ComputeTrends(
 	ctx context.Context,
-	svc *cloudprofiler.Service,
+	svc *cloudprofiler.ExportClient,
 	cache *ProfileCache,
 	project, profileType, target, functionFilter string,
 	valueIndex, maxProfiles, maxFunctions int,
@@ -896,10 +886,10 @@ func ComputeTrends(
 			selfPct := safePercent(c.self, profileTotal)
 			cumPct := safePercent(c.cumulative, profileTotal)
 			dp := TrendsDataPoint{
-				ProfileID: meta.ProfileID,
-				Timestamp: meta.StartTime,
-				SelfValue: c.self,
-				SelfPct:   selfPct,
+				ProfileID:       meta.ProfileID,
+				Timestamp:       meta.StartTime,
+				SelfValue:       c.self,
+				SelfPct:         selfPct,
 				CumulativeValue: c.cumulative,
 				CumulativePct:   cumPct,
 			}
@@ -1045,12 +1035,22 @@ type funcCost struct {
 	cumulative int64
 }
 
-func profileFromAPI(p *cloudprofiler.Profile) ProfileMeta {
+func profileFromAPI(p *cloudprofilerpb.Profile) ProfileMeta {
 	meta := ProfileMeta{
-		ProfileID:   p.Name,
-		ProfileType: p.ProfileType,
-		Duration:    p.Duration,
-		StartTime:   p.StartTime,
+		ProfileID: p.Name,
+	}
+	// ProfileType is a proto enum — convert to the string name (e.g. "CPU", "HEAP").
+	// Only accept values that are in the known set; unrecognised numeric values
+	// (returned as their decimal string, e.g. "999") are treated as unset.
+	pt := p.ProfileType.String()
+	if validProfileTypes[pt] {
+		meta.ProfileType = pt
+	}
+	if p.Duration != nil {
+		meta.Duration = p.Duration.AsDuration().String()
+	}
+	if p.StartTime != nil {
+		meta.StartTime = p.StartTime.AsTime().UTC().Format(time.RFC3339Nano)
 	}
 	if p.Deployment != nil {
 		meta.Target = p.Deployment.Target

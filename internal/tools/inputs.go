@@ -11,7 +11,7 @@ type ProjectInput struct {
 	ProjectID string `json:"project_id,omitempty" jsonschema:"GCP project ID (uses default if not specified)"`
 }
 
-// LogsQueryInput is the input for logs.query.
+// LogsQueryInput is the input for logs_query.
 type LogsQueryInput struct {
 	ProjectInput
 	TimeFilterInput
@@ -21,7 +21,7 @@ type LogsQueryInput struct {
 	PageToken string `json:"page_token,omitempty" jsonschema:"Page token for pagination"`
 }
 
-// LogsByTraceInput is the input for logs.by_trace.
+// LogsByTraceInput is the input for logs_by_trace.
 type LogsByTraceInput struct {
 	ProjectInput
 	TimeFilterInput
@@ -30,7 +30,7 @@ type LogsByTraceInput struct {
 	PageToken string `json:"page_token,omitempty" jsonschema:"Page token for pagination (from previous response's next_page_token)"`
 }
 
-// LogsByRequestIDInput is the input for logs.by_request_id.
+// LogsByRequestIDInput is the input for logs_by_request_id.
 type LogsByRequestIDInput struct {
 	ProjectInput
 	TimeFilterInput
@@ -39,7 +39,7 @@ type LogsByRequestIDInput struct {
 	PageToken string `json:"page_token,omitempty" jsonschema:"Page token for pagination (from previous response's next_page_token)"`
 }
 
-// LogsFindRequestsInput is the input for logs.find_requests.
+// LogsFindRequestsInput is the input for logs_find_requests.
 type LogsFindRequestsInput struct {
 	ProjectInput
 	TimeFilterInput
@@ -50,7 +50,7 @@ type LogsFindRequestsInput struct {
 	Limit      int    `json:"limit,omitempty"      jsonschema:"Maximum number of requests to return (default 20, server max applies)"`
 }
 
-// LogsK8sInput is the input for logs.k8s.
+// LogsK8sInput is the input for logs_k8s.
 type LogsK8sInput struct {
 	ProjectInput
 	TimeFilterInput
@@ -64,20 +64,20 @@ type LogsK8sInput struct {
 	PageToken     string `json:"page_token,omitempty"     jsonschema:"Page token for pagination (from previous response's next_page_token)"`
 }
 
-// LogsServicesInput is the input for logs.services.
+// LogsServicesInput is the input for logs_services.
 type LogsServicesInput struct {
 	ProjectInput
 	TimeFilterInput
 }
 
-// LogsSummaryInput is the input for logs.summary.
+// LogsSummaryInput is the input for logs_summary.
 type LogsSummaryInput struct {
 	ProjectInput
 	TimeFilterInput
 	Filter string `json:"filter,omitempty" jsonschema:"Additional Cloud Logging filter to narrow the scope"`
 }
 
-// ErrorsListInput is the input for errors.list.
+// ErrorsListInput is the input for errors_list.
 // Note: Error Reporting only supports lookback periods ending at now, so
 // start_time/end_time are intentionally absent. Use time_range_hours instead.
 type ErrorsListInput struct {
@@ -88,21 +88,21 @@ type ErrorsListInput struct {
 	VersionFilter  string `json:"version_filter,omitempty"   jsonschema:"Filter by service version"`
 }
 
-// ErrorsGetInput is the input for errors.get.
+// ErrorsGetInput is the input for errors_get.
 type ErrorsGetInput struct {
 	ProjectInput
-	GroupID   string `json:"group_id" jsonschema:"Error group ID (from errors.list results)"`
+	GroupID   string `json:"group_id" jsonschema:"Error group ID (from errors_list results)"`
 	Limit     int    `json:"limit,omitempty" jsonschema:"Maximum number of error events to return (default 20, server max applies)"`
 	PageToken string `json:"page_token,omitempty" jsonschema:"Page token for pagination (from previous response's next_page_token)"`
 }
 
-// TraceGetInput is the input for trace.get.
+// TraceGetInput is the input for trace_get.
 type TraceGetInput struct {
 	ProjectInput
 	TraceID string `json:"trace_id" jsonschema:"The trace ID (32-character hex string, not the full resource path)"`
 }
 
-// TraceListInput is the input for trace.list.
+// TraceListInput is the input for trace_list.
 type TraceListInput struct {
 	ProjectInput
 	StartTime  string `json:"start_time,omitempty"  jsonschema:"Start of time range in RFC3339 format (e.g. '2025-01-15T00:00:00Z'). Defaults to 1 hour ago, or 1 hour before end_time if only end_time is provided."`
@@ -117,7 +117,7 @@ type TraceListInput struct {
 	PageToken  string `json:"page_token,omitempty"  jsonschema:"Page token from previous response's next_page_token"`
 }
 
-// MetricsListInput is the input for metrics.list.
+// MetricsListInput is the input for metrics_list.
 type MetricsListInput struct {
 	ProjectInput
 	Match string `json:"match,omitempty" jsonschema:"Substring to filter metric names or semantic keywords (e.g. 'cpu', 'latency', 'queue', 'cache', 'database', 'pubsub')"`
@@ -125,7 +125,7 @@ type MetricsListInput struct {
 	Limit int    `json:"limit,omitempty" jsonschema:"Maximum number of metrics to return (default 50, max 200)"`
 }
 
-// MetricsSnapshotInput is the input for metrics.snapshot.
+// MetricsSnapshotInput is the input for metrics_snapshot.
 type MetricsSnapshotInput struct {
 	ProjectInput
 	MetricType   string `json:"metric_type"            jsonschema:"Full Cloud Monitoring metric type (e.g. 'compute.googleapis.com/instance/cpu/utilization')"`
@@ -136,7 +136,7 @@ type MetricsSnapshotInput struct {
 	StepSeconds  int    `json:"step_seconds,omitempty" jsonschema:"Alignment period in seconds (default 60, minimum 10)"`
 }
 
-// MetricsTopInput is the input for metrics.top_contributors.
+// MetricsTopInput is the input for metrics_top_contributors.
 type MetricsTopInput struct {
 	ProjectInput
 	MetricType   string `json:"metric_type"            jsonschema:"Full Cloud Monitoring metric type"`
@@ -148,7 +148,7 @@ type MetricsTopInput struct {
 	Limit        int    `json:"limit,omitempty"        jsonschema:"Maximum number of contributors to return (default 5, max 20)"`
 }
 
-// MetricsRelatedInput is the input for metrics.related.
+// MetricsRelatedInput is the input for metrics_related.
 type MetricsRelatedInput struct {
 	ProjectInput
 	MetricType string `json:"metric_type"      jsonschema:"Full Cloud Monitoring metric type"`
@@ -156,7 +156,7 @@ type MetricsRelatedInput struct {
 	Window     string `json:"window,omitempty" jsonschema:"Time window to analyze (default '1h'). One of: 15m, 30m, 1h, 3h, 6h, 24h"`
 }
 
-// ProfilerListInput is the input for profiler.list.
+// ProfilerListInput is the input for profiler_list.
 type ProfilerListInput struct {
 	ProjectInput
 	TimeFilterInput
@@ -166,44 +166,44 @@ type ProfilerListInput struct {
 	PageToken   string `json:"page_token,omitempty"   jsonschema:"Page token for pagination"`
 }
 
-// ProfilerTopInput is the input for profiler.top.
+// ProfilerTopInput is the input for profiler_top.
 type ProfilerTopInput struct {
 	ProjectInput
-	ProfileID  string `json:"profile_id"             jsonschema:"Profile ID from profiler.list results, or diff_id from profiler.compare results"`
+	ProfileID  string `json:"profile_id"             jsonschema:"Profile ID from profiler_list results, or diff_id from profiler_compare results"`
 	Limit      int    `json:"limit,omitempty"         jsonschema:"Maximum number of functions to return (default 20, max 50)"`
 	SortBy     string `json:"sort_by,omitempty"       jsonschema:"Sort by 'self' or 'cumulative' cost (default 'cumulative')"`
-	ValueIndex int    `json:"value_index,omitempty"   jsonschema:"Value index for multi-value profiles (default 0). Use profiler.top once to see available_values."`
+	ValueIndex int    `json:"value_index,omitempty"   jsonschema:"Value index for multi-value profiles (default 0). Use profiler_top once to see available_values."`
 	Filter     string `json:"filter,omitempty"        jsonschema:"Substring filter on function name or file path (e.g. 'mypackage/handler')"`
 }
 
-// ProfilerPeekInput is the input for profiler.peek.
+// ProfilerPeekInput is the input for profiler_peek.
 type ProfilerPeekInput struct {
 	ProjectInput
-	ProfileID    string `json:"profile_id"             jsonschema:"Profile ID from profiler.list results, or diff_id from profiler.compare results"`
-	FunctionName string `json:"function_name"          jsonschema:"Function name to inspect (from profiler.top results). Substring match."`
+	ProfileID    string `json:"profile_id"             jsonschema:"Profile ID from profiler_list results, or diff_id from profiler_compare results"`
+	FunctionName string `json:"function_name"          jsonschema:"Function name to inspect (from profiler_top results). Substring match."`
 	Limit        int    `json:"limit,omitempty"         jsonschema:"Max callers/callees to return (default 10, max 30)"`
 	ValueIndex   int    `json:"value_index,omitempty"   jsonschema:"Value index for multi-value profiles (default 0)"`
 }
 
-// ProfilerFlamegraphInput is the input for profiler.flamegraph.
+// ProfilerFlamegraphInput is the input for profiler_flamegraph.
 type ProfilerFlamegraphInput struct {
 	ProjectInput
-	ProfileID    string  `json:"profile_id"              jsonschema:"Profile ID from profiler.list results, or diff_id from profiler.compare results"`
+	ProfileID    string  `json:"profile_id"              jsonschema:"Profile ID from profiler_list results, or diff_id from profiler_compare results"`
 	RootFunction string  `json:"root_function,omitempty"  jsonschema:"Function to use as subtree root (omit for full profile root). Substring match."`
 	MaxDepth     int     `json:"max_depth,omitempty"      jsonschema:"Maximum tree depth to return (default 3, max 6)"`
 	MinPct       float64 `json:"min_pct,omitempty"        jsonschema:"Minimum percentage of total to include a node (default 1.0)"`
 	ValueIndex   int     `json:"value_index,omitempty"    jsonschema:"Value index for multi-value profiles (default 0)"`
 }
 
-// ProfilerCompareInput is the input for profiler.compare.
+// ProfilerCompareInput is the input for profiler_compare.
 type ProfilerCompareInput struct {
 	ProjectInput
-	ProfileID     string `json:"profile_id"              jsonschema:"Current profile ID from profiler.list (diff_id is not supported here)"`
-	BaseProfileID string `json:"base_profile_id"         jsonschema:"Base profile ID to compare against from profiler.list (diff_id is not supported here)"`
+	ProfileID     string `json:"profile_id"              jsonschema:"Current profile ID from profiler_list (diff_id is not supported here)"`
+	BaseProfileID string `json:"base_profile_id"         jsonschema:"Base profile ID to compare against from profiler_list (diff_id is not supported here)"`
 	ValueIndex    int    `json:"value_index,omitempty"    jsonschema:"Value index for multi-value profiles (default 0)"`
 }
 
-// ProfilerTrendsInput is the input for profiler.trends.
+// ProfilerTrendsInput is the input for profiler_trends.
 type ProfilerTrendsInput struct {
 	ProjectInput
 	ProfileType    string `json:"profile_type"            jsonschema:"Profile type, case-insensitive (one of: CPU, WALL, HEAP, THREADS, CONTENTION, PEAK_HEAP, HEAP_ALLOC)"`
@@ -214,7 +214,7 @@ type ProfilerTrendsInput struct {
 	MaxFunctions   int    `json:"max_functions,omitempty"  jsonschema:"Maximum number of functions to track (default 10, max 20)"`
 }
 
-// MetricsCompareInput is the input for metrics.compare.
+// MetricsCompareInput is the input for metrics_compare.
 type MetricsCompareInput struct {
 	ProjectInput
 	MetricType   string `json:"metric_type"              jsonschema:"Full Cloud Monitoring metric type"`

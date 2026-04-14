@@ -340,7 +340,7 @@ func TestSnapshotIntegration_StableMetric(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type": "compute.googleapis.com/instance/cpu/utilization",
 	})
 	require.NoError(t, err)
@@ -377,7 +377,7 @@ func TestSnapshotIntegration_SLOBreach(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type": "compute.googleapis.com/instance/cpu/utilization",
 	})
 	require.NoError(t, err)
@@ -419,7 +419,7 @@ func TestSnapshotIntegration_LatencyPercentiles(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type": "custom.googleapis.com/api/latency",
 	})
 	require.NoError(t, err)
@@ -444,7 +444,7 @@ func TestSnapshotIntegration_NoData(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type": "compute.googleapis.com/instance/cpu/utilization",
 	})
 	require.NoError(t, err)
@@ -489,13 +489,15 @@ func TestSnapshotIntegration_DeltaDistributionAligner(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type": metricType,
 	})
 	require.NoError(t, err)
 	if result.IsError {
 		for _, c := range result.Content {
-			if tc, ok := c.(*mcp.TextContent); ok { require.Fail(t, "unexpected tool error: "+tc.Text) }
+			if tc, ok := c.(*mcp.TextContent); ok {
+				require.Fail(t, "unexpected tool error: "+tc.Text)
+			}
 		}
 		t.Fatal("unexpected tool error")
 	}
@@ -513,15 +515,15 @@ func TestSnapshotIntegration_DeltaDistributionAligner(t *testing.T) {
 			continue
 		}
 		if q.ValueType != "DISTRIBUTION" {
-   assert.Equal(t, "DISTRIBUTION", i, q.ValueType)
+			assert.Equal(t, "DISTRIBUTION", i, q.ValueType)
 		}
 		if q.MetricKind != "DELTA" {
-   assert.Equal(t, "DELTA", i, q.MetricKind)
+			assert.Equal(t, "DELTA", i, q.MetricKind)
 		}
 	}
 }
 
-// TestCompareIntegration_DeltaDistributionAligner is the metrics.compare
+// TestCompareIntegration_DeltaDistributionAligner is the metrics_compare
 // counterpart of the snapshot regression guard. compare builds baseParams
 // once and copies it twice for the A/B windows — a future refactor could
 // drop ValueType from either copy, and only a live GCP call would notice.
@@ -543,7 +545,7 @@ func TestCompareIntegration_DeltaDistributionAligner(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.compare", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_compare", map[string]any{
 		"metric_type":   metricType,
 		"window_a_from": now.Add(-2 * time.Hour).Format(time.RFC3339),
 		"window_a_to":   now.Add(-1 * time.Hour).Format(time.RFC3339),
@@ -555,7 +557,7 @@ func TestCompareIntegration_DeltaDistributionAligner(t *testing.T) {
 	assertAllQueriesDistribution(t, fq.queryLog, metricType)
 }
 
-// TestTopIntegration_DeltaDistributionAligner is the metrics.top_contributors
+// TestTopIntegration_DeltaDistributionAligner is the metrics_top_contributors
 // counterpart. top has its own grouped/reducer code path distinct from snapshot.
 func TestTopIntegration_DeltaDistributionAligner(t *testing.T) {
 	reg := loadTestRegistry(t, testRegistryYAML)
@@ -574,7 +576,7 @@ func TestTopIntegration_DeltaDistributionAligner(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.top_contributors", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_top_contributors", map[string]any{
 		"metric_type": metricType,
 		"dimension":   "metric.labels.subscription_id",
 	})
@@ -583,7 +585,7 @@ func TestTopIntegration_DeltaDistributionAligner(t *testing.T) {
 	assertAllQueriesDistribution(t, fq.queryLog, metricType)
 }
 
-// TestRelatedIntegration_DeltaDistributionAligner is the metrics.related
+// TestRelatedIntegration_DeltaDistributionAligner is the metrics_related
 // counterpart. related runs its queries inside goroutines, which is the
 // highest-risk place for a field to get dropped via closure capture.
 func TestRelatedIntegration_DeltaDistributionAligner(t *testing.T) {
@@ -620,7 +622,7 @@ func TestRelatedIntegration_DeltaDistributionAligner(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	_, err := ts.callTool(ctx, "metrics.related", map[string]any{"metric_type": primary})
+	_, err := ts.callTool(ctx, "metrics_related", map[string]any{"metric_type": primary})
 	require.NoError(t, err)
 	assertAllQueriesDistribution(t, fq.queryLog, related)
 }
@@ -653,7 +655,7 @@ func TestSnapshotIntegration_MissingMetricType(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{})
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{})
 	require.NoError(t, err)
 	expectError(t, result, "metric_type")
 }
@@ -678,7 +680,7 @@ func TestSnapshotIntegration_PreEventBaseline(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type":   "compute.googleapis.com/instance/cpu/utilization",
 		"baseline_mode": "pre_event",
 		"event_time":    eventTime,
@@ -689,7 +691,7 @@ func TestSnapshotIntegration_PreEventBaseline(t *testing.T) {
 	parseResult(t, result, &snap)
 
 	if snap.BaselineMode != "pre_event" {
-  assert.Equal(t, "pre_event", snap.BaselineMode)
+		assert.Equal(t, "pre_event", snap.BaselineMode)
 	}
 }
 
@@ -726,7 +728,7 @@ func TestSnapshotIntegration_SameWeekdayHour_AllWeeks(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type":   "compute.googleapis.com/instance/cpu/utilization",
 		"baseline_mode": "same_weekday_hour",
 	})
@@ -737,13 +739,13 @@ func TestSnapshotIntegration_SameWeekdayHour_AllWeeks(t *testing.T) {
 	parseResult(t, result, &snap)
 
 	if snap.BaselineMode != "same_weekday_hour" {
-  assert.Equal(t, "same_weekday_hour", snap.BaselineMode)
+		assert.Equal(t, "same_weekday_hour", snap.BaselineMode)
 	}
 	if !snap.BaselineReliable {
-  assert.True(t, snap.BaselineReliable)
+		assert.True(t, snap.BaselineReliable)
 	}
 	if snap.Note != "" {
-  assert.Empty(t, snap.Note)
+		assert.Empty(t, snap.Note)
 	}
 	// Expect 5 distinct query targets: the current window (0 days back)
 	// plus weeks -1..-4. Uses the race-free seriesFunc counter, not queryLog.
@@ -792,7 +794,7 @@ func TestSnapshotIntegration_SameWeekdayHour_PartialFailure(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type":   "compute.googleapis.com/instance/cpu/utilization",
 		"baseline_mode": "same_weekday_hour",
 	})
@@ -810,7 +812,7 @@ func TestSnapshotIntegration_SameWeekdayHour_PartialFailure(t *testing.T) {
 	// some weekly samples could not be fetched. This distinguishes it from a
 	// clean baseline (no note) and from all-fail (a different note pattern).
 	if !strings.Contains(snap.Note, "Baseline partial failure") {
-  assert.Contains(t, snap.Note, "partial failure warning mentioning missing weekly samples")
+		assert.Contains(t, snap.Note, "partial failure warning mentioning missing weekly samples")
 	}
 }
 
@@ -842,7 +844,7 @@ func TestSnapshotIntegration_SameWeekdayHour_AllFail(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type":   "compute.googleapis.com/instance/cpu/utilization",
 		"baseline_mode": "same_weekday_hour",
 	})
@@ -856,7 +858,7 @@ func TestSnapshotIntegration_SameWeekdayHour_AllFail(t *testing.T) {
 		t.Error("baseline_reliable = true, want false when all weekly baselines failed")
 	}
 	if snap.Note == "" || !strings.Contains(snap.Note, "Baseline query") {
-  assert.NotEmpty(t, snap.Note)
+		assert.NotEmpty(t, snap.Note)
 	}
 	// The I1 non-fatal contract: current-window stats must still be present
 	// even when every baseline query failed. A refactor that zeroed the
@@ -865,7 +867,7 @@ func TestSnapshotIntegration_SameWeekdayHour_AllFail(t *testing.T) {
 		t.Error("current = 0, want the current-window value (~0.50) from the still-successful current query")
 	}
 	if snap.DataQuality.ActualPoints == 0 {
-  assert.Greater(t, snap.DataQuality.ActualPoints, int32(0))
+		assert.Greater(t, snap.DataQuality.ActualPoints, int32(0))
 	}
 }
 
@@ -879,7 +881,7 @@ func TestSnapshotIntegration_PreEventMissingEventTime(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type":   "compute.googleapis.com/instance/cpu/utilization",
 		"baseline_mode": "pre_event",
 	})
@@ -897,7 +899,7 @@ func TestSnapshotIntegration_InvalidWindow(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type": "compute.googleapis.com/instance/cpu/utilization",
 		"window":      "99h",
 	})
@@ -905,7 +907,7 @@ func TestSnapshotIntegration_InvalidWindow(t *testing.T) {
 	expectError(t, result, "99h")
 }
 
-// --- metrics.list tests ---
+// --- metrics_list tests ---
 
 func TestListIntegration_RegistryAndAPI(t *testing.T) {
 	reg := loadTestRegistry(t, testRegistryYAML)
@@ -925,7 +927,7 @@ func TestListIntegration_RegistryAndAPI(t *testing.T) {
 	// the embedded default registry (~150 entries) would overflow the
 	// default limit of 50 and the specific assertions below would become
 	// non-deterministic due to Go map iteration order.
-	result, err := ts.callTool(ctx, "metrics.list", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_list", map[string]any{
 		"match": "compute.googleapis.com/instance",
 	})
 	require.NoError(t, err)
@@ -943,7 +945,7 @@ func TestListIntegration_RegistryAndAPI(t *testing.T) {
 		if m.MetricType == "compute.googleapis.com/instance/cpu/utilization" {
 			found = true
 			if m.Kind != "resource_utilization" {
-    assert.Equal(t, "resource_utilization", m.Kind)
+				assert.Equal(t, "resource_utilization", m.Kind)
 			}
 		}
 	}
@@ -973,7 +975,7 @@ func TestListIntegration_FilterByMatch(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.list", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_list", map[string]any{
 		"match": "cpu",
 	})
 	require.NoError(t, err)
@@ -983,7 +985,7 @@ func TestListIntegration_FilterByMatch(t *testing.T) {
 
 	for _, m := range list.Metrics {
 		if !strings.Contains(strings.ToLower(m.MetricType), "cpu") {
-   assert.Contains(t, m.MetricType, "cpu")
+			assert.Contains(t, m.MetricType, "cpu")
 		}
 	}
 }
@@ -998,7 +1000,7 @@ func TestListIntegration_FilterByKind(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.list", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_list", map[string]any{
 		"kind": "latency",
 	})
 	require.NoError(t, err)
@@ -1008,7 +1010,7 @@ func TestListIntegration_FilterByKind(t *testing.T) {
 
 	for _, m := range list.Metrics {
 		if m.Kind != "latency" {
-   assert.Equal(t, "latency", m.Kind)
+			assert.Equal(t, "latency", m.Kind)
 		}
 	}
 }
@@ -1023,7 +1025,7 @@ func TestListIntegration_InvalidKind(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.list", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_list", map[string]any{
 		"kind": "bogus",
 	})
 	require.NoError(t, err)
@@ -1047,7 +1049,7 @@ func TestListIntegration_Truncation(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.list", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_list", map[string]any{
 		"limit": 5.0,
 	})
 	require.NoError(t, err)
@@ -1056,11 +1058,11 @@ func TestListIntegration_Truncation(t *testing.T) {
 	parseResult(t, result, &list)
 
 	if list.Count > 5 {
-  assert.LessOrEqual(t, list.Count, 5)
+		assert.LessOrEqual(t, list.Count, 5)
 	}
 }
 
-// --- metrics.top_contributors tests ---
+// --- metrics_top_contributors tests ---
 
 func TestTopContributorsIntegration(t *testing.T) {
 	reg := loadTestRegistry(t, testRegistryYAML)
@@ -1085,7 +1087,7 @@ func TestTopContributorsIntegration(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.top_contributors", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_top_contributors", map[string]any{
 		"metric_type": "custom.googleapis.com/api/latency",
 		"dimension":   "metric.labels.response_code",
 	})
@@ -1095,7 +1097,7 @@ func TestTopContributorsIntegration(t *testing.T) {
 	parseResult(t, result, &top)
 
 	if top.Dimension != "metric.labels.response_code" {
-  assert.NotEmpty(t, top.Dimension)
+		assert.NotEmpty(t, top.Dimension)
 	}
 	if len(top.Contributors) == 0 {
 		t.Fatal("expected at least one contributor")
@@ -1115,7 +1117,7 @@ func TestTopContributorsIntegration_MissingDimension(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.top_contributors", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_top_contributors", map[string]any{
 		"metric_type": "custom.googleapis.com/api/latency",
 	})
 	require.NoError(t, err)
@@ -1133,7 +1135,7 @@ func TestTopContributorsIntegration_NoData(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.top_contributors", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_top_contributors", map[string]any{
 		"metric_type": "custom.googleapis.com/api/latency",
 		"dimension":   "metric.labels.route",
 	})
@@ -1151,20 +1153,20 @@ func TestTopContributorsIntegration_NoData(t *testing.T) {
 		t.Error("expected NoData=true for empty window")
 	}
 	if len(top.Contributors) != 0 {
-  assert.Empty(t, top.Contributors)
+		assert.Empty(t, top.Contributors)
 	}
 	if !strings.Contains(top.Note, "no data points") {
-  assert.NotEmpty(t, top.Note)
+		assert.NotEmpty(t, top.Note)
 	}
 	if !strings.Contains(top.Note, "dimension") {
-  assert.Contains(t, top.Note, "dimension")
+		assert.Contains(t, top.Note, "dimension")
 	}
 }
 
 // TestTopContributorsIntegration_DimensionMissingEverywhere verifies the
 // all-missing tool error branch: when NO series exposes the requested
 // dimension key, the handler returns a hard tool error pointing the caller
-// at metrics.snapshot.available_labels. A regression that fell through to
+// at metrics_snapshot.available_labels. A regression that fell through to
 // normal processing would return zero contributors silently.
 func TestTopContributorsIntegration_DimensionMissingEverywhere(t *testing.T) {
 	reg := loadTestRegistry(t, testRegistryYAML)
@@ -1186,18 +1188,18 @@ func TestTopContributorsIntegration_DimensionMissingEverywhere(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.top_contributors", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_top_contributors", map[string]any{
 		"metric_type": "custom.googleapis.com/api/latency",
 		"dimension":   "metric.labels.nonexistent_key",
 	})
 	require.NoError(t, err)
 	if !result.IsError {
-  require.False(t, result.IsError)
+		require.False(t, result.IsError)
 	}
 	msg := textFromResult(t, result)
-	for _, want := range []string{"not found in any series labels", "available_labels", "metrics.snapshot"} {
+	for _, want := range []string{"not found in any series labels", "available_labels", "metrics_snapshot"} {
 		if !strings.Contains(msg, want) {
-   assert.Contains(t, msg, want)
+			assert.Contains(t, msg, want)
 		}
 	}
 }
@@ -1233,7 +1235,7 @@ func TestTopContributorsIntegration_PartialDimensionCoverage(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.top_contributors", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_top_contributors", map[string]any{
 		"metric_type": "custom.googleapis.com/api/latency",
 		"dimension":   "metric.labels.route",
 	})
@@ -1301,7 +1303,7 @@ func TestTopContributorsIntegration_SameWeekdayHour_PartialBaselineFail(t *testi
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.top_contributors", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_top_contributors", map[string]any{
 		"metric_type":   "custom.googleapis.com/api/latency",
 		"dimension":     "metric.labels.response_code",
 		"baseline_mode": "same_weekday_hour",
@@ -1316,11 +1318,11 @@ func TestTopContributorsIntegration_SameWeekdayHour_PartialBaselineFail(t *testi
 		t.Fatal("expected at least one contributor")
 	}
 	if !strings.Contains(top.Note, "Baseline partial failure") {
-  assert.NotEmpty(t, top.Note)
+		assert.NotEmpty(t, top.Note)
 	}
 }
 
-// --- metrics.related tests ---
+// --- metrics_related tests ---
 
 func TestRelatedIntegration_FindsRelatedMetrics(t *testing.T) {
 	reg := loadTestRegistry(t, testRegistryYAML)
@@ -1342,7 +1344,7 @@ func TestRelatedIntegration_FindsRelatedMetrics(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.related", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_related", map[string]any{
 		"metric_type": "compute.googleapis.com/instance/cpu/utilization",
 	})
 	require.NoError(t, err)
@@ -1354,11 +1356,11 @@ func TestRelatedIntegration_FindsRelatedMetrics(t *testing.T) {
 		t.Fatal("expected at least one related signal")
 	}
 	if related.RelatedSignals[0].MetricType != "compute.googleapis.com/instance/memory/utilization" {
-  assert.NotEmpty(t, related.RelatedSignals[0].MetricType)
+		assert.NotEmpty(t, related.RelatedSignals[0].MetricType)
 	}
 	for _, s := range related.RelatedSignals {
 		if s.Classification == "" {
-   assert.NotEmpty(t, s.Classification)
+			assert.NotEmpty(t, s.Classification)
 		}
 	}
 }
@@ -1374,7 +1376,7 @@ func TestRelatedIntegration_NoRelatedConfigured(t *testing.T) {
 	defer ts.close()
 
 	// memory/utilization has no related_metrics in registry.
-	result, err := ts.callTool(ctx, "metrics.related", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_related", map[string]any{
 		"metric_type": "compute.googleapis.com/instance/memory/utilization",
 	})
 	require.NoError(t, err)
@@ -1399,7 +1401,7 @@ func TestRelatedIntegration_SkipsMetricWithNoData(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.related", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_related", map[string]any{
 		"metric_type": "compute.googleapis.com/instance/cpu/utilization",
 	})
 	require.NoError(t, err)
@@ -1483,7 +1485,7 @@ func TestRelatedIntegration_PartialWithRPCFailures(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.related", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_related", map[string]any{
 		"metric_type": "compute.googleapis.com/instance/cpu/utilization",
 	})
 	require.NoError(t, err)
@@ -1503,7 +1505,7 @@ func TestRelatedIntegration_PartialWithRPCFailures(t *testing.T) {
 		}
 	}
 	if !foundMemorySuccess {
-  assert.NotEmpty(t, related.RelatedSignals)
+		assert.NotEmpty(t, related.RelatedSignals)
 	}
 	foundPermDenied, foundQuota := false, false
 	for _, s := range related.Skipped {
@@ -1527,7 +1529,7 @@ func TestRelatedIntegration_PartialWithRPCFailures(t *testing.T) {
 	// so that an operator (or LLM) reading the result doesn't need to parse
 	// every Skipped entry to understand why correlation coverage is partial.
 	if !strings.Contains(related.Note, "RPC failures") {
-  assert.Contains(t, related.Note, "RPC")
+		assert.Contains(t, related.Note, "RPC")
 	}
 }
 
@@ -1549,19 +1551,19 @@ func TestRelatedIntegration_AllRPCFailures_ToolError(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.related", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_related", map[string]any{
 		"metric_type": "compute.googleapis.com/instance/cpu/utilization",
 	})
 	require.NoError(t, err)
 	if !result.IsError {
-	require.Fail(t, "expected tool error when all signals fail, got success")
+		require.Fail(t, "expected tool error when all signals fail, got success")
 	}
 	msg := textFromResult(t, result)
 	if !strings.Contains(msg, "correlation coverage is unavailable") {
-  assert.Contains(t, msg, "failed")
+		assert.Contains(t, msg, "failed")
 	}
 	if !strings.Contains(msg, "permission denied on everything") {
-  assert.NotEmpty(t, msg)
+		assert.NotEmpty(t, msg)
 	}
 }
 
@@ -1585,7 +1587,7 @@ func TestRelatedIntegration_BenignSkipsDoNotMarkPartial(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.related", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_related", map[string]any{
 		"metric_type": "compute.googleapis.com/instance/cpu/utilization",
 	})
 	require.NoError(t, err)
@@ -1631,12 +1633,12 @@ func TestRelatedIntegration_MixedBenignAndRealFailures(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.related", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_related", map[string]any{
 		"metric_type": "compute.googleapis.com/instance/cpu/utilization",
 	})
 	require.NoError(t, err)
 	if !result.IsError {
-  require.False(t, result.IsError)
+		require.False(t, result.IsError)
 	}
 	msg := textFromResult(t, result)
 	if !strings.Contains(msg, "permission denied") {
@@ -1690,7 +1692,7 @@ func TestClassifyErr(t *testing.T) {
 	}
 }
 
-// --- metrics.compare tests ---
+// --- metrics_compare tests ---
 
 func TestCompareIntegration_StableWindows(t *testing.T) {
 	reg := loadTestRegistry(t, testRegistryYAML)
@@ -1714,7 +1716,7 @@ func TestCompareIntegration_StableWindows(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.compare", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_compare", map[string]any{
 		"metric_type":    "compute.googleapis.com/instance/cpu/utilization",
 		"window_a_from":  aFrom.Format(time.RFC3339),
 		"window_a_to":    aTo.Format(time.RFC3339),
@@ -1768,7 +1770,7 @@ func TestCompareIntegration_Degradation(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.compare", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_compare", map[string]any{
 		"metric_type":   "compute.googleapis.com/instance/cpu/utilization",
 		"window_a_from": aFrom.Format(time.RFC3339),
 		"window_a_to":   bFrom.Format(time.RFC3339),
@@ -1800,7 +1802,7 @@ func TestCompareIntegration_InvalidWindowOrder(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.compare", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_compare", map[string]any{
 		"metric_type":   "compute.googleapis.com/instance/cpu/utilization",
 		"window_a_from": now.Format(time.RFC3339),
 		"window_a_to":   now.Add(-time.Hour).Format(time.RFC3339),
@@ -1822,7 +1824,7 @@ func TestCompareIntegration_MissingRequiredFields(t *testing.T) {
 	defer ts.close()
 
 	// Missing metric_type.
-	result, err := ts.callTool(ctx, "metrics.compare", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_compare", map[string]any{
 		"window_a_from": "2025-01-01T00:00:00Z",
 		"window_a_to":   "2025-01-01T01:00:00Z",
 		"window_b_from": "2025-01-01T01:00:00Z",
@@ -1832,7 +1834,7 @@ func TestCompareIntegration_MissingRequiredFields(t *testing.T) {
 	expectError(t, result, "metric_type")
 
 	// Missing window_a_from.
-	result, err = ts.callTool(ctx, "metrics.compare", map[string]any{
+	result, err = ts.callTool(ctx, "metrics_compare", map[string]any{
 		"metric_type":   "compute.googleapis.com/instance/cpu/utilization",
 		"window_a_to":   "2025-01-01T01:00:00Z",
 		"window_b_from": "2025-01-01T01:00:00Z",
@@ -1873,7 +1875,7 @@ func TestCompareIntegration_NoDataPartial(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.compare", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_compare", map[string]any{
 		"metric_type":    "compute.googleapis.com/instance/cpu/utilization",
 		"window_a_from":  aFrom.Format(time.RFC3339),
 		"window_a_to":    aTo.Format(time.RFC3339),
@@ -1937,7 +1939,7 @@ func TestCompareIntegration_NoDataPartial_Disappeared(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.compare", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_compare", map[string]any{
 		"metric_type":    "compute.googleapis.com/instance/cpu/utilization",
 		"window_a_from":  aFrom.Format(time.RFC3339),
 		"window_a_to":    bFrom.Format(time.RFC3339),
@@ -1997,7 +1999,7 @@ func TestCompareIntegration_NoDataBothWindows(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.compare", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_compare", map[string]any{
 		"metric_type":   "compute.googleapis.com/instance/cpu/utilization",
 		"window_a_from": aFrom.Format(time.RFC3339),
 		"window_a_to":   aTo.Format(time.RFC3339),
@@ -2030,7 +2032,7 @@ func TestSnapshotIntegration_UsesDefaultProject(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type": "compute.googleapis.com/instance/cpu/utilization",
 	})
 	require.NoError(t, err)
@@ -2062,7 +2064,7 @@ func TestSnapshotIntegration_OverridesProject(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type": "compute.googleapis.com/instance/cpu/utilization",
 		"project_id":  "override-proj",
 	})
@@ -2092,7 +2094,7 @@ func TestSnapshotIntegration_MetricKindError(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type": "compute.googleapis.com/instance/cpu/utilization",
 	})
 	require.NoError(t, err)
@@ -2111,7 +2113,7 @@ func TestSnapshotIntegration_QueryError(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type": "compute.googleapis.com/instance/cpu/utilization",
 	})
 	require.NoError(t, err)
@@ -2129,7 +2131,7 @@ func TestListIntegration_APIError(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.list", map[string]any{})
+	result, err := ts.callTool(ctx, "metrics_list", map[string]any{})
 	require.NoError(t, err)
 	expectError(t, result, "Failed to list metrics")
 }
@@ -2154,7 +2156,7 @@ func TestSnapshotIntegration_AutoDetectedMetric(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type": "custom.googleapis.com/myapp/request_count",
 	})
 	require.NoError(t, err)
@@ -2195,7 +2197,7 @@ func TestSnapshotRegistryMisconfigError(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type": metricType,
 	})
 	require.NoError(t, err)
@@ -2235,7 +2237,7 @@ func TestCompareRegistryMisconfigError(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.compare", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_compare", map[string]any{
 		"metric_type":   metricType,
 		"window_a_from": aFrom,
 		"window_a_to":   aTo,
@@ -2251,7 +2253,7 @@ func TestCompareRegistryMisconfigError(t *testing.T) {
 }
 
 func TestRelatedRegistryMisconfigError(t *testing.T) {
-	// metrics.related catches an invalid AggregationSpec in the pre-flight
+	// metrics_related catches an invalid AggregationSpec in the pre-flight
 	// Validate() guard inside each per-signal goroutine. The signal is skipped
 	// (logged at Error level) rather than causing a direct tool error. When
 	// ALL signals are skipped via pre-flight misconfig, the all-failed branch
@@ -2288,7 +2290,7 @@ func TestRelatedRegistryMisconfigError(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.related", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_related", map[string]any{
 		"metric_type": primaryMetric,
 	})
 	require.NoError(t, err)
@@ -2326,7 +2328,7 @@ func TestSnapshotUnsupportedPointsNonFatal(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type": "compute.googleapis.com/instance/cpu/utilization",
 	})
 	require.NoError(t, err)
@@ -2339,7 +2341,7 @@ func TestSnapshotUnsupportedPointsNonFatal(t *testing.T) {
 		assert.NotEmpty(t, snap.MetricType)
 	}
 	if !strings.Contains(snap.Note, "Dropped") {
-  assert.Contains(t, snap.Note, "it to mention dropped unsupported points")
+		assert.Contains(t, snap.Note, "it to mention dropped unsupported points")
 	}
 }
 
@@ -2347,7 +2349,7 @@ func TestTopRegistryMisconfigError(t *testing.T) {
 	// Inject a metric with an invalid AggregationSpec (group_by set but
 	// within_group missing) directly into the registry, bypassing load-time
 	// validation, to exercise the pre-flight aggSpec.Validate() guard in
-	// metrics.top_contributors before any GCP query is issued.
+	// metrics_top_contributors before any GCP query is issued.
 	metricType := "custom.googleapis.com/test/bad_agg"
 	reg := metrics.NewRegistryFromMetaMap(map[string]metrics.MetricMeta{
 		metricType: {
@@ -2369,7 +2371,7 @@ func TestTopRegistryMisconfigError(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.top_contributors", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_top_contributors", map[string]any{
 		"metric_type": metricType,
 		"dimension":   "metric.labels.game_id",
 	})
@@ -2400,7 +2402,7 @@ func TestTopUnsupportedPointsNonFatal(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.top_contributors", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_top_contributors", map[string]any{
 		"metric_type": metricType,
 		"dimension":   "metric.labels.instance_id",
 	})
@@ -2439,7 +2441,7 @@ func TestCompareUnsupportedPointsNonFatal(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.compare", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_compare", map[string]any{
 		"metric_type":   metricType,
 		"window_a_from": aFrom,
 		"window_a_to":   aTo,
@@ -2478,7 +2480,7 @@ func TestRelatedUnsupportedPointsNonFatal(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.related", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_related", map[string]any{
 		"metric_type": primaryMetric,
 	})
 	require.NoError(t, err)
@@ -2507,7 +2509,7 @@ func TestSnapshotTruncationWarningSurfacedInNote(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type": metricType,
 	})
 	require.NoError(t, err)
@@ -2540,7 +2542,7 @@ func TestSnapshotBaselineTruncationWarningSurfacedInNote(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type": metricType,
 	})
 	require.NoError(t, err)
@@ -2572,7 +2574,7 @@ func TestCompareTruncationWarningSurfacedInNote(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.compare", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_compare", map[string]any{
 		"metric_type":   metricType,
 		"window_a_from": now.Add(-2 * time.Hour).Format(time.RFC3339),
 		"window_a_to":   now.Add(-1 * time.Hour).Format(time.RFC3339),
@@ -2606,7 +2608,7 @@ func TestRelatedTruncationWarningSetsPartialAndNote(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.related", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_related", map[string]any{
 		"metric_type": primaryMetric,
 	})
 	require.NoError(t, err)
@@ -2625,4 +2627,3 @@ type testError struct{ msg string }
 func (e testError) Error() string { return e.msg }
 
 func errForTest(msg string) error { return testError{msg: msg} }
-

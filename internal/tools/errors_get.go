@@ -13,9 +13,9 @@ import (
 func RegisterErrorsGet(s *mcp.Server, client *gcpclient.Client) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "errors.get",
+		Name: "errors_get",
 		Description: "Get details for a specific error group, including individual error events, reported stack traces/messages, and structured context when available. " +
-			"Requires a group_id from errors.list results. " +
+			"Requires a group_id from errors_list results. " +
 			"Returns all recent events for the group (time filtering is not supported for individual error events).",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
@@ -36,8 +36,8 @@ func RegisterErrorsGet(s *mcp.Server, client *gcpclient.Client) {
 
 		result, err := gcpdata.GetErrorGroup(ctx, client.ErrorsClient(), project, in.GroupID, limit, in.PageToken)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "errors.get", fmt.Sprintf("get error group %s failed: %v", in.GroupID, err))
-			return errResult(fmt.Sprintf("Failed to get error group: %v. Verify the group_id is valid — use errors.list to find available group IDs.", err)), nil, nil
+			mcpLog(ctx, req, logLevelError, "errors_get", fmt.Sprintf("get error group %s failed: %v", in.GroupID, err))
+			return errResult(fmt.Sprintf("Failed to get error group: %v. Verify the group_id is valid — use errors_list to find available group IDs.", err)), nil, nil
 		}
 
 		return nil, result, nil

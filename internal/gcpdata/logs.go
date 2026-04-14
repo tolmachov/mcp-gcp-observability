@@ -351,7 +351,7 @@ func ListServices(ctx context.Context, client *logging.Client, project, timeFilt
 	}
 	if scanned >= maxServicesScan {
 		result.Truncated = true
-		result.TruncationHint = fmt.Sprintf("Service list is based on %d sampled log entries and may be incomplete. Use logs.query with a specific resource.type filter to find services not listed here.", maxServicesScan)
+		result.TruncationHint = fmt.Sprintf("Service list is based on %d sampled log entries and may be incomplete. Use logs_query with a specific resource.type filter to find services not listed here.", maxServicesScan)
 	}
 	return result, nil
 }
@@ -432,7 +432,7 @@ func SummarizeLogs(ctx context.Context, client *logging.Client, project, filter 
 		Truncated:            truncated,
 	}
 	if truncated {
-		summary.TruncationHint = fmt.Sprintf("Results are based on %d sampled entries. Narrow the time range or add a filter for a more complete picture. Use logs.query for full results with pagination.", maxScan)
+		summary.TruncationHint = fmt.Sprintf("Results are based on %d sampled entries. Narrow the time range or add a filter for a more complete picture. Use logs_query for full results with pagination.", maxScan)
 	}
 
 	return summary, nil

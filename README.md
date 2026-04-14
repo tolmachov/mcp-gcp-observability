@@ -103,77 +103,77 @@ make build
 
 | Tool | Description |
 |------|-------------|
-| `logs.query` | Execute arbitrary Cloud Logging queries with filter syntax |
-| `logs.k8s` | Query Kubernetes container logs with convenient filters |
-| `logs.by_trace` | Find all logs associated with a trace ID |
-| `logs.by_request_id` | Find all logs associated with a request ID |
-| `logs.find_requests` | Discover HTTP requests by URL pattern, returns trace/request IDs |
-| `logs.services` | Discover available services and resources in the project |
-| `logs.summary` | Aggregated log statistics: severity distribution, top services, top errors |
+| `logs_query` | Execute arbitrary Cloud Logging queries with filter syntax |
+| `logs_k8s` | Query Kubernetes container logs with convenient filters |
+| `logs_by_trace` | Find all logs associated with a trace ID |
+| `logs_by_request_id` | Find all logs associated with a request ID |
+| `logs_find_requests` | Discover HTTP requests by URL pattern, returns trace/request IDs |
+| `logs_services` | Discover available services and resources in the project |
+| `logs_summary` | Aggregated log statistics: severity distribution, top services, top errors |
 
 ### Error Reporting
 
 | Tool | Description |
 |------|-------------|
-| `errors.list` | List error groups sorted by count |
-| `errors.get` | Get error group details with individual events and stack traces |
+| `errors_list` | List error groups sorted by count |
+| `errors_get` | Get error group details with individual events and stack traces |
 
 ### Tracing
 
 | Tool | Description |
 |------|-------------|
-| `trace.list` | Search traces by span name, latency, or time range |
-| `trace.get` | Get trace details with complete span tree by trace ID |
+| `trace_list` | Search traces by span name, latency, or time range |
+| `trace_get` | Get trace details with complete span tree by trace ID |
 
 ### Metrics
 
 | Tool | Description |
 |------|-------------|
-| `metrics.list` | Discover available metrics from Cloud Monitoring |
-| `metrics.snapshot` | Semantic snapshot with baseline comparison, trend detection, and anomaly classification |
-| `metrics.top_contributors` | Break down metric by label dimension to find top contributors to an anomaly |
-| `metrics.related` | Check all related metrics for correlated anomalies |
-| `metrics.compare` | Compare two arbitrary time windows (before/after deploy, incident diff) |
+| `metrics_list` | Discover available metrics from Cloud Monitoring |
+| `metrics_snapshot` | Semantic snapshot with baseline comparison, trend detection, and anomaly classification |
+| `metrics_top_contributors` | Break down metric by label dimension to find top contributors to an anomaly |
+| `metrics_related` | Check all related metrics for correlated anomalies |
+| `metrics_compare` | Compare two arbitrary time windows (before/after deploy, incident diff) |
 
 ### Profiling
 
 | Tool | Description |
 |------|-------------|
-| `profiler.list` | List available Cloud Profiler profiles with metadata |
-| `profiler.top` | Show top functions ranked by resource consumption (pprof top) |
-| `profiler.peek` | Show callers and callees of a specific function (pprof peek) |
-| `profiler.flamegraph` | Get bounded subtree of the call graph (flamegraph view) |
-| `profiler.compare` | Compare two profiles to find regressions; returns diff_id |
-| `profiler.trends` | Track how function costs change over time across multiple profiles |
+| `profiler_list` | List available Cloud Profiler profiles with metadata |
+| `profiler_top` | Show top functions ranked by resource consumption (pprof top) |
+| `profiler_peek` | Show callers and callees of a specific function (pprof peek) |
+| `profiler_flamegraph` | Get bounded subtree of the call graph (flamegraph view) |
+| `profiler_compare` | Compare two profiles to find regressions; returns diff_id |
+| `profiler_trends` | Track how function costs change over time across multiple profiles |
 
 ## Recommended Workflow
 
 ### Logs & Errors
 
-1. `logs.services` — discover available services
-2. `logs.summary` — get severity distribution, top errors, top services
-3. `errors.list` — list error groups sorted by count
-4. `logs.query` or `logs.k8s` — investigate specific logs with filters
-5. `logs.by_trace` — follow a single request across services
-6. `trace.list` — search traces by span name, latency, or time range
-7. `trace.get` — get detailed span tree for latency analysis
+1. `logs_services` — discover available services
+2. `logs_summary` — get severity distribution, top errors, top services
+3. `errors_list` — list error groups sorted by count
+4. `logs_query` or `logs_k8s` — investigate specific logs with filters
+5. `logs_by_trace` — follow a single request across services
+6. `trace_list` — search traces by span name, latency, or time range
+7. `trace_get` — get detailed span tree for latency analysis
 
 ### Metrics
 
-1. `metrics.list` — discover available metrics, filter by kind
-2. `metrics.snapshot` — get semantic snapshot with baseline comparison
-3. `metrics.top_contributors` — drill down by dimension to find root cause
-4. `metrics.related` — check correlated metrics for broader context
-5. `metrics.compare` — compare before/after windows for deploy or incident analysis
+1. `metrics_list` — discover available metrics, filter by kind
+2. `metrics_snapshot` — get semantic snapshot with baseline comparison
+3. `metrics_top_contributors` — drill down by dimension to find root cause
+4. `metrics_related` — check correlated metrics for broader context
+5. `metrics_compare` — compare before/after windows for deploy or incident analysis
 
 ### Profiling Analysis
 
-1. `profiler.list` — discover available profiles
-2. `profiler.top` — find top functions by resource consumption
-3. `profiler.peek` — understand a hotspot's callers and callees
-4. `profiler.flamegraph` — view bounded subtree of the call graph
-5. `profiler.compare` — A/B comparison (use diff_id with top/peek/flamegraph)
-6. `profiler.trends` — track how function costs change over time across multiple profiles
+1. `profiler_list` — discover available profiles
+2. `profiler_top` — find top functions by resource consumption
+3. `profiler_peek` — understand a hotspot's callers and callees
+4. `profiler_flamegraph` — view bounded subtree of the call graph
+5. `profiler_compare` — A/B comparison (use diff_id with top/peek/flamegraph)
+6. `profiler_trends` — track how function costs change over time across multiple profiles
 
 ## Built-in Prompts
 

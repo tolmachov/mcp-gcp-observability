@@ -13,11 +13,11 @@ import (
 func RegisterLogsQuery(s *mcp.Server, client *gcpclient.Client) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "logs.query",
+		Name: "logs_query",
 		Description: "Execute an arbitrary Cloud Logging query with full filter syntax. " +
 			"Use Cloud Logging filter language (e.g. severity>=ERROR, resource.type=\"k8s_container\"). " +
-			"For Kubernetes logs, prefer logs.k8s which builds filters automatically. " +
-			"For initial triage, use logs.summary instead.",
+			"For Kubernetes logs, prefer logs_k8s which builds filters automatically. " +
+			"For initial triage, use logs_summary instead.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),
@@ -53,7 +53,7 @@ func RegisterLogsQuery(s *mcp.Server, client *gcpclient.Client) {
 
 		result, err := gcpdata.QueryLogs(ctx, client.LoggingClient(), project, filter, limit, order, in.PageToken)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "logs.query", fmt.Sprintf("query failed for project %s: %v", project, err))
+			mcpLog(ctx, req, logLevelError, "logs_query", fmt.Sprintf("query failed for project %s: %v", project, err))
 			return errResult(fmt.Sprintf("Failed to query logs: %v. Verify the project_id and filter syntax.", err)), nil, nil
 		}
 

@@ -79,7 +79,7 @@ func TestLabelValueFromSeries_MetadataNamespaces(t *testing.T) {
 }
 
 // TestTopContributorsReducerFromRegistry locks the cache_hit_ratio
-// regression fix: metrics.top_contributors must drive the cross-series
+// regression fix: metrics_top_contributors must drive the cross-series
 // reducer from the registry's resolved AggregationSpec, not from kind
 // alone. A regression that hardcoded REDUCE_MEAN or reverted to the
 // kind-based heuristic would silently change per-contributor numbers
@@ -128,7 +128,7 @@ func TestTopContributorsReducerFromRegistry(t *testing.T) {
 			tts.connect(ctx)
 			defer tts.close()
 
-			_, err := tts.callTool(ctx, "metrics.top_contributors", map[string]any{
+			_, err := tts.callTool(ctx, "metrics_top_contributors", map[string]any{
 				"metric_type": tc.metricType,
 				"dimension":   "metric.labels.response_code",
 				"window":      "15m",
@@ -170,7 +170,7 @@ func TestTopContributorsTwoStageDoesNotCrash(t *testing.T) {
 	tts.connect(ctx)
 	defer tts.close()
 
-	result, err := tts.callTool(ctx, "metrics.top_contributors", map[string]any{
+	result, err := tts.callTool(ctx, "metrics_top_contributors", map[string]any{
 		"metric_type": metricType,
 		"dimension":   "metric.labels.game_id",
 		"window":      "15m",
@@ -215,7 +215,7 @@ func TestTopContributorsTruncationSentinelDoesNotMasqueradeAsMissingDimension(t 
 	tts.connect(ctx)
 	defer tts.close()
 
-	result, err := tts.callTool(ctx, "metrics.top_contributors", map[string]any{
+	result, err := tts.callTool(ctx, "metrics_top_contributors", map[string]any{
 		"metric_type": metricType,
 		"dimension":   "metric.labels.response_code",
 		"window":      "15m",
@@ -249,7 +249,7 @@ func TestTopContributorsRequiresQualifiedDimension(t *testing.T) {
 	tts.connect(ctx)
 	defer tts.close()
 
-	result, err := tts.callTool(ctx, "metrics.top_contributors", map[string]any{
+	result, err := tts.callTool(ctx, "metrics_top_contributors", map[string]any{
 		"metric_type": metricType,
 		"dimension":   "response_code",
 		"window":      "15m",

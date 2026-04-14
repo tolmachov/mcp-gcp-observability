@@ -13,11 +13,11 @@ import (
 func RegisterLogsServices(s *mcp.Server, client *gcpclient.Client) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "logs.services",
+		Name: "logs_services",
 		Description: "List available services and resources in the project by scanning recent logs. " +
 			"Discovers Kubernetes containers, Cloud Run, Cloud Functions, App Engine, and Compute Engine instances. " +
 			"Useful as a first step to discover services before querying their logs. " +
-			"Returns service names you can use as filters in logs.k8s or logs.query.",
+			"Returns service names you can use as filters in logs_k8s or logs_query.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),
@@ -38,7 +38,7 @@ func RegisterLogsServices(s *mcp.Server, client *gcpclient.Client) {
 
 		result, err := gcpdata.ListServices(ctx, client.LoggingClient(), project, timeFilter)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "logs.services", fmt.Sprintf("list services failed for project %s: %v", project, err))
+			mcpLog(ctx, req, logLevelError, "logs_services", fmt.Sprintf("list services failed for project %s: %v", project, err))
 			return errResult(fmt.Sprintf("Failed to list services: %v. Verify the project_id and that Cloud Logging API is enabled.", err)), nil, nil
 		}
 

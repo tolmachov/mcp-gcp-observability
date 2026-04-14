@@ -13,7 +13,7 @@ import (
 )
 
 // TestSnapshotAggregationResolve exercises the end-to-end path where
-// metrics.snapshot resolves an AggregationSpec from registry metadata and
+// metrics_snapshot resolves an AggregationSpec from registry metadata and
 // passes it to QueryTimeSeriesAggregated. The fake querier records the
 // spec received and returns fabricated points so the snapshot handler
 // produces a deterministic MetricSnapshotResult.
@@ -155,7 +155,7 @@ func testSnapshotPreEventSpecThreading(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type":   metricType,
 		"project_id":    "test-project",
 		"window":        "15m",
@@ -194,7 +194,7 @@ func testSnapshotSameWeekdayHourSpecThreading(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type":   metricType,
 		"project_id":    "test-project",
 		"window":        "15m",
@@ -259,7 +259,7 @@ func runAggregationSnapshot(t *testing.T, fq *fakeQuerier, registry *metrics.Reg
 	ts.connect(ctx)
 	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics.snapshot", map[string]any{
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type":   metricType,
 		"project_id":    "test-project",
 		"window":        "15m",

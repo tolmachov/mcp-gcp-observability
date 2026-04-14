@@ -14,10 +14,10 @@ import (
 func RegisterLogsK8s(s *mcp.Server, client *gcpclient.Client) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "logs.k8s",
+		Name: "logs_k8s",
 		Description: "Query Kubernetes container logs with convenient filters. " +
 			"Automatically builds Cloud Logging filter for resource.type=\"k8s_container\". " +
-			"Preferred over logs.query for K8s workloads. Results default to newest-first (use order parameter to change).",
+			"Preferred over logs_query for K8s workloads. Results default to newest-first (use order parameter to change).",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),
@@ -78,7 +78,7 @@ func RegisterLogsK8s(s *mcp.Server, client *gcpclient.Client) {
 
 		result, err := gcpdata.QueryLogs(ctx, client.LoggingClient(), project, filter, limit, order, in.PageToken)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "logs.k8s", fmt.Sprintf("query failed for project %s: %v", project, err))
+			mcpLog(ctx, req, logLevelError, "logs_k8s", fmt.Sprintf("query failed for project %s: %v", project, err))
 			return errResult(fmt.Sprintf("Failed to query K8s logs: %v. Verify the project_id and that K8s logging is enabled.", err)), nil, nil
 		}
 

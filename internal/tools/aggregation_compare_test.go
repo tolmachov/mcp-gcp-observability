@@ -12,7 +12,7 @@ import (
 )
 
 // TestCompareAggregationResolve mirrors TestSnapshotAggregationResolve for
-// the metrics.compare tool. The critical regression to guard against is
+// the metrics_compare tool. The critical regression to guard against is
 // metrics_compare.go forgetting to thread the resolved AggregationSpec
 // through to QueryTimeSeriesAggregated — which would silently fall back
 // to averaging and make the A vs B delta meaningless.
@@ -74,7 +74,7 @@ func runAggregationCompare(t *testing.T, fq *fakeQuerier, registry *metrics.Regi
 	windowAEnd := now.Add(-time.Hour)
 	windowB := now.Add(-time.Hour)
 	windowBEnd := now
-	_, err := ts.callTool(ctx, "metrics.compare", map[string]any{
+	_, err := ts.callTool(ctx, "metrics_compare", map[string]any{
 		"metric_type":   metricType,
 		"project_id":    "test-project",
 		"window_a_from": windowA.Format(time.RFC3339),

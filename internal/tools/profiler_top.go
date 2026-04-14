@@ -13,11 +13,11 @@ import (
 func RegisterProfilerTop(s *mcp.Server, client *gcpclient.Client, cache *gcpdata.ProfileCache) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "profiler.top",
+		Name: "profiler_top",
 		Description: "Show top functions from a profile ranked by resource consumption (like pprof top). " +
 			"Returns a flat ranking of functions by self or cumulative cost. " +
-			"Use profile_id from profiler.list results, or diff_id from profiler.compare. " +
-			"Start here to identify hotspots, then use profiler.peek for caller/callee context. " +
+			"Use profile_id from profiler_list results, or diff_id from profiler_compare. " +
+			"Start here to identify hotspots, then use profiler_peek for caller/callee context. " +
 			"For multi-value profiles (e.g. HEAP with alloc_space and alloc_objects), check available_values in the response.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
@@ -45,7 +45,7 @@ func RegisterProfilerTop(s *mcp.Server, client *gcpclient.Client, cache *gcpdata
 
 		p, meta, err := gcpdata.GetOrFetchProfile(ctx, client.ProfilerService(), cache, project, in.ProfileID)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "profiler.top", fmt.Sprintf("fetch profile failed: %v", err))
+			mcpLog(ctx, req, logLevelError, "profiler_top", fmt.Sprintf("fetch profile failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to fetch profile: %v", err)), nil, nil
 		}
 
@@ -59,7 +59,7 @@ func RegisterProfilerTop(s *mcp.Server, client *gcpclient.Client, cache *gcpdata
 
 		topFuncs, total, truncated, err := gcpdata.TopFunctions(p, in.ValueIndex, limit, in.SortBy, in.Filter)
 		if err != nil {
-			mcpLog(ctx, req, logLevelWarning, "profiler.top", fmt.Sprintf("analysis failed: %v", err))
+			mcpLog(ctx, req, logLevelWarning, "profiler_top", fmt.Sprintf("analysis failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to analyze profile: %v", err)), nil, nil
 		}
 

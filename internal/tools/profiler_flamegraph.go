@@ -48,12 +48,12 @@ var flamegraphSchema = &jsonschema.Schema{
 func RegisterProfilerFlamegraph(s *mcp.Server, client *gcpclient.Client, cache *gcpdata.ProfileCache) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "profiler.flamegraph",
+		Name: "profiler_flamegraph",
 		Description: "Get a bounded subtree of the profile call tree (like a flamegraph view). " +
 			"Returns a tree of function calls pruned by max_depth and min_pct. " +
 			"Use root_function to focus on a specific subtree (omit for full profile). " +
-			"Use profiler.top first to identify interesting functions, then drill down here. " +
-			"Works with both regular profile_id and diff_id from profiler.compare.",
+			"Use profiler_top first to identify interesting functions, then drill down here. " +
+			"Works with both regular profile_id and diff_id from profiler_compare.",
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),
@@ -89,7 +89,7 @@ func RegisterProfilerFlamegraph(s *mcp.Server, client *gcpclient.Client, cache *
 
 		p, meta, err := gcpdata.GetOrFetchProfile(ctx, client.ProfilerService(), cache, project, in.ProfileID)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "profiler.flamegraph", fmt.Sprintf("fetch profile failed: %v", err))
+			mcpLog(ctx, req, logLevelError, "profiler_flamegraph", fmt.Sprintf("fetch profile failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to fetch profile: %v", err)), nil, nil
 		}
 
@@ -103,7 +103,7 @@ func RegisterProfilerFlamegraph(s *mcp.Server, client *gcpclient.Client, cache *
 
 		root, total, pruned, err := gcpdata.Flamegraph(p, in.RootFunction, in.ValueIndex, maxDepth, minPct)
 		if err != nil {
-			mcpLog(ctx, req, logLevelWarning, "profiler.flamegraph", fmt.Sprintf("analysis failed: %v", err))
+			mcpLog(ctx, req, logLevelWarning, "profiler_flamegraph", fmt.Sprintf("analysis failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to build flamegraph: %v", err)), nil, nil
 		}
 

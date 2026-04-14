@@ -61,7 +61,7 @@ Target project (initial scope):
 
 ---
 
-## 4.1 `logs.query`
+## 4.1 `logs_query`
 
 Execute arbitrary Cloud Logging queries.
 
@@ -103,7 +103,7 @@ Input
 
 ⸻
 
-4.3 logs.k8s
+4.3 logs_k8s
 
 Kubernetes-aware logs query.
 
@@ -122,13 +122,13 @@ Input
 
 ⸻
 
-4.4 logs.by_trace
+4.4 logs_by_trace
 
 Find logs by trace ID.
 
 ⸻
 
-4.5 logs.summary
+4.5 logs_summary
 
 Return aggregated insights:
 	•	severity distribution
@@ -162,7 +162,7 @@ Use:
 
 ⸻
 
-5.3 MCP Tool: errors.list
+5.3 MCP Tool: errors_list
 
 Purpose
 
@@ -209,7 +209,7 @@ Output
 
 ⸻
 
-5.4 MCP Tool: errors.get
+5.4 MCP Tool: errors_get
 
 Purpose
 
@@ -249,7 +249,7 @@ Output
 
 ⸻
 
-5.5 MCP Tool: errors.summary
+5.5 MCP Tool: errors_summary
 
 Purpose
 
@@ -284,7 +284,7 @@ Case 1
 
 “Show top errors in last 24h”
 
-→ errors.list
+→ errors_list
 
 ⸻
 
@@ -292,7 +292,7 @@ Case 2
 
 “Why is payment-service failing?”
 
-→ errors.summary + errors.get
+→ errors_summary + errors_get
 
 ⸻
 
@@ -300,7 +300,7 @@ Case 3
 
 “Show stack traces for this error”
 
-→ errors.get
+→ errors_get
 
 ⸻
 
@@ -380,16 +380,16 @@ ERRORS_MAX_LIMIT=100
 10. Implementation Phases
 
 Phase 1
-	•	logs.query
-	•	errors.list
+	•	logs_query
+	•	errors_list
 
 Phase 2
-	•	logs.k8s
-	•	errors.get
+	•	logs_k8s
+	•	errors_get
 
 Phase 3
-	•	logs.summary
-	•	errors.summary
+	•	logs_summary
+	•	errors_summary
 
 ⸻
 

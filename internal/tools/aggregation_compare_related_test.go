@@ -11,7 +11,7 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
 
-// TestCompareSameSpecBothWindows guards the core invariant of metrics.compare:
+// TestCompareSameSpecBothWindows guards the core invariant of metrics_compare:
 // both A and B windows MUST be queried with the SAME AggregationSpec, or the
 // delta between them becomes meaningless (e.g. sum vs mean). A future
 // refactor that re-resolves per window would silently ship without this
@@ -31,7 +31,7 @@ func TestCompareSameSpecBothWindows(t *testing.T) {
 	defer ts.close()
 
 	now := time.Now().UTC()
-	_, err := ts.callTool(ctx, "metrics.compare", map[string]any{
+	_, err := ts.callTool(ctx, "metrics_compare", map[string]any{
 		"metric_type":   metricType,
 		"window_a_from": now.Add(-2 * time.Hour).Format(time.RFC3339),
 		"window_a_to":   now.Add(-1 * time.Hour).Format(time.RFC3339),
@@ -50,7 +50,7 @@ func TestCompareSameSpecBothWindows(t *testing.T) {
 	assert.True(t, first.IsTwoStage() && first.WithinGroup == metrics.ReducerMax && first.AcrossGroups == metrics.ReducerSum, "resolved spec should be two-stage max/sum")
 }
 
-// TestRelatedPerMetricSpecResolution guards that metrics.related resolves an
+// TestRelatedPerMetricSpecResolution guards that metrics_related resolves an
 // AggregationSpec per related metric (not a shared strategy). A latency
 // histogram (→ mean by default) next to a business_kpi counter (→ sum by
 // default) should produce BOTH reducers in aggregatedSpecs. Requiring both
@@ -95,7 +95,7 @@ func TestRelatedPerMetricSpecResolution(t *testing.T) {
 	ts.connect(ctx)
 	defer ts.close()
 
-	_, err := ts.callTool(ctx, "metrics.related", map[string]any{
+	_, err := ts.callTool(ctx, "metrics_related", map[string]any{
 		"metric_type": primary,
 	})
 	require.NoError(t, err, "callTool")
