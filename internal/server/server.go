@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -39,6 +38,7 @@ type Server struct {
 	mcpServer *mcp.Server
 	completer *promptCompleter
 	cfg       *gcpclient.Config
+	logger    *slog.Logger
 	stdin     io.Reader
 	stdout    io.Writer
 	errOut    io.Writer
@@ -95,8 +95,7 @@ func New(cfg *gcpclient.Config, version string, stdin io.Reader, stdout, errOut 
 			defer func() {
 				if r := recover(); r != nil {
 					stack := debug.Stack()
-					log.New(errOut, "[mcp-gcp-observability] ", log.LstdFlags).
-						Printf("panic in handler for %s: %v\n%s", method, r, stack)
+					logger.Error("panic in handler", "method", method, "panic", r, "stack", string(stack))
 					err = fmt.Errorf("internal server error: panic in handler for %s: %v", method, r)
 				}
 			}()
@@ -105,12 +104,13 @@ func New(cfg *gcpclient.Config, version string, stdin io.Reader, stdout, errOut 
 	}
 	mcpServer.AddReceivingMiddleware(panicRecovery)
 
-	tools.SetNotifyLogger(log.New(errOut, "[mcp-gcp-observability] ", log.LstdFlags))
+	tools.SetNotifyLogger(logger)
 
 	return &Server{
 		mcpServer: mcpServer,
 		completer: completer,
 		cfg:       cfg,
+		logger:    logger,
 		stdin:     stdin,
 		stdout:    stdout,
 		errOut:    errOut,
@@ -125,8 +125,7 @@ func (s *Server) Run(ctx context.Context, transport Transport, httpAddr string) 
 	}
 	defer func() {
 		if closeErr := client.Close(); closeErr != nil {
-			log.New(s.errOut, "[mcp-gcp-observability] ", log.LstdFlags).
-				Printf("warning: failed to close GCP client: %v", closeErr)
+			s.logger.Warn("failed to close GCP client", "err", closeErr)
 		}
 	}()
 
@@ -135,18 +134,15 @@ func (s *Server) Run(ctx context.Context, transport Transport, httpAddr string) 
 	if registryPath == "" {
 		cwd, cwdErr := os.Getwd()
 		if cwdErr != nil {
-			log.New(s.errOut, "[mcp-gcp-observability] ", log.LstdFlags).
-				Printf("warning: could not determine working directory for registry auto-probe: %v", cwdErr)
+			s.logger.Warn("could not determine working directory for registry auto-probe", "err", cwdErr)
 		} else {
 			candidate := filepath.Join(cwd, ".mcp", "metrics_registry.yaml")
 			_, statErr := os.Stat(candidate)
 			if statErr == nil {
 				registryPath = candidate
-				log.New(s.errOut, "[mcp-gcp-observability] ", log.LstdFlags).
-					Printf("auto-loaded metrics registry overlay: %s", candidate)
+				s.logger.Info("auto-loaded metrics registry overlay", "path", candidate)
 			} else if !errors.Is(statErr, fs.ErrNotExist) {
-				log.New(s.errOut, "[mcp-gcp-observability] ", log.LstdFlags).
-					Printf("warning: could not stat registry candidate %s: %v (skipping auto-probe)", candidate, statErr)
+				s.logger.Warn("could not stat registry candidate, skipping auto-probe", "path", candidate, "err", statErr)
 			}
 		}
 	}
@@ -194,13 +190,11 @@ func (s *Server) Run(ctx context.Context, transport Transport, httpAddr string) 
 	}
 	s.registerPrompts()
 
-	errLogger := log.New(s.errOut, "[mcp-gcp-observability] ", log.LstdFlags)
-
 	switch transport {
 	case TransportHTTP:
-		return s.runHTTP(ctx, httpAddr, errLogger)
+		return s.runHTTP(ctx, httpAddr)
 	case TransportStdio, "":
-		return s.runStdio(ctx, errLogger)
+		return s.runStdio(ctx)
 	default:
 		return fmt.Errorf("unsupported transport %q: must be %q or %q", transport, TransportStdio, TransportHTTP)
 	}
@@ -211,8 +205,8 @@ type nopWriteCloser struct{ io.Writer }
 
 func (nopWriteCloser) Close() error { return nil }
 
-func (s *Server) runStdio(ctx context.Context, errLogger *log.Logger) error {
-	errLogger.Printf("Starting stdio server")
+func (s *Server) runStdio(ctx context.Context) error {
+	s.logger.Info("Starting stdio server")
 	if err := s.mcpServer.Run(ctx, &mcp.IOTransport{
 		Reader: io.NopCloser(s.stdin),
 		Writer: nopWriteCloser{s.stdout},
@@ -222,12 +216,12 @@ func (s *Server) runStdio(ctx context.Context, errLogger *log.Logger) error {
 	return nil
 }
 
-func (s *Server) runHTTP(ctx context.Context, addr string, errLogger *log.Logger) error {
+func (s *Server) runHTTP(ctx context.Context, addr string) error {
 	handler := mcp.NewStreamableHTTPHandler(
 		func(_ *http.Request) *mcp.Server { return s.mcpServer },
 		nil,
 	)
-	errLogger.Printf("Starting streamable HTTP server on %s", addr)
+	s.logger.Info("Starting streamable HTTP server", "addr", addr)
 	srv := &http.Server{
 		Addr:    addr,
 		Handler: handler,
@@ -252,7 +246,7 @@ func (s *Server) runHTTP(ctx context.Context, addr string, errLogger *log.Logger
 	close(serverExited)
 	// Wait for shutdown to complete and check for errors
 	if shutdownErr := <-shutdownDone; shutdownErr != nil {
-		errLogger.Printf("CRITICAL: HTTP server shutdown failed: %v", shutdownErr)
+		s.logger.Error("HTTP server shutdown failed", "err", shutdownErr)
 		return fmt.Errorf("http server shutdown: %w", shutdownErr)
 	}
 	return nil

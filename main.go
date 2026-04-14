@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -18,10 +18,12 @@ func main() {
 	defer cancel()
 
 	if err := godotenv.Load(); err != nil && !errors.Is(err, os.ErrNotExist) {
-		log.Fatalf("failed to load .env file: %v", err)
+		slog.Error("failed to load .env file", "err", err)
+		os.Exit(1)
 	}
 
 	if err := internal.New(os.Stdin, os.Stdout, os.Stderr).Run(ctx, os.Args); err != nil {
-		log.Fatalf("failed to run: %v", err)
+		slog.Error("failed to run", "err", err)
+		os.Exit(1)
 	}
 }

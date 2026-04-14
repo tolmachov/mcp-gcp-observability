@@ -4,8 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
-	"os"
+	"log/slog"
 	"sync/atomic"
 	"time"
 
@@ -23,18 +22,18 @@ const (
 )
 
 // notifyErrLog is used to log dropped MCP notification errors. Defaults to
-// stderr; call SetNotifyLogger at server startup to route to the configured
-// errOut writer instead. atomic.Pointer ensures SetNotifyLogger is safe to
-// call concurrently with in-flight tool handlers.
-var notifyErrLog atomic.Pointer[log.Logger]
+// slog.Default(); call SetNotifyLogger at server startup to route to the
+// configured errOut writer instead. atomic.Pointer ensures SetNotifyLogger
+// is safe to call concurrently with in-flight tool handlers.
+var notifyErrLog atomic.Pointer[slog.Logger]
 
 func init() {
-	notifyErrLog.Store(log.New(os.Stderr, "[mcp-gcp-observability] ", log.LstdFlags))
+	notifyErrLog.Store(slog.Default())
 }
 
 // SetNotifyLogger configures where notification-drop errors are written.
 // Safe to call concurrently with tool handlers.
-func SetNotifyLogger(l *log.Logger) { notifyErrLog.Store(l) }
+func SetNotifyLogger(l *slog.Logger) { notifyErrLog.Store(l) }
 
 // sendProgress sends a progress notification if the request includes a progress token.
 func sendProgress(ctx context.Context, req *mcp.CallToolRequest, progress, total float64, message string) {
@@ -51,14 +50,14 @@ func sendProgress(ctx context.Context, req *mcp.CallToolRequest, progress, total
 		Total:         total,
 		Message:       message,
 	}); err != nil {
-		notifyErrLog.Load().Printf("progress notification dropped: %v", err)
+		notifyErrLog.Load().Warn("progress notification dropped", "err", err)
 	}
 }
 
 // mcpLog sends a structured log message via MCP logging notification.
 func mcpLog(ctx context.Context, req *mcp.CallToolRequest, level mcp.LoggingLevel, logger string, data any) {
 	if req == nil || req.Session == nil {
-		notifyErrLog.Load().Printf("[%s] %s: %v (no session)", level, logger, data)
+		notifyErrLog.Load().Warn("log notification: no session", "level", level, "logger", logger, "data", data)
 		return
 	}
 	if err := req.Session.Log(ctx, &mcp.LoggingMessageParams{
@@ -66,7 +65,7 @@ func mcpLog(ctx context.Context, req *mcp.CallToolRequest, level mcp.LoggingLeve
 		Logger: logger,
 		Data:   data,
 	}); err != nil {
-		notifyErrLog.Load().Printf("log notification dropped (level=%s logger=%s): %v", level, logger, err)
+		notifyErrLog.Load().Warn("log notification dropped", "level", level, "logger", logger, "err", err)
 	}
 }
 
