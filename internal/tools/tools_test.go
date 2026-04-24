@@ -313,6 +313,15 @@ func TestApplyMode(t *testing.T) {
 	t.Run("ModeCompact returns first sentence only", func(t *testing.T) {
 		assert.Equal(t, "First sentence.", applyMode(ModeCompact, full))
 	})
+
+	// Guards against future RegistrationMode additions that forget to extend
+	// applyMode's switch — silent fallback to "full" would ship the wrong
+	// description; a panic surfaces the bug at startup.
+	t.Run("unknown mode panics", func(t *testing.T) {
+		assert.PanicsWithValue(t, "unknown RegistrationMode 99", func() {
+			applyMode(RegistrationMode(99), full)
+		})
+	})
 }
 
 func TestRegistrationModeString(t *testing.T) {

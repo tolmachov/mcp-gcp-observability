@@ -212,7 +212,8 @@ func (s *Server) Run(ctx context.Context, transport Transport, httpAddr string, 
 
 // buildSingleVariantServer builds a single *mcp.Server for the given variant ID.
 // Used when --variant is specified to bypass the variants negotiation protocol.
-// Panics from the MCP SDK (e.g. invalid tool schemas) are caught and returned as errors.
+// Any panic during registration is caught, the stack is logged, and the panic
+// is converted to an error so server startup stays non-fatal.
 func (s *Server) buildSingleVariantServer(
 	variantID string,
 	client *gcpclient.Client,
@@ -294,7 +295,8 @@ func registerAllTools(
 // buildVariantsServer constructs a variants.Server with three capability sets:
 // "full" (all tools, standard descriptions), "compact" (all tools, concise
 // descriptions), and "monitoring" (10 core tools, concise descriptions).
-// Panics from the MCP SDK (e.g. invalid tool schemas) are caught and returned as errors.
+// Any panic during registration is caught, the stack is logged, and the panic
+// is converted to an error so server startup stays non-fatal.
 func (s *Server) buildVariantsServer(
 	client *gcpclient.Client,
 	querier gcpdata.MetricsQuerier,

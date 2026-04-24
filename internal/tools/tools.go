@@ -37,27 +37,35 @@ func (m RegistrationMode) String() string {
 	}
 }
 
-// compactDesc returns the first sentence of desc (up to and including the first
-// period followed by a space or end-of-string).
+// compactDesc returns the first sentence of desc — everything up to and
+// including the first ". " (period followed by space). If desc has no
+// such sequence, it is returned unchanged.
+//
+// Caveat: this naive scan cuts at abbreviations like "e.g." or "i.e." that
+// occur in the first sentence — see TestCompactDesc for the documented
+// behaviour. Tool descriptions should avoid such abbreviations in the
+// opening sentence; TestCompactModeRealDescriptionsSane guards against
+// regressions.
 func compactDesc(desc string) string {
 	idx := strings.Index(desc, ". ")
 	if idx >= 0 {
 		return desc[:idx+1]
 	}
-	if strings.HasSuffix(desc, ".") {
-		return desc
-	}
 	return desc
 }
 
-// applyMode returns the full description for ModeStandard and the first
-// sentence for ModeCompact.
+// applyMode returns the full description for ModeStandard and the
+// compactDesc-trimmed version for ModeCompact. Panics on unknown modes
+// so that adding a new RegistrationMode without updating this switch
+// fails loudly at startup rather than silently shipping the full string.
 func applyMode(mode RegistrationMode, full string) string {
 	switch mode {
+	case ModeStandard:
+		return full
 	case ModeCompact:
 		return compactDesc(full)
 	default:
-		return full
+		panic(fmt.Sprintf("unknown RegistrationMode %d", int(mode)))
 	}
 }
 
