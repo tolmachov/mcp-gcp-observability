@@ -129,16 +129,6 @@ func TestBuildSingleVariantServerUnknownVariant(t *testing.T) {
 	assert.Contains(t, err.Error(), "must be one of")
 }
 
-// TestValidVariantIDsCoversSwitch ensures ValidVariantIDs lists every ID handled
-// by buildSingleVariantServer's switch, so the two cannot silently drift.
-func TestValidVariantIDsCoversSwitch(t *testing.T) {
-	// The switch in buildSingleVariantServer covers "full", "compact", "monitoring".
-	// Any ID not in that set must be in the default branch and return an error.
-	switchCases := []string{"full", "compact", "monitoring"}
-	assert.ElementsMatch(t, switchCases, ValidVariantIDs,
-		"ValidVariantIDs must match the cases in buildSingleVariantServer switch")
-}
-
 // testServer constructs a minimal Server suitable for variant-build tests.
 // It has no real GCP plumbing; tools registered on it can be listed but not
 // invoked.

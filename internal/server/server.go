@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
-	"slices"
 	"strings"
 	"time"
 
@@ -129,16 +128,97 @@ func (s *Server) newMCPInstance() *mcp.Server {
 	return srv
 }
 
-// ValidVariantIDs lists the accepted values for the --variant flag.
-var ValidVariantIDs = []string{"full", "compact", "monitoring"}
+// VariantID identifies a server capability variant.
+type VariantID string
+
+// Supported variant IDs. Each must have a corresponding entry in variantSpecs.
+const (
+	VariantFull       VariantID = "full"
+	VariantCompact    VariantID = "compact"
+	VariantMonitoring VariantID = "monitoring"
+)
+
+// registerFn populates srv with the tools belonging to one variant.
+type registerFn func(srv *mcp.Server, client *gcpclient.Client, querier gcpdata.MetricsQuerier,
+	reg *metrics.Registry, defaultProject string, profileCache *gcpdata.ProfileCache)
+
+// variantSpec declares one capability set: how to populate its *mcp.Server,
+// plus the metadata exposed during variants negotiation.
+type variantSpec struct {
+	id          VariantID
+	description string
+	hints       map[string]string
+	status      variants.VariantStatus
+	register    registerFn
+}
+
+// variantSpecs lists every supported variant in negotiation-priority order.
+// Adding a variant here automatically wires it into --variant validation,
+// the forced-variant build path, and the variants-protocol negotiation —
+// the table is the single source of truth, so the slice and dispatch cannot
+// drift apart.
+var variantSpecs = []variantSpec{
+	{
+		id:          VariantFull,
+		description: "All GCP observability tools (22) with complete descriptions. Optimized for interactive incident investigation.",
+		hints:       map[string]string{variants.HintUseCase: "human-assistant", variants.HintContextSize: "standard"},
+		status:      variants.Stable,
+		register: func(srv *mcp.Server, client *gcpclient.Client, querier gcpdata.MetricsQuerier,
+			reg *metrics.Registry, defaultProject string, profileCache *gcpdata.ProfileCache) {
+			registerAllTools(srv, client, querier, reg, defaultProject, profileCache, tools.ModeStandard)
+		},
+	},
+	{
+		id:          VariantCompact,
+		description: "All GCP observability tools (22) with concise descriptions (~50% shorter). Optimized for autonomous agents and tight context budgets.",
+		hints:       map[string]string{variants.HintUseCase: "autonomous-agent", variants.HintContextSize: "compact"},
+		status:      variants.Stable,
+		register: func(srv *mcp.Server, client *gcpclient.Client, querier gcpdata.MetricsQuerier,
+			reg *metrics.Registry, defaultProject string, profileCache *gcpdata.ProfileCache) {
+			registerAllTools(srv, client, querier, reg, defaultProject, profileCache, tools.ModeCompact)
+		},
+	},
+	{
+		id:          VariantMonitoring,
+		description: "Core GCP tools only (10): logs_summary, logs_services, errors_list/get, metrics_snapshot/top_contributors, trace_list/get, profiler_list/top. For automated monitoring bots and scheduled health checks.",
+		hints:       map[string]string{variants.HintUseCase: "autonomous-agent", variants.HintContextSize: "compact"},
+		status:      variants.Experimental,
+		register: func(srv *mcp.Server, client *gcpclient.Client, querier gcpdata.MetricsQuerier,
+			reg *metrics.Registry, defaultProject string, profileCache *gcpdata.ProfileCache) {
+			tools.RegisterCore(srv, client, querier, reg, defaultProject, profileCache, tools.ModeCompact)
+		},
+	},
+}
+
+// KnownVariantIDs returns a copy of the supported variant IDs in negotiation
+// priority order.
+func KnownVariantIDs() []string {
+	out := make([]string, len(variantSpecs))
+	for i, v := range variantSpecs {
+		out[i] = string(v.id)
+	}
+	return out
+}
+
+// findVariantSpec returns the spec for id (case-sensitive), or false if unknown.
+func findVariantSpec(id string) (variantSpec, bool) {
+	for _, v := range variantSpecs {
+		if string(v.id) == id {
+			return v, true
+		}
+	}
+	return variantSpec{}, false
+}
 
 // Run starts the MCP server using the specified transport.
 // variantID, when non-empty, forces a specific capability set and bypasses the
 // variants negotiation protocol entirely (the client sees a plain MCP server).
-// Valid values: "full", "compact", "monitoring". Empty string uses variants.
+// Valid values are listed by KnownVariantIDs. Empty string uses variants.
 func (s *Server) Run(ctx context.Context, transport Transport, httpAddr string, variantID string) error {
-	if variantID != "" && !slices.Contains(ValidVariantIDs, variantID) {
-		return fmt.Errorf("unknown variant %q: must be one of %v", variantID, ValidVariantIDs)
+	if variantID != "" {
+		if _, ok := findVariantSpec(variantID); !ok {
+			return fmt.Errorf("unknown variant %q: must be one of %v", variantID, KnownVariantIDs())
+		}
 	}
 
 	client, err := gcpclient.New(ctx, s.cfg)
@@ -230,21 +310,13 @@ func (s *Server) buildSingleVariantServer(
 		}
 	}()
 
-	var srv *mcp.Server
-	switch variantID {
-	case "full":
-		srv = s.newMCPInstance()
-		registerAllTools(srv, client, querier, reg, defaultProject, profileCache, tools.ModeStandard)
-	case "compact":
-		srv = s.newMCPInstance()
-		registerAllTools(srv, client, querier, reg, defaultProject, profileCache, tools.ModeCompact)
-	case "monitoring":
-		srv = s.newMCPInstance()
-		tools.RegisterCore(srv, client, querier, reg, defaultProject, profileCache, tools.ModeCompact)
-	default:
-		return nil, fmt.Errorf("unknown variant %q: must be one of %v", variantID, ValidVariantIDs)
+	spec, ok := findVariantSpec(variantID)
+	if !ok {
+		return nil, fmt.Errorf("unknown variant %q: must be one of %v", variantID, KnownVariantIDs())
 	}
 
+	srv := s.newMCPInstance()
+	spec.register(srv, client, querier, reg, defaultProject, profileCache)
 	if err := s.registerResources(srv, client, reg); err != nil {
 		return nil, err
 	}
@@ -292,9 +364,8 @@ func registerAllTools(
 	tools.RegisterProfilerTrends(srv, client, profileCache, mode)
 }
 
-// buildVariantsServer constructs a variants.Server with three capability sets:
-// "full" (all tools, standard descriptions), "compact" (all tools, concise
-// descriptions), and "monitoring" (10 core tools, concise descriptions).
+// buildVariantsServer constructs a variants.Server with one *mcp.Server per
+// entry in variantSpecs (in declaration order, with priority = index).
 // Any panic during registration is caught, the stack is logged, and the panic
 // is converted to an error so server startup stays non-fatal.
 func (s *Server) buildVariantsServer(
@@ -313,50 +384,24 @@ func (s *Server) buildVariantsServer(
 	}()
 
 	impl := &mcp.Implementation{Name: "mcp-gcp-observability", Version: s.version}
+	vs := variants.NewServer(impl)
 
-	// full — fresh instance, all tools, complete descriptions
-	fullSrv := s.newMCPInstance()
-	registerAllTools(fullSrv, client, querier, reg, defaultProject, profileCache, tools.ModeStandard)
-	if err := s.registerResources(fullSrv, client, reg); err != nil {
-		return nil, err
+	for i, spec := range variantSpecs {
+		srv := s.newMCPInstance()
+		spec.register(srv, client, querier, reg, defaultProject, profileCache)
+		if err := s.registerResources(srv, client, reg); err != nil {
+			return nil, err
+		}
+		s.registerPrompts(srv)
+
+		vs = vs.WithVariant(variants.ServerVariant{
+			ID:          string(spec.id),
+			Description: spec.description,
+			Hints:       spec.hints,
+			Status:      spec.status,
+		}, srv, i)
 	}
-	s.registerPrompts(fullSrv)
-
-	// compact — new instance, all tools, shorter descriptions
-	compactSrv := s.newMCPInstance()
-	registerAllTools(compactSrv, client, querier, reg, defaultProject, profileCache, tools.ModeCompact)
-	if err := s.registerResources(compactSrv, client, reg); err != nil {
-		return nil, err
-	}
-	s.registerPrompts(compactSrv)
-
-	// monitoring — new instance, 10 core tools only
-	monitoringSrv := s.newMCPInstance()
-	tools.RegisterCore(monitoringSrv, client, querier, reg, defaultProject, profileCache, tools.ModeCompact)
-	if err := s.registerResources(monitoringSrv, client, reg); err != nil {
-		return nil, err
-	}
-	s.registerPrompts(monitoringSrv)
-
-	return variants.NewServer(impl).
-		WithVariant(variants.ServerVariant{
-			ID:          "full",
-			Description: "All GCP observability tools (22) with complete descriptions. Optimized for interactive incident investigation.",
-			Hints:       map[string]string{variants.HintUseCase: "human-assistant", variants.HintContextSize: "standard"},
-			Status:      variants.Stable,
-		}, fullSrv, 0).
-		WithVariant(variants.ServerVariant{
-			ID:          "compact",
-			Description: "All GCP observability tools (22) with concise descriptions (~50% shorter). Optimized for autonomous agents and tight context budgets.",
-			Hints:       map[string]string{variants.HintUseCase: "autonomous-agent", variants.HintContextSize: "compact"},
-			Status:      variants.Stable,
-		}, compactSrv, 1).
-		WithVariant(variants.ServerVariant{
-			ID:          "monitoring",
-			Description: "Core GCP tools only (10): logs_summary, logs_services, errors_list/get, metrics_snapshot/top_contributors, trace_list/get, profiler_list/top. For automated monitoring bots and scheduled health checks.",
-			Hints:       map[string]string{variants.HintUseCase: "autonomous-agent", variants.HintContextSize: "compact"},
-			Status:      variants.Experimental,
-		}, monitoringSrv, 2), nil
+	return vs, nil
 }
 
 // nopWriteCloser wraps an io.Writer with a no-op Close method.
