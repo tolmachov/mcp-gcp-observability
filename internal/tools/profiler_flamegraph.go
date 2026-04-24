@@ -45,15 +45,15 @@ var flamegraphSchema = &jsonschema.Schema{
 	},
 }
 
-func RegisterProfilerFlamegraph(s *mcp.Server, client *gcpclient.Client, cache *gcpdata.ProfileCache) {
+func RegisterProfilerFlamegraph(s *mcp.Server, client *gcpclient.Client, cache *gcpdata.ProfileCache, mode RegistrationMode) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "profiler_flamegraph",
-		Description: "Get a bounded subtree of the profile call tree (like a flamegraph view). " +
-			"Returns a tree of function calls pruned by max_depth and min_pct. " +
-			"Use root_function to focus on a specific subtree (omit for full profile). " +
-			"Use profiler_top first to identify interesting functions, then drill down here. " +
-			"Works with both regular profile_id and diff_id from profiler_compare.",
+		Description: applyMode(mode, "Get a bounded subtree of the profile call tree (like a flamegraph view). "+
+			"Returns a tree of function calls pruned by max_depth and min_pct. "+
+			"Use root_function to focus on a specific subtree (omit for full profile). "+
+			"Use profiler_top first to identify interesting functions, then drill down here. "+
+			"Works with both regular profile_id and diff_id from profiler_compare."),
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),

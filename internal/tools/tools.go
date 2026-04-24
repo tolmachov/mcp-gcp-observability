@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -14,6 +15,75 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
+
+// RegistrationMode controls description verbosity when registering tools.
+// The zero value is ModeStandard (full descriptions).
+type RegistrationMode int
+
+const (
+	ModeStandard RegistrationMode = iota // full descriptions
+	ModeCompact                          // concise descriptions (first sentence only)
+)
+
+// String implements fmt.Stringer for diagnostic output.
+func (m RegistrationMode) String() string {
+	switch m {
+	case ModeStandard:
+		return "standard"
+	case ModeCompact:
+		return "compact"
+	default:
+		return fmt.Sprintf("RegistrationMode(%d)", int(m))
+	}
+}
+
+// compactDesc returns the first sentence of desc (up to and including the first
+// period followed by a space or end-of-string).
+func compactDesc(desc string) string {
+	idx := strings.Index(desc, ". ")
+	if idx >= 0 {
+		return desc[:idx+1]
+	}
+	if strings.HasSuffix(desc, ".") {
+		return desc
+	}
+	return desc
+}
+
+// applyMode returns the full description for ModeStandard and the first
+// sentence for ModeCompact.
+func applyMode(mode RegistrationMode, full string) string {
+	switch mode {
+	case ModeCompact:
+		return compactDesc(full)
+	default:
+		return full
+	}
+}
+
+// RegisterCore registers the 10 core monitoring tools: logs_summary, logs_services,
+// errors_list, errors_get, metrics_snapshot, metrics_top_contributors, trace_list,
+// trace_get, profiler_list, profiler_top.
+func RegisterCore(
+	s *mcp.Server,
+	client *gcpclient.Client,
+	querier gcpdata.MetricsQuerier,
+	reg *metrics.Registry,
+	defaultProject string,
+	profileCache *gcpdata.ProfileCache,
+	mode RegistrationMode,
+) {
+	RegisterLogsSummary(s, client, mode)
+	RegisterLogsServices(s, client, mode)
+	RegisterErrorsList(s, client, mode)
+	RegisterErrorsGet(s, client, mode)
+	RegisterMetricsSnapshot(s, querier, reg, defaultProject, mode)
+	RegisterMetricsTop(s, querier, reg, defaultProject, mode)
+	RegisterTraceList(s, client, mode)
+	RegisterTraceGet(s, client, mode)
+	RegisterProfilerList(s, client, mode)
+	RegisterProfilerTop(s, client, profileCache, mode)
+}
 
 // Logging level constants for MCP log notifications.
 const (

@@ -38,6 +38,7 @@ func New(in io.Reader, out, errOut io.Writer) *cli.Command {
 					metricsRegistryFlag(),
 					transportFlag(),
 					httpAddrFlag(),
+					variantFlag(),
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					cfg := &gcpclient.Config{
@@ -53,7 +54,8 @@ func New(in io.Reader, out, errOut io.Writer) *cli.Command {
 					}
 					transport := server.Transport(cmd.String(flagTransport))
 					httpAddr := cmd.String(flagHTTPAddr)
-					return srv.Run(ctx, transport, httpAddr)
+					variantID := cmd.String(flagVariant)
+					return srv.Run(ctx, transport, httpAddr, variantID)
 				},
 			},
 			{

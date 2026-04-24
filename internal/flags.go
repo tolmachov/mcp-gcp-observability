@@ -10,6 +10,7 @@ const (
 	flagMetricsRegistry   = "metrics-registry"
 	flagTransport         = "transport"
 	flagHTTPAddr          = "http-addr"
+	flagVariant           = "variant"
 )
 
 func gcpDefaultProjectFlag() *cli.StringFlag {
@@ -70,5 +71,13 @@ func httpAddrFlag() *cli.StringFlag {
 		Usage:   "HTTP listen address when transport is 'http' (default ':8080')",
 		Sources: cli.EnvVars("MCP_HTTP_ADDR"),
 		Value:   ":8080",
+	}
+}
+
+func variantFlag() *cli.StringFlag {
+	return &cli.StringFlag{
+		Name:    flagVariant,
+		Usage:   "Force a specific capability variant: 'full' (all tools, standard descriptions), 'compact' (all tools, short descriptions), or 'monitoring' (10 core tools). Omit to use the variants protocol and let clients negotiate.",
+		Sources: cli.EnvVars("MCP_VARIANT"),
 	}
 }

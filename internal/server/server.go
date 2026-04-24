@@ -12,9 +12,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/modelcontextprotocol/experimental-ext-variants/go/sdk/variants"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
@@ -33,11 +35,36 @@ const (
 	TransportHTTP Transport = "http"
 )
 
+// serverInstructions is the workflow guidance injected into every MCP server instance.
+const serverInstructions = "Recommended workflow: " +
+	"1) logs_services — discover available services. " +
+	"2) logs_summary — get severity distribution, top errors, and top services for initial triage. " +
+	"3) errors_list — list error groups sorted by count. " +
+	"4) logs_query or logs_k8s — investigate specific logs with filters. " +
+	"5) logs_by_trace — follow a single request across services using a trace ID from logs_find_requests or logs_query results. " +
+	"6) trace_list — search for traces by span name, latency, or time range without knowing trace IDs. " +
+	"7) trace_get — get detailed span tree for a trace to understand request timing and dependencies. " +
+	"Always prefer logs_k8s over logs_query when investigating Kubernetes workloads. " +
+	"For metrics analysis: " +
+	"1) metrics_list — discover available metrics. " +
+	"2) metrics_snapshot — get semantic snapshot with baseline comparison, trend detection, and classification. " +
+	"3) metrics_top_contributors — break down by label dimension to find which values contribute most to an anomaly. " +
+	"4) metrics_related — check correlated signals configured in the registry. " +
+	"5) metrics_compare — compare two arbitrary time windows (e.g. before/after deploy). " +
+	"For profiling analysis: " +
+	"1) profiler_list — discover available profiles by service and type. " +
+	"2) profiler_top — see top functions by resource consumption. " +
+	"3) profiler_peek — understand a hotspot's callers and callees. " +
+	"4) profiler_flamegraph — view bounded subtree of the call graph. " +
+	"5) profiler_compare — compare two profiles to find regressions (use diff_id with top/peek/flamegraph). " +
+	"6) profiler_trends — track how function costs change over time across multiple profiles. " +
+	"Use profiler_compare for point-in-time A/B comparison; use profiler_trends for historical cost evolution."
+
 // Server is the MCP server for GCP Observability.
 type Server struct {
-	mcpServer *mcp.Server
 	completer *promptCompleter
 	cfg       *gcpclient.Config
+	version   string
 	logger    *slog.Logger
 	stdin     io.Reader
 	stdout    io.Writer
@@ -52,45 +79,24 @@ func New(cfg *gcpclient.Config, version string, stdin io.Reader, stdout, errOut 
 		Level: slog.LevelInfo,
 	}))
 
-	mcpServer := mcp.NewServer(
-		&mcp.Implementation{
-			Name:    "mcp-gcp-observability",
-			Version: version,
-		},
-		&mcp.ServerOptions{
-			Instructions: "Recommended workflow: " +
-				"1) logs_services — discover available services. " +
-				"2) logs_summary — get severity distribution, top errors, and top services for initial triage. " +
-				"3) errors_list — list error groups sorted by count. " +
-				"4) logs_query or logs_k8s — investigate specific logs with filters. " +
-				"5) logs_by_trace — follow a single request across services using a trace ID from logs_find_requests or logs_query results. " +
-				"6) trace_list — search for traces by span name, latency, or time range without knowing trace IDs. " +
-				"7) trace_get — get detailed span tree for a trace to understand request timing and dependencies. " +
-				"Always prefer logs_k8s over logs_query when investigating Kubernetes workloads. " +
-				"For metrics analysis: " +
-				"1) metrics_list — discover available metrics. " +
-				"2) metrics_snapshot — get semantic snapshot with baseline comparison, trend detection, and classification. " +
-				"3) metrics_top_contributors — break down by label dimension to find which values contribute most to an anomaly. " +
-				"4) metrics_related — check correlated signals configured in the registry. " +
-				"5) metrics_compare — compare two arbitrary time windows (e.g. before/after deploy). " +
-				"For profiling analysis: " +
-				"1) profiler_list — discover available profiles by service and type. " +
-				"2) profiler_top — see top functions by resource consumption. " +
-				"3) profiler_peek — understand a hotspot's callers and callees. " +
-				"4) profiler_flamegraph — view bounded subtree of the call graph. " +
-				"5) profiler_compare — compare two profiles to find regressions (use diff_id with top/peek/flamegraph). " +
-				"6) profiler_trends — track how function costs change over time across multiple profiles. " +
-				"Use profiler_compare for point-in-time A/B comparison; use profiler_trends for historical cost evolution.",
-			Logger:            logger,
-			CompletionHandler: completer.Handle,
-		},
-	)
+	tools.SetNotifyLogger(logger)
 
-	// Recover from panics in tool handlers so that a single bad request does
-	// not crash the server process. Panics inside goroutines spawned by tools
-	// have their own recovery defers; this middleware covers the main handler
-	// goroutine that the SDK runs for each incoming request.
-	panicRecovery := func(next mcp.MethodHandler) mcp.MethodHandler {
+	s := &Server{
+		completer: completer,
+		cfg:       cfg,
+		version:   version,
+		logger:    logger,
+		stdin:     stdin,
+		stdout:    stdout,
+		errOut:    errOut,
+	}
+	return s, nil
+}
+
+// panicRecoveryMiddleware returns a receiving middleware that recovers from
+// panics in tool handlers, logging the stack trace and returning an error.
+func panicRecoveryMiddleware(logger *slog.Logger) func(mcp.MethodHandler) mcp.MethodHandler {
+	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (result mcp.Result, err error) {
 			defer func() {
 				if r := recover(); r != nil {
@@ -102,23 +108,39 @@ func New(cfg *gcpclient.Config, version string, stdin io.Reader, stdout, errOut 
 			return next(ctx, method, req)
 		}
 	}
-	mcpServer.AddReceivingMiddleware(panicRecovery)
-
-	tools.SetNotifyLogger(logger)
-
-	return &Server{
-		mcpServer: mcpServer,
-		completer: completer,
-		cfg:       cfg,
-		logger:    logger,
-		stdin:     stdin,
-		stdout:    stdout,
-		errOut:    errOut,
-	}, nil
 }
 
+// newMCPInstance creates a fresh *mcp.Server configured with the standard
+// instructions, logger, completion handler, and panic-recovery middleware.
+// Used to create the full, compact, and monitoring variant servers.
+func (s *Server) newMCPInstance() *mcp.Server {
+	srv := mcp.NewServer(
+		&mcp.Implementation{
+			Name:    "mcp-gcp-observability",
+			Version: s.version,
+		},
+		&mcp.ServerOptions{
+			Instructions:      serverInstructions,
+			Logger:            s.logger,
+			CompletionHandler: s.completer.Handle,
+		},
+	)
+	srv.AddReceivingMiddleware(panicRecoveryMiddleware(s.logger))
+	return srv
+}
+
+// ValidVariantIDs lists the accepted values for the --variant flag.
+var ValidVariantIDs = []string{"full", "compact", "monitoring"}
+
 // Run starts the MCP server using the specified transport.
-func (s *Server) Run(ctx context.Context, transport Transport, httpAddr string) error {
+// variantID, when non-empty, forces a specific capability set and bypasses the
+// variants negotiation protocol entirely (the client sees a plain MCP server).
+// Valid values: "full", "compact", "monitoring". Empty string uses variants.
+func (s *Server) Run(ctx context.Context, transport Transport, httpAddr string, variantID string) error {
+	if variantID != "" && !slices.Contains(ValidVariantIDs, variantID) {
+		return fmt.Errorf("unknown variant %q: must be one of %v", variantID, ValidVariantIDs)
+	}
+
 	client, err := gcpclient.New(ctx, s.cfg)
 	if err != nil {
 		return fmt.Errorf("creating GCP client: %w", err)
@@ -155,49 +177,180 @@ func (s *Server) Run(ctx context.Context, transport Transport, httpAddr string) 
 
 	querier := gcpdata.NewMonitoringQuerier(client.MonitoringClient())
 	defaultProject := client.Config().DefaultProject
-
-	// Register tools
-	tools.RegisterLogsQuery(s.mcpServer, client)
-	tools.RegisterLogsByTrace(s.mcpServer, client)
-	tools.RegisterLogsByRequestID(s.mcpServer, client)
-	tools.RegisterLogsFindRequests(s.mcpServer, client)
-	tools.RegisterLogsK8s(s.mcpServer, client)
-	tools.RegisterLogsServices(s.mcpServer, client)
-	tools.RegisterLogsSummary(s.mcpServer, client)
-	// Errors
-	tools.RegisterErrorsList(s.mcpServer, client)
-	tools.RegisterErrorsGet(s.mcpServer, client)
-	// Traces
-	tools.RegisterTraceGet(s.mcpServer, client)
-	tools.RegisterTraceList(s.mcpServer, client)
-	// Metrics
-	tools.RegisterMetricsList(s.mcpServer, querier, reg, defaultProject)
-	tools.RegisterMetricsSnapshot(s.mcpServer, querier, reg, defaultProject)
-	tools.RegisterMetricsTop(s.mcpServer, querier, reg, defaultProject)
-	tools.RegisterMetricsRelated(s.mcpServer, querier, reg, defaultProject)
-	tools.RegisterMetricsCompare(s.mcpServer, querier, reg, defaultProject)
-	// Profiler
 	profileCache := gcpdata.NewProfileCache(10)
-	tools.RegisterProfilerList(s.mcpServer, client)
-	tools.RegisterProfilerTop(s.mcpServer, client, profileCache)
-	tools.RegisterProfilerPeek(s.mcpServer, client, profileCache)
-	tools.RegisterProfilerFlamegraph(s.mcpServer, client, profileCache)
-	tools.RegisterProfilerCompare(s.mcpServer, client, profileCache)
-	tools.RegisterProfilerTrends(s.mcpServer, client, profileCache)
 
-	if err := s.registerResources(client, reg); err != nil {
-		return err
+	if variantID != "" {
+		srv, buildErr := s.buildSingleVariantServer(variantID, client, querier, reg, defaultProject, profileCache)
+		if buildErr != nil {
+			return fmt.Errorf("building variant server: %w", buildErr)
+		}
+		s.logger.Info("Starting with forced variant", "variant", variantID)
+		switch transport {
+		case TransportHTTP:
+			return s.runMCPHTTP(ctx, srv, httpAddr)
+		case TransportStdio, "":
+			return s.runStdio(ctx, srv)
+		default:
+			return fmt.Errorf("unsupported transport %q: must be %q or %q", transport, TransportStdio, TransportHTTP)
+		}
 	}
-	s.registerPrompts()
+
+	vs, err := s.buildVariantsServer(client, querier, reg, defaultProject, profileCache)
+	if err != nil {
+		return fmt.Errorf("building variants server: %w", err)
+	}
 
 	switch transport {
 	case TransportHTTP:
-		return s.runHTTP(ctx, httpAddr)
+		return s.runHTTP(ctx, vs, httpAddr)
 	case TransportStdio, "":
-		return s.runStdio(ctx)
+		return s.runStdio(ctx, vs)
 	default:
 		return fmt.Errorf("unsupported transport %q: must be %q or %q", transport, TransportStdio, TransportHTTP)
 	}
+}
+
+// buildSingleVariantServer builds a single *mcp.Server for the given variant ID.
+// Used when --variant is specified to bypass the variants negotiation protocol.
+// Panics from the MCP SDK (e.g. invalid tool schemas) are caught and returned as errors.
+func (s *Server) buildSingleVariantServer(
+	variantID string,
+	client *gcpclient.Client,
+	querier gcpdata.MetricsQuerier,
+	reg *metrics.Registry,
+	defaultProject string,
+	profileCache *gcpdata.ProfileCache,
+) (result *mcp.Server, retErr error) {
+	defer func() {
+		if r := recover(); r != nil {
+			retErr = fmt.Errorf("tool registration panic: %v", r)
+		}
+	}()
+
+	var srv *mcp.Server
+	switch variantID {
+	case "full":
+		srv = s.newMCPInstance()
+		registerAllTools(srv, client, querier, reg, defaultProject, profileCache, tools.ModeStandard)
+	case "compact":
+		srv = s.newMCPInstance()
+		registerAllTools(srv, client, querier, reg, defaultProject, profileCache, tools.ModeCompact)
+	case "monitoring":
+		srv = s.newMCPInstance()
+		tools.RegisterCore(srv, client, querier, reg, defaultProject, profileCache, tools.ModeCompact)
+	default:
+		return nil, fmt.Errorf("unknown variant %q: must be one of %v", variantID, ValidVariantIDs)
+	}
+
+	if err := s.registerResources(srv, client, reg); err != nil {
+		return nil, err
+	}
+	s.registerPrompts(srv)
+	return srv, nil
+}
+
+// registerAllTools registers all 22 GCP observability tools on srv with the
+// given mode controlling description verbosity.
+func registerAllTools(
+	srv *mcp.Server,
+	client *gcpclient.Client,
+	querier gcpdata.MetricsQuerier,
+	reg *metrics.Registry,
+	defaultProject string,
+	profileCache *gcpdata.ProfileCache,
+	mode tools.RegistrationMode,
+) {
+	// Logs
+	tools.RegisterLogsQuery(srv, client, mode)
+	tools.RegisterLogsByTrace(srv, client, mode)
+	tools.RegisterLogsByRequestID(srv, client, mode)
+	tools.RegisterLogsFindRequests(srv, client, mode)
+	tools.RegisterLogsK8s(srv, client, mode)
+	tools.RegisterLogsServices(srv, client, mode)
+	tools.RegisterLogsSummary(srv, client, mode)
+	// Errors
+	tools.RegisterErrorsList(srv, client, mode)
+	tools.RegisterErrorsGet(srv, client, mode)
+	// Traces
+	tools.RegisterTraceGet(srv, client, mode)
+	tools.RegisterTraceList(srv, client, mode)
+	// Metrics
+	tools.RegisterMetricsList(srv, querier, reg, defaultProject, mode)
+	tools.RegisterMetricsSnapshot(srv, querier, reg, defaultProject, mode)
+	tools.RegisterMetricsTop(srv, querier, reg, defaultProject, mode)
+	tools.RegisterMetricsRelated(srv, querier, reg, defaultProject, mode)
+	tools.RegisterMetricsCompare(srv, querier, reg, defaultProject, mode)
+	// Profiler
+	tools.RegisterProfilerList(srv, client, mode)
+	tools.RegisterProfilerTop(srv, client, profileCache, mode)
+	tools.RegisterProfilerPeek(srv, client, profileCache, mode)
+	tools.RegisterProfilerFlamegraph(srv, client, profileCache, mode)
+	tools.RegisterProfilerCompare(srv, client, profileCache, mode)
+	tools.RegisterProfilerTrends(srv, client, profileCache, mode)
+}
+
+// buildVariantsServer constructs a variants.Server with three capability sets:
+// "full" (all tools, standard descriptions), "compact" (all tools, concise
+// descriptions), and "monitoring" (10 core tools, concise descriptions).
+// Panics from the MCP SDK (e.g. invalid tool schemas) are caught and returned as errors.
+func (s *Server) buildVariantsServer(
+	client *gcpclient.Client,
+	querier gcpdata.MetricsQuerier,
+	reg *metrics.Registry,
+	defaultProject string,
+	profileCache *gcpdata.ProfileCache,
+) (result *variants.Server, retErr error) {
+	defer func() {
+		if r := recover(); r != nil {
+			retErr = fmt.Errorf("tool registration panic: %v", r)
+		}
+	}()
+
+	impl := &mcp.Implementation{Name: "mcp-gcp-observability", Version: s.version}
+
+	// full — fresh instance, all tools, complete descriptions
+	fullSrv := s.newMCPInstance()
+	registerAllTools(fullSrv, client, querier, reg, defaultProject, profileCache, tools.ModeStandard)
+	if err := s.registerResources(fullSrv, client, reg); err != nil {
+		return nil, err
+	}
+	s.registerPrompts(fullSrv)
+
+	// compact — new instance, all tools, shorter descriptions
+	compactSrv := s.newMCPInstance()
+	registerAllTools(compactSrv, client, querier, reg, defaultProject, profileCache, tools.ModeCompact)
+	if err := s.registerResources(compactSrv, client, reg); err != nil {
+		return nil, err
+	}
+	s.registerPrompts(compactSrv)
+
+	// monitoring — new instance, 10 core tools only
+	monitoringSrv := s.newMCPInstance()
+	tools.RegisterCore(monitoringSrv, client, querier, reg, defaultProject, profileCache, tools.ModeCompact)
+	if err := s.registerResources(monitoringSrv, client, reg); err != nil {
+		return nil, err
+	}
+	s.registerPrompts(monitoringSrv)
+
+	return variants.NewServer(impl).
+		WithVariant(variants.ServerVariant{
+			ID:          "full",
+			Description: "All GCP observability tools (22) with complete descriptions. Optimized for interactive incident investigation.",
+			Hints:       map[string]string{variants.HintUseCase: "human-assistant", variants.HintContextSize: "standard"},
+			Status:      variants.Stable,
+		}, fullSrv, 0).
+		WithVariant(variants.ServerVariant{
+			ID:          "compact",
+			Description: "All GCP observability tools (22) with concise descriptions (~50% shorter). Optimized for autonomous agents and tight context budgets.",
+			Hints:       map[string]string{variants.HintUseCase: "autonomous-agent", variants.HintContextSize: "compact"},
+			Status:      variants.Stable,
+		}, compactSrv, 1).
+		WithVariant(variants.ServerVariant{
+			ID:          "monitoring",
+			Description: "Core GCP tools only (10): logs_summary, logs_services, errors_list/get, metrics_snapshot/top_contributors, trace_list/get, profiler_list/top. For automated monitoring bots and scheduled health checks.",
+			Hints:       map[string]string{variants.HintUseCase: "autonomous-agent", variants.HintContextSize: "compact"},
+			Status:      variants.Experimental,
+		}, monitoringSrv, 2), nil
 }
 
 // nopWriteCloser wraps an io.Writer with a no-op Close method.
@@ -205,9 +358,16 @@ type nopWriteCloser struct{ io.Writer }
 
 func (nopWriteCloser) Close() error { return nil }
 
-func (s *Server) runStdio(ctx context.Context) error {
+// mcpRunner is satisfied by both *mcp.Server and *variants.Server, which share
+// the same Run(ctx, mcp.Transport) error signature.
+type mcpRunner interface {
+	Run(ctx context.Context, t mcp.Transport) error
+}
+
+// runStdio starts a stdio transport for any MCP runner (plain server or variants server).
+func (s *Server) runStdio(ctx context.Context, runner mcpRunner) error {
 	s.logger.Info("Starting stdio server")
-	if err := s.mcpServer.Run(ctx, &mcp.IOTransport{
+	if err := runner.Run(ctx, &mcp.IOTransport{
 		Reader: io.NopCloser(s.stdin),
 		Writer: nopWriteCloser{s.stdout},
 	}); err != nil {
@@ -216,11 +376,9 @@ func (s *Server) runStdio(ctx context.Context) error {
 	return nil
 }
 
-func (s *Server) runHTTP(ctx context.Context, addr string) error {
-	handler := mcp.NewStreamableHTTPHandler(
-		func(_ *http.Request) *mcp.Server { return s.mcpServer },
-		nil,
-	)
+// serveHTTP runs an http.Server with graceful shutdown on ctx cancellation.
+// Extracted to avoid duplication between runHTTP and runMCPHTTP.
+func (s *Server) serveHTTP(ctx context.Context, handler http.Handler, addr string) error {
 	s.logger.Info("Starting streamable HTTP server", "addr", addr)
 	srv := &http.Server{
 		Addr:    addr,
@@ -235,16 +393,15 @@ func (s *Server) runHTTP(ctx context.Context, addr string) error {
 			defer cancel()
 			shutdownDone <- srv.Shutdown(shutdownCtx)
 		case <-serverExited:
-			// Server exited early before ctx.Done(); send nil to unblock receiver
+			// Server exited early before ctx.Done(); send nil to unblock receiver.
 			shutdownDone <- nil
 		}
 	}()
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		close(serverExited) // Signal goroutine to exit early
+		close(serverExited)
 		return fmt.Errorf("http server: %w", err)
 	}
 	close(serverExited)
-	// Wait for shutdown to complete and check for errors
 	if shutdownErr := <-shutdownDone; shutdownErr != nil {
 		s.logger.Error("HTTP server shutdown failed", "err", shutdownErr)
 		return fmt.Errorf("http server shutdown: %w", shutdownErr)
@@ -252,8 +409,29 @@ func (s *Server) runHTTP(ctx context.Context, addr string) error {
 	return nil
 }
 
-// registerResources adds MCP resources to the server.
-func (s *Server) registerResources(client *gcpclient.Client, reg *metrics.Registry) error {
+// runHTTP starts a streamable HTTP server for the variants.Server.
+// Closes vs on return and recovers from panics in variants SDK initialisation.
+func (s *Server) runHTTP(ctx context.Context, vs *variants.Server, addr string) (retErr error) {
+	defer vs.Close()
+	defer func() {
+		if r := recover(); r != nil {
+			retErr = fmt.Errorf("variants HTTP init panic: %v", r)
+		}
+	}()
+	return s.serveHTTP(ctx, variants.NewStreamableHTTPHandler(vs, nil), addr)
+}
+
+// runMCPHTTP starts a streamable HTTP server for a single forced-variant *mcp.Server.
+func (s *Server) runMCPHTTP(ctx context.Context, srv *mcp.Server, addr string) error {
+	handler := mcp.NewStreamableHTTPHandler(
+		func(_ *http.Request) *mcp.Server { return srv },
+		nil,
+	)
+	return s.serveHTTP(ctx, handler, addr)
+}
+
+// registerResources adds MCP resources to srv.
+func (s *Server) registerResources(srv *mcp.Server, client *gcpclient.Client, reg *metrics.Registry) error {
 	cfg := client.Config()
 	configJSON, err := json.Marshal(map[string]any{
 		"default_project":        cfg.DefaultProject,
@@ -266,7 +444,7 @@ func (s *Server) registerResources(client *gcpclient.Client, reg *metrics.Regist
 		return fmt.Errorf("failed to marshal config resource during startup: %w", err)
 	}
 
-	s.mcpServer.AddResource(
+	srv.AddResource(
 		&mcp.Resource{
 			URI:         "config://project",
 			Name:        "Project Configuration",
@@ -284,14 +462,14 @@ func (s *Server) registerResources(client *gcpclient.Client, reg *metrics.Regist
 		},
 	)
 
-	tools.RegisterMetricsChartStaticResource(s.mcpServer)
-	tools.RegisterMetricsCompareChartStaticResource(s.mcpServer)
+	tools.RegisterMetricsChartStaticResource(srv)
+	tools.RegisterMetricsCompareChartStaticResource(srv)
 	return nil
 }
 
-// registerPrompts adds MCP prompts for common observability workflows.
-func (s *Server) registerPrompts() {
-	s.mcpServer.AddPrompt(&mcp.Prompt{
+// registerPrompts adds MCP prompts for common observability workflows to srv.
+func (s *Server) registerPrompts(srv *mcp.Server) {
+	srv.AddPrompt(&mcp.Prompt{
 		Name:        "investigate-errors",
 		Description: "Investigate top errors: list error groups, get details for the worst one, and find related logs",
 		Arguments: []*mcp.PromptArgument{
@@ -315,7 +493,7 @@ func (s *Server) registerPrompts() {
 		}, nil
 	})
 
-	s.mcpServer.AddPrompt(&mcp.Prompt{
+	srv.AddPrompt(&mcp.Prompt{
 		Name:        "trace-request",
 		Description: "Trace a specific HTTP request end-to-end: find it by URL, follow its trace, and analyze spans",
 		Arguments: []*mcp.PromptArgument{
@@ -336,7 +514,7 @@ func (s *Server) registerPrompts() {
 		}, nil
 	})
 
-	s.mcpServer.AddPrompt(&mcp.Prompt{
+	srv.AddPrompt(&mcp.Prompt{
 		Name:        "investigate-metrics",
 		Description: "Investigate a metric anomaly: discover metrics, get snapshot, drill down by dimension, check related signals",
 		Arguments: []*mcp.PromptArgument{
@@ -367,7 +545,7 @@ func (s *Server) registerPrompts() {
 		}, nil
 	})
 
-	s.mcpServer.AddPrompt(&mcp.Prompt{
+	srv.AddPrompt(&mcp.Prompt{
 		Name:        "service-health",
 		Description: "Check the health of services: discover services, summarize logs, and identify issues",
 	}, func(_ context.Context, _ *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
@@ -384,7 +562,7 @@ func (s *Server) registerPrompts() {
 		}, nil
 	})
 
-	s.mcpServer.AddPrompt(&mcp.Prompt{
+	srv.AddPrompt(&mcp.Prompt{
 		Name:        "investigate-profile",
 		Description: "Investigate performance hotspots using Cloud Profiler: list profiles, find top functions, and drill into call paths",
 		Arguments: []*mcp.PromptArgument{
@@ -413,7 +591,7 @@ func (s *Server) registerPrompts() {
 		}, nil
 	})
 
-	s.mcpServer.AddPrompt(&mcp.Prompt{
+	srv.AddPrompt(&mcp.Prompt{
 		Name:        "generate-metrics-registry",
 		Description: "Scan a project for custom Prometheus/OTel metric definitions and generate a metrics registry overlay YAML for this MCP server",
 		Arguments: []*mcp.PromptArgument{
@@ -431,6 +609,7 @@ func (s *Server) registerPrompts() {
 		}
 		serverBinary, execErr := os.Executable()
 		if execErr != nil || serverBinary == "" {
+			s.logger.Warn("could not determine server binary path, using default name", "err", execErr)
 			serverBinary = "mcp-gcp-observability"
 		}
 		msg := fmt.Sprintf(`Generate a metrics registry overlay for the mcp-gcp-observability MCP server.

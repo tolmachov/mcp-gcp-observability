@@ -42,14 +42,14 @@ func compareCallResult(result *CompareResult) *mcp.CallToolResult {
 	}
 }
 
-func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string) {
+func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string, mode RegistrationMode) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "metrics_compare",
-		Description: "Compare two arbitrary time windows for the same metric. " +
-			"Useful for deploy diff, before/after comparisons, or ad-hoc analysis. " +
-			"Returns mean values, delta, trend shift, and classification for each window. " +
-			"Also renders an interactive dual-series chart inline in the chat (hosts that support MCP app widgets). " +
-			"For automatic baseline comparison (prev_window, same_weekday_hour), use metrics_snapshot instead.",
+		Description: applyMode(mode, "Compare two arbitrary time windows for the same metric. "+
+			"Useful for deploy diff, before/after comparisons, or ad-hoc analysis. "+
+			"Returns mean values, delta, trend shift, and classification for each window. "+
+			"Also renders an interactive dual-series chart inline in the chat (hosts that support MCP app widgets). "+
+			"For automatic baseline comparison (prev_window, same_weekday_hour), use metrics_snapshot instead."),
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),

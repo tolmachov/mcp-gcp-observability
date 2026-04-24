@@ -11,14 +11,14 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-func RegisterTraceList(s *mcp.Server, client *gcpclient.Client) {
+func RegisterTraceList(s *mcp.Server, client *gcpclient.Client, mode RegistrationMode) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "trace_list",
-		Description: "Search for traces by criteria such as span name, latency, or time range. " +
-			"Returns trace summaries with root span info — use trace_get with a returned trace_id for full span details. " +
-			"Supports structured filters (root_name, span_name, min_latency) or raw Cloud Trace filter syntax. " +
-			"Default time range is the last 1 hour. Requires Cloud Trace API to be enabled.",
+		Description: applyMode(mode, "Search for traces by criteria such as span name, latency, or time range. "+
+			"Returns trace summaries with root span info — use trace_get with a returned trace_id for full span details. "+
+			"Supports structured filters (root_name, span_name, min_latency) or raw Cloud Trace filter syntax. "+
+			"Default time range is the last 1 hour. Requires Cloud Trace API to be enabled."),
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),

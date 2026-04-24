@@ -51,14 +51,14 @@ var traceDetailSchema = &jsonschema.Schema{
 	},
 }
 
-func RegisterTraceGet(s *mcp.Server, client *gcpclient.Client) {
+func RegisterTraceGet(s *mcp.Server, client *gcpclient.Client, mode RegistrationMode) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "trace_get",
-		Description: "Get trace details with all spans by trace ID. " +
-			"Returns a span tree (parent-child hierarchy) sorted by start time, showing the full request execution flow. " +
-			"Use trace IDs from logs_find_requests results or the trace field in logs_query output. " +
-			"Requires Cloud Trace API to be enabled in the project.",
+		Description: applyMode(mode, "Get trace details with all spans by trace ID. "+
+			"Returns a span tree (parent-child hierarchy) sorted by start time, showing the full request execution flow. "+
+			"Use trace IDs from logs_find_requests results or the trace field in logs_query output. "+
+			"Requires Cloud Trace API to be enabled in the project."),
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),

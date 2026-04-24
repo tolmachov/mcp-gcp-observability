@@ -10,14 +10,14 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-func RegisterLogsServices(s *mcp.Server, client *gcpclient.Client) {
+func RegisterLogsServices(s *mcp.Server, client *gcpclient.Client, mode RegistrationMode) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "logs_services",
-		Description: "List available services and resources in the project by scanning recent logs. " +
-			"Discovers Kubernetes containers, Cloud Run, Cloud Functions, App Engine, and Compute Engine instances. " +
-			"Useful as a first step to discover services before querying their logs. " +
-			"Returns service names you can use as filters in logs_k8s or logs_query.",
+		Description: applyMode(mode, "List available services and resources in the project by scanning recent logs. "+
+			"Discovers Kubernetes containers, Cloud Run, Cloud Functions, App Engine, and Compute Engine instances. "+
+			"Useful as a first step to discover services before querying their logs. "+
+			"Returns service names you can use as filters in logs_k8s or logs_query."),
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),

@@ -46,6 +46,22 @@ func TestValidateRegistryCommand(t *testing.T) {
 	})
 }
 
+// TestRunCommand_UnknownVariant verifies that --variant with an invalid value
+// returns an error at the CLI layer without attempting a GCP connection.
+// The variant guard in server.Run fires before gcpclient.New, so no credentials needed.
+func TestRunCommand_UnknownVariant(t *testing.T) {
+	var out, errOut bytes.Buffer
+	app := New(strings.NewReader(""), &out, &errOut)
+	err := app.Run(context.Background(), []string{
+		"mcp-gcp-observability", "run",
+		"--gcp-default-project=test-project",
+		"--variant=bogus",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bogus")
+	assert.Contains(t, err.Error(), "must be one of")
+}
+
 func writeTempYAML(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()

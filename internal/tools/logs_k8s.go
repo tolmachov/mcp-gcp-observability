@@ -11,13 +11,13 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-func RegisterLogsK8s(s *mcp.Server, client *gcpclient.Client) {
+func RegisterLogsK8s(s *mcp.Server, client *gcpclient.Client, mode RegistrationMode) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "logs_k8s",
-		Description: "Query Kubernetes container logs with convenient filters. " +
-			"Automatically builds Cloud Logging filter for resource.type=\"k8s_container\". " +
-			"Preferred over logs_query for K8s workloads. Results default to newest-first (use order parameter to change).",
+		Description: applyMode(mode, "Query Kubernetes container logs with convenient filters. "+
+			"Automatically builds Cloud Logging filter for resource.type=\"k8s_container\". "+
+			"Preferred over logs_query for K8s workloads. Results default to newest-first (use order parameter to change)."),
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),

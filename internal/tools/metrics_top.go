@@ -17,16 +17,16 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
 
-func RegisterMetricsTop(s *mcp.Server, querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string) {
+func RegisterMetricsTop(s *mcp.Server, querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string, mode RegistrationMode) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "metrics_top_contributors",
-		Description: "Break down a metric by a label dimension to find which label values contribute most to an anomaly. " +
-			"Shows each contributor's delta from baseline and share of the total anomaly. " +
-			"The `dimension` parameter must be a fully-qualified label key — e.g. `metric.labels.response_code` or " +
-			"`resource.labels.instance_id`. Call metrics_snapshot first to see `available_labels` " +
-			"if you're unsure which namespace a label is in. " +
-			"Use this after metrics_snapshot shows a regression — it answers 'which route/instance/status_code is responsible?' " +
-			"For comparing time windows (e.g. before/after deploy), use metrics_compare instead.",
+		Description: applyMode(mode, "Break down a metric by a label dimension to find which label values contribute most to an anomaly. "+
+			"Shows each contributor's delta from baseline and share of the total anomaly. "+
+			"The `dimension` parameter must be a fully-qualified label key — e.g. `metric.labels.response_code` or "+
+			"`resource.labels.instance_id`. Call metrics_snapshot first to see `available_labels` "+
+			"if you're unsure which namespace a label is in. "+
+			"Use this after metrics_snapshot shows a regression — it answers 'which route/instance/status_code is responsible?' "+
+			"For comparing time windows (e.g. before/after deploy), use metrics_compare instead."),
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),

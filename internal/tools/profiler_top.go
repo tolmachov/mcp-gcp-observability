@@ -10,15 +10,15 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-func RegisterProfilerTop(s *mcp.Server, client *gcpclient.Client, cache *gcpdata.ProfileCache) {
+func RegisterProfilerTop(s *mcp.Server, client *gcpclient.Client, cache *gcpdata.ProfileCache, mode RegistrationMode) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "profiler_top",
-		Description: "Show top functions from a profile ranked by resource consumption (like pprof top). " +
-			"Returns a flat ranking of functions by self or cumulative cost. " +
-			"Use profile_id from profiler_list results, or diff_id from profiler_compare. " +
-			"Start here to identify hotspots, then use profiler_peek for caller/callee context. " +
-			"For multi-value profiles (e.g. HEAP with alloc_space and alloc_objects), check available_values in the response.",
+		Description: applyMode(mode, "Show top functions from a profile ranked by resource consumption (like pprof top). "+
+			"Returns a flat ranking of functions by self or cumulative cost. "+
+			"Use profile_id from profiler_list results, or diff_id from profiler_compare. "+
+			"Start here to identify hotspots, then use profiler_peek for caller/callee context. "+
+			"For multi-value profiles (e.g. HEAP with alloc_space and alloc_objects), check available_values in the response."),
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),

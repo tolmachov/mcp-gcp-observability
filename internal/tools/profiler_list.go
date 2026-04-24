@@ -10,15 +10,15 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-func RegisterProfilerList(s *mcp.Server, client *gcpclient.Client) {
+func RegisterProfilerList(s *mcp.Server, client *gcpclient.Client, mode RegistrationMode) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "profiler_list",
-		Description: "List available Cloud Profiler profiles with metadata. " +
-			"Returns profile IDs, types, deployment targets, and timestamps — no profile data. " +
-			"Use the returned profile_id with profiler_top to start analyzing a profile. " +
-			"Supports filtering by profile_type (CPU, WALL, HEAP, THREADS, CONTENTION, PEAK_HEAP, HEAP_ALLOC) and target (service name). " +
-			"Requires Cloud Profiler API to be enabled.",
+		Description: applyMode(mode, "List available Cloud Profiler profiles with metadata. "+
+			"Returns profile IDs, types, deployment targets, and timestamps — no profile data. "+
+			"Use the returned profile_id with profiler_top to start analyzing a profile. "+
+			"Supports filtering by profile_type (CPU, WALL, HEAP, THREADS, CONTENTION, PEAK_HEAP, HEAP_ALLOC) and target (service name). "+
+			"Requires Cloud Profiler API to be enabled."),
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),

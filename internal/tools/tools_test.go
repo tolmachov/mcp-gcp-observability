@@ -7,7 +7,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
+	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -252,4 +254,110 @@ func TestFormatTraceGetError(t *testing.T) {
 			assert.Contains(t, got, tt.want)
 		})
 	}
+}
+
+func TestCompactDesc(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "multiple sentences: returns first sentence only",
+			input: "First sentence. Second sentence. Third sentence.",
+			want:  "First sentence.",
+		},
+		{
+			name:  "single sentence with trailing period",
+			input: "Only sentence.",
+			want:  "Only sentence.",
+		},
+		{
+			name:  "no period at all",
+			input: "No period here",
+			want:  "No period here",
+		},
+		{
+			name:  "sentence ending with period-space",
+			input: "First. Second.",
+			want:  "First.",
+		},
+		{
+			name:  "empty string",
+			input: "",
+			want:  "",
+		},
+		{
+			// abbreviations like "e.g." contain ". " — the splitter cuts there.
+			// This test documents the current behavior so any future change is explicit.
+			name:  "abbreviation mid-sentence cuts at abbreviation period",
+			input: "Fetches logs (e.g. ERROR level). Returns up to 1000 entries.",
+			want:  "Fetches logs (e.g.",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := compactDesc(tt.input)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestApplyMode(t *testing.T) {
+	full := "First sentence. Second sentence. Third sentence."
+
+	t.Run("ModeStandard returns full description", func(t *testing.T) {
+		assert.Equal(t, full, applyMode(ModeStandard, full))
+	})
+
+	t.Run("ModeCompact returns first sentence only", func(t *testing.T) {
+		assert.Equal(t, "First sentence.", applyMode(ModeCompact, full))
+	})
+}
+
+func TestRegistrationModeString(t *testing.T) {
+	assert.Equal(t, "standard", ModeStandard.String())
+	assert.Equal(t, "compact", ModeCompact.String())
+	assert.Equal(t, "RegistrationMode(99)", RegistrationMode(99).String())
+}
+
+// TestRegisterCoreToolCount verifies that RegisterCore registers exactly 10 tools
+// as documented: logs_summary, logs_services, errors_list, errors_get,
+// metrics_snapshot, metrics_top_contributors, trace_list, trace_get,
+// profiler_list, profiler_top. If this count changes, the "monitoring" variant
+// contract is broken.
+func TestRegisterCoreToolCount(t *testing.T) {
+	ts := newTestToolServer(t)
+	// Use non-nil client (required by requireClient at registration time).
+	// Metrics and profile deps can be nil — they are only accessed inside handlers.
+	RegisterCore(
+		ts.server,
+		&gcpclient.Client{},
+		nil, // MetricsQuerier — interface, nil OK for registration
+		metrics.NewRegistry(),
+		"test-project",
+		nil, // ProfileCache — only used inside handlers
+		ModeStandard,
+	)
+
+	ctx := context.Background()
+	ts.connect(ctx)
+	defer ts.close()
+
+	result, err := ts.session.ListTools(ctx, nil)
+	require.NoError(t, err)
+	assert.Len(t, result.Tools, 10, "RegisterCore must register exactly 10 monitoring-variant tools")
+
+	wantTools := []string{
+		"logs_summary", "logs_services",
+		"errors_list", "errors_get",
+		"metrics_snapshot", "metrics_top_contributors",
+		"trace_list", "trace_get",
+		"profiler_list", "profiler_top",
+	}
+	var gotNames []string
+	for _, tool := range result.Tools {
+		gotNames = append(gotNames, tool.Name)
+	}
+	assert.ElementsMatch(t, wantTools, gotNames)
 }

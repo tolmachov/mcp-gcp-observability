@@ -2,7 +2,8 @@ package server
 
 import (
 	"context"
-	"fmt"
+	"io"
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -110,31 +111,27 @@ func TestPromptCompleter_NonEmptyRegistry(t *testing.T) {
 	assert.Equal(t, metricType, result.Completion.Values[0])
 }
 
-func TestTransportValidation(t *testing.T) {
-	tests := []struct {
-		transport Transport
-		wantErr   bool
-	}{
-		{TransportStdio, false},
-		{TransportHTTP, false},
-		{"", false},
-		{"grpc", true},
-		{"HTTP", true},
+// TestBuildSingleVariantServerUnknownVariant verifies that buildSingleVariantServer
+// returns a descriptive error for unknown variant IDs without panicking.
+// This guards the case where Run()'s upfront validation is bypassed (e.g. in tests).
+func TestBuildSingleVariantServerUnknownVariant(t *testing.T) {
+	s := &Server{
+		completer: &promptCompleter{},
+		version:   "test",
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	for _, tt := range tests {
-		t.Run(string(tt.transport), func(t *testing.T) {
-			var err error
-			switch tt.transport {
-			case TransportHTTP:
-			case TransportStdio, "":
-			default:
-				err = fmt.Errorf("unsupported transport %q", tt.transport)
-			}
-			if tt.wantErr {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
+	_, err := s.buildSingleVariantServer("bogus", nil, nil, nil, "", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bogus")
+	assert.Contains(t, err.Error(), "must be one of")
+}
+
+// TestValidVariantIDsCoversSwitch ensures ValidVariantIDs lists every ID handled
+// by buildSingleVariantServer's switch, so the two cannot silently drift.
+func TestValidVariantIDsCoversSwitch(t *testing.T) {
+	// The switch in buildSingleVariantServer covers "full", "compact", "monitoring".
+	// Any ID not in that set must be in the default branch and return an error.
+	switchCases := []string{"full", "compact", "monitoring"}
+	assert.ElementsMatch(t, switchCases, ValidVariantIDs,
+		"ValidVariantIDs must match the cases in buildSingleVariantServer switch")
 }

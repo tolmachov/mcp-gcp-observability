@@ -10,14 +10,14 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-func RegisterLogsQuery(s *mcp.Server, client *gcpclient.Client) {
+func RegisterLogsQuery(s *mcp.Server, client *gcpclient.Client, mode RegistrationMode) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "logs_query",
-		Description: "Execute an arbitrary Cloud Logging query with full filter syntax. " +
-			"Use Cloud Logging filter language (e.g. severity>=ERROR, resource.type=\"k8s_container\"). " +
-			"For Kubernetes logs, prefer logs_k8s which builds filters automatically. " +
-			"For initial triage, use logs_summary instead.",
+		Description: applyMode(mode, "Execute an arbitrary Cloud Logging query with full filter syntax. "+
+			"Use Cloud Logging filter language (e.g. severity>=ERROR, resource.type=\"k8s_container\"). "+
+			"For Kubernetes logs, prefer logs_k8s which builds filters automatically. "+
+			"For initial triage, use logs_summary instead."),
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),

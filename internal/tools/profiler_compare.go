@@ -11,15 +11,15 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-func RegisterProfilerCompare(s *mcp.Server, client *gcpclient.Client, cache *gcpdata.ProfileCache) {
+func RegisterProfilerCompare(s *mcp.Server, client *gcpclient.Client, cache *gcpdata.ProfileCache, mode RegistrationMode) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "profiler_compare",
-		Description: "Compare two profiles and identify regressions and improvements. " +
-			"Takes a current profile_id and a base_profile_id, computes the diff, and returns a summary. " +
-			"The returned diff_id can be used with profiler_top, profiler_peek, and profiler_flamegraph " +
-			"to navigate the diff — positive values mean regression, negative mean improvement. " +
-			"Useful for before/after deploy comparisons and regression hunting.",
+		Description: applyMode(mode, "Compare two profiles and identify regressions and improvements. "+
+			"Takes a current profile_id and a base_profile_id, computes the diff, and returns a summary. "+
+			"The returned diff_id can be used with profiler_top, profiler_peek, and profiler_flamegraph "+
+			"to navigate the diff — positive values mean regression, negative mean improvement. "+
+			"Useful for before/after deploy comparisons and regression hunting."),
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),

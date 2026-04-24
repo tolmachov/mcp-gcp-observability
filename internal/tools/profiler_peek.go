@@ -10,15 +10,15 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-func RegisterProfilerPeek(s *mcp.Server, client *gcpclient.Client, cache *gcpdata.ProfileCache) {
+func RegisterProfilerPeek(s *mcp.Server, client *gcpclient.Client, cache *gcpdata.ProfileCache, mode RegistrationMode) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "profiler_peek",
-		Description: "Show callers and callees of a specific function in a profile (like pprof peek). " +
-			"Navigates the call graph: who calls this function, and what does it call? " +
-			"Use function names from profiler_top results. Substring matching is used. " +
-			"If the name is ambiguous, the error will list matching candidates — use a more specific name. " +
-			"Works with both regular profile_id and diff_id from profiler_compare.",
+		Description: applyMode(mode, "Show callers and callees of a specific function in a profile (like pprof peek). "+
+			"Navigates the call graph: who calls this function, and what does it call? "+
+			"Use function names from profiler_top results. Substring matching is used. "+
+			"If the name is ambiguous, the error will list matching candidates — use a more specific name. "+
+			"Works with both regular profile_id and diff_id from profiler_compare."),
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),

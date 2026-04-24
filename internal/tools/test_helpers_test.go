@@ -31,23 +31,23 @@ func newTestToolServer(t *testing.T) *testToolServer {
 }
 
 func (ts *testToolServer) registerMetricsSnapshot(querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string) {
-	RegisterMetricsSnapshot(ts.server, querier, registry, defaultProject)
+	RegisterMetricsSnapshot(ts.server, querier, registry, defaultProject, ModeStandard)
 }
 
 func (ts *testToolServer) registerMetricsTop(querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string) {
-	RegisterMetricsTop(ts.server, querier, registry, defaultProject)
+	RegisterMetricsTop(ts.server, querier, registry, defaultProject, ModeStandard)
 }
 
 func (ts *testToolServer) registerMetricsRelated(querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string) {
-	RegisterMetricsRelated(ts.server, querier, registry, defaultProject)
+	RegisterMetricsRelated(ts.server, querier, registry, defaultProject, ModeStandard)
 }
 
 func (ts *testToolServer) registerMetricsCompare(querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string) {
-	RegisterMetricsCompare(ts.server, querier, registry, defaultProject)
+	RegisterMetricsCompare(ts.server, querier, registry, defaultProject, ModeStandard)
 }
 
 func (ts *testToolServer) registerMetricsList(querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string) {
-	RegisterMetricsList(ts.server, querier, registry, defaultProject)
+	RegisterMetricsList(ts.server, querier, registry, defaultProject, ModeStandard)
 }
 
 // connect starts the server and connects a client via InMemoryTransport.

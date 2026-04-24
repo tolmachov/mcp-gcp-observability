@@ -10,13 +10,13 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-func RegisterErrorsGet(s *mcp.Server, client *gcpclient.Client) {
+func RegisterErrorsGet(s *mcp.Server, client *gcpclient.Client, mode RegistrationMode) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "errors_get",
-		Description: "Get details for a specific error group, including individual error events, reported stack traces/messages, and structured context when available. " +
-			"Requires a group_id from errors_list results. " +
-			"Returns all recent events for the group (time filtering is not supported for individual error events).",
+		Description: applyMode(mode, "Get details for a specific error group, including individual error events, reported stack traces/messages, and structured context when available. "+
+			"Requires a group_id from errors_list results. "+
+			"Returns all recent events for the group (time filtering is not supported for individual error events)."),
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),

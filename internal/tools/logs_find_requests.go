@@ -10,12 +10,12 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-func RegisterLogsFindRequests(s *mcp.Server, client *gcpclient.Client) {
+func RegisterLogsFindRequests(s *mcp.Server, client *gcpclient.Client, mode RegistrationMode) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "logs_find_requests",
-		Description: "Find examples of HTTP requests by URL pattern. " +
-			"Returns trace_id and request_id for each request, enabling deeper investigation with logs_by_trace, logs_by_request_id, or trace_get.",
+		Description: applyMode(mode, "Find examples of HTTP requests by URL pattern. "+
+			"Returns trace_id and request_id for each request, enabling deeper investigation with logs_by_trace, logs_by_request_id, or trace_get."),
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),

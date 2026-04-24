@@ -10,13 +10,13 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-func RegisterLogsSummary(s *mcp.Server, client *gcpclient.Client) {
+func RegisterLogsSummary(s *mcp.Server, client *gcpclient.Client, mode RegistrationMode) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "logs_summary",
-		Description: "Get an aggregated summary of logs (based on up to 1000 sampled entries): severity distribution, top services, top errors, and sample entries. " +
-			"Useful for initial triage before drilling down with logs_query or logs_k8s. " +
-			"Does NOT return full log entries — use logs_query for that.",
+		Description: applyMode(mode, "Get an aggregated summary of logs (based on up to 1000 sampled entries): severity distribution, top services, top errors, and sample entries. "+
+			"Useful for initial triage before drilling down with logs_query or logs_k8s. "+
+			"Does NOT return full log entries — use logs_query for that."),
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),

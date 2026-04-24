@@ -10,15 +10,15 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-func RegisterLogsByRequestID(s *mcp.Server, client *gcpclient.Client) {
+func RegisterLogsByRequestID(s *mcp.Server, client *gcpclient.Client, mode RegistrationMode) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "logs_by_request_id",
-		Description: "Find all log entries associated with a specific request ID. " +
-			"Matches common structured-log fields such as jsonPayload.request_id, jsonPayload.requestId, labels.request_id, and labels.requestId. " +
-			"Returns logs sorted by timestamp ascending to show the full request lifecycle. " +
-			"Get request IDs from logs_find_requests results. " +
-			"If you have a trace ID instead, use logs_by_trace or trace_get.",
+		Description: applyMode(mode, "Find all log entries associated with a specific request ID. "+
+			"Matches common structured-log fields such as jsonPayload.request_id, jsonPayload.requestId, labels.request_id, and labels.requestId. "+
+			"Returns logs sorted by timestamp ascending to show the full request lifecycle. "+
+			"Get request IDs from logs_find_requests results. "+
+			"If you have a trace ID instead, use logs_by_trace or trace_get."),
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),

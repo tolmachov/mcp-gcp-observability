@@ -77,18 +77,18 @@ func snapshotCallResult(result *MetricSnapshotResult) *mcp.CallToolResult {
 	}
 }
 
-func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string) {
+func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string, mode RegistrationMode) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "metrics_snapshot",
-		Description: "Get a semantic snapshot of a metric with baseline comparison, trend detection, and classification. " +
-			"Returns current value, baseline delta, trend, SLO breach status, and a classification label. " +
-			"Also renders an interactive time-series chart inline in the chat (hosts that support MCP app widgets). " +
-			"The response includes `available_labels` — the metric.labels.* and resource.labels.* keys this metric accepts — " +
-			"so follow-up calls can construct valid filters without guessing. " +
-			"Use metrics_list first to discover metric_type values. " +
-			"After getting a snapshot, use metrics_top_contributors to drill down by dimension, " +
-			"or metrics_related to check correlated signals. " +
-			"For comparing two specific time windows (e.g. before/after deploy), use metrics_compare instead.",
+		Description: applyMode(mode, "Get a semantic snapshot of a metric with baseline comparison, trend detection, and classification. "+
+			"Returns current value, baseline delta, trend, SLO breach status, and a classification label. "+
+			"Also renders an interactive time-series chart inline in the chat (hosts that support MCP app widgets). "+
+			"The response includes `available_labels` — the metric.labels.* and resource.labels.* keys this metric accepts — "+
+			"so follow-up calls can construct valid filters without guessing. "+
+			"Use metrics_list first to discover metric_type values. "+
+			"After getting a snapshot, use metrics_top_contributors to drill down by dimension, "+
+			"or metrics_related to check correlated signals. "+
+			"For comparing two specific time windows (e.g. before/after deploy), use metrics_compare instead."),
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),

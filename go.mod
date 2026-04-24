@@ -11,6 +11,7 @@ require (
 	github.com/google/jsonschema-go v0.4.2
 	github.com/google/pprof v0.0.0-20260402051712-545e8a4df936
 	github.com/joho/godotenv v1.5.1
+	github.com/modelcontextprotocol/experimental-ext-variants/go/sdk v0.0.0-20260323153957-e5e8f117e868
 	github.com/modelcontextprotocol/go-sdk v1.5.0
 	github.com/stretchr/testify v1.11.1
 	github.com/urfave/cli/v3 v3.8.0

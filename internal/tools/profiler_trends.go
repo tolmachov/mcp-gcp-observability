@@ -10,15 +10,15 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-func RegisterProfilerTrends(s *mcp.Server, client *gcpclient.Client, cache *gcpdata.ProfileCache) {
+func RegisterProfilerTrends(s *mcp.Server, client *gcpclient.Client, cache *gcpdata.ProfileCache, mode RegistrationMode) {
 	requireClient(client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "profiler_trends",
-		Description: "Show how function costs change over time across multiple profiles (Profile history). " +
-			"Analyzes multiple profiles of the same type and target to build a time series of " +
-			"self and cumulative cost for top functions. Useful for detecting performance regressions " +
-			"or improvements over time. Both profile_type and target are required. " +
-			"Use function_filter to focus on specific functions from profiler_top results.",
+		Description: applyMode(mode, "Show how function costs change over time across multiple profiles (Profile history). "+
+			"Analyzes multiple profiles of the same type and target to build a time series of "+
+			"self and cumulative cost for top functions. Useful for detecting performance regressions "+
+			"or improvements over time. Both profile_type and target are required. "+
+			"Use function_filter to focus on specific functions from profiler_top results."),
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),

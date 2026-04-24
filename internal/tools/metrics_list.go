@@ -11,17 +11,17 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
 
-func RegisterMetricsList(s *mcp.Server, querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string) {
+func RegisterMetricsList(s *mcp.Server, querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string, mode RegistrationMode) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "metrics_list",
-		Description: "Discover available metrics from Cloud Monitoring and the semantic registry. " +
-			"Use this first to find metric_type values before calling metrics_snapshot. " +
-			"The 'match' parameter searches metric names, the auto-derived service prefix, " +
-			"and semantic keywords — so category synonyms like 'queue', 'cache', 'database', " +
-			"'nosql', 'warehouse', or 'serverless' will find the relevant services even when " +
-			"the literal word isn't in the metric name. " +
-			"Results include kind, unit, and direction for each metric. " +
-			"Does NOT return time series data — use metrics_snapshot for that.",
+		Description: applyMode(mode, "Discover available metrics from Cloud Monitoring and the semantic registry. "+
+			"Use this first to find metric_type values before calling metrics_snapshot. "+
+			"The 'match' parameter searches metric names, the auto-derived service prefix, "+
+			"and semantic keywords — so category synonyms like 'queue', 'cache', 'database', "+
+			"'nosql', 'warehouse', or 'serverless' will find the relevant services even when "+
+			"the literal word isn't in the metric name. "+
+			"Results include kind, unit, and direction for each metric. "+
+			"Does NOT return time series data — use metrics_snapshot for that."),
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),

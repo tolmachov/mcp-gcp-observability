@@ -47,14 +47,14 @@ func classifyErr(err error) (reason string, benign bool) {
 	return err.Error(), false
 }
 
-func RegisterMetricsRelated(s *mcp.Server, querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string) {
+func RegisterMetricsRelated(s *mcp.Server, querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string, mode RegistrationMode) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "metrics_related",
-		Description: "Check all related metrics (configured in the semantic registry) for the given metric and return which are anomalous. " +
-			"Returns all related signals, not just anomalous ones, so you can see the full context. " +
-			"Requires the metric to be configured in the registry with related_metrics. " +
-			"Use this after metrics_snapshot to understand whether correlated signals moved together. " +
-			"For breaking down a single metric by dimension, use metrics_top_contributors instead.",
+		Description: applyMode(mode, "Check all related metrics (configured in the semantic registry) for the given metric and return which are anomalous. "+
+			"Returns all related signals, not just anomalous ones, so you can see the full context. "+
+			"Requires the metric to be configured in the registry with related_metrics. "+
+			"Use this after metrics_snapshot to understand whether correlated signals moved together. "+
+			"For breaking down a single metric by dimension, use metrics_top_contributors instead."),
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),
