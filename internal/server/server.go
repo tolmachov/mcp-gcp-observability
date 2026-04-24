@@ -677,8 +677,12 @@ func (s *Server) registerPrompts(srv *mcp.Server) {
 		}
 		serverBinary, execErr := os.Executable()
 		if execErr != nil || serverBinary == "" {
-			s.logger.Warn("could not determine server binary path, using default name", "err", execErr)
-			serverBinary = "mcp-gcp-observability"
+			// Surface the uncertainty in the prompt itself: the user invoking
+			// the prompt does not see s.logger output, so a silent "mcp-gcp-
+			// observability" fallback would have them copy-paste a command
+			// that may not exist on their PATH.
+			s.logger.Warn("could not determine server binary path", "err", execErr)
+			serverBinary = "<path-to-mcp-gcp-observability>"
 		}
 		msg := fmt.Sprintf(`Generate a metrics registry overlay for the mcp-gcp-observability MCP server.
 
