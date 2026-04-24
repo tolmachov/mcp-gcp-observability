@@ -223,6 +223,8 @@ func (s *Server) buildSingleVariantServer(
 ) (result *mcp.Server, retErr error) {
 	defer func() {
 		if r := recover(); r != nil {
+			stack := debug.Stack()
+			s.logger.Error("tool registration panic", "variant", variantID, "panic", r, "stack", string(stack))
 			retErr = fmt.Errorf("tool registration panic: %v", r)
 		}
 	}()
@@ -302,6 +304,8 @@ func (s *Server) buildVariantsServer(
 ) (result *variants.Server, retErr error) {
 	defer func() {
 		if r := recover(); r != nil {
+			stack := debug.Stack()
+			s.logger.Error("tool registration panic", "panic", r, "stack", string(stack))
 			retErr = fmt.Errorf("tool registration panic: %v", r)
 		}
 	}()
@@ -410,19 +414,36 @@ func (s *Server) serveHTTP(ctx context.Context, handler http.Handler, addr strin
 }
 
 // runHTTP starts a streamable HTTP server for the variants.Server.
-// Closes vs on return and recovers from panics in variants SDK initialisation.
+// Closes vs on return; the deferred recover wraps the whole method, so
+// panics from variants.NewStreamableHTTPHandler or HTTP setup are converted
+// to errors with a logged stack trace.
 func (s *Server) runHTTP(ctx context.Context, vs *variants.Server, addr string) (retErr error) {
-	defer vs.Close()
+	defer func() {
+		if err := vs.Close(); err != nil {
+			s.logger.Warn("failed to close variants server", "err", err)
+		}
+	}()
 	defer func() {
 		if r := recover(); r != nil {
+			stack := debug.Stack()
+			s.logger.Error("variants HTTP init panic", "panic", r, "stack", string(stack))
 			retErr = fmt.Errorf("variants HTTP init panic: %v", r)
 		}
 	}()
 	return s.serveHTTP(ctx, variants.NewStreamableHTTPHandler(vs, nil), addr)
 }
 
-// runMCPHTTP starts a streamable HTTP server for a single forced-variant *mcp.Server.
-func (s *Server) runMCPHTTP(ctx context.Context, srv *mcp.Server, addr string) error {
+// runMCPHTTP serves a single *mcp.Server over streamable HTTP (used when
+// the variants protocol is bypassed via --variant). The deferred recover
+// mirrors runHTTP for symmetry — same panic risk surface.
+func (s *Server) runMCPHTTP(ctx context.Context, srv *mcp.Server, addr string) (retErr error) {
+	defer func() {
+		if r := recover(); r != nil {
+			stack := debug.Stack()
+			s.logger.Error("MCP HTTP init panic", "panic", r, "stack", string(stack))
+			retErr = fmt.Errorf("MCP HTTP init panic: %v", r)
+		}
+	}()
 	handler := mcp.NewStreamableHTTPHandler(
 		func(_ *http.Request) *mcp.Server { return srv },
 		nil,
