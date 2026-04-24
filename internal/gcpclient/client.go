@@ -48,6 +48,15 @@ func (c *Client) ProfilerService() *cloudprofiler.ExportClient { return c.profil
 // Config returns a copy of the client configuration.
 func (c *Client) Config() Config { return *c.config }
 
+// NewForTesting constructs a Client wrapping the given config without
+// initialising any GCP API clients. Config() works; the *Client getters
+// (LoggingClient, ErrorsClient, etc.) all return nil. Use only in tests
+// that need to register tools or build resources but do not invoke handlers.
+func NewForTesting(cfg Config) *Client {
+	cfgCopy := cfg
+	return &Client{config: &cfgCopy}
+}
+
 // New creates a new GCP client with Logging, Error Reporting, Cloud Trace, Cloud Monitoring,
 // and Cloud Profiler API clients. Optionally configures a custom DNS resolver from Config.DNSServer.
 func New(ctx context.Context, cfg *Config) (*Client, error) {
