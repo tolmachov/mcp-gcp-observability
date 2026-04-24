@@ -7,7 +7,6 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
@@ -45,11 +44,11 @@ var flamegraphSchema = &jsonschema.Schema{
 	},
 }
 
-func RegisterProfilerFlamegraph(s *mcp.Server, client *gcpclient.Client, cache *gcpdata.ProfileCache, mode RegistrationMode) {
-	requireClient(client)
+func RegisterProfilerFlamegraph(s *mcp.Server, d Deps) {
+	requireClient(d.Client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "profiler_flamegraph",
-		Description: applyMode(mode, "Get a bounded subtree of the profile call tree (like a flamegraph view). "+
+		Description: applyMode(d.Mode, "Get a bounded subtree of the profile call tree (like a flamegraph view). "+
 			"Returns a tree of function calls pruned by max_depth and min_pct. "+
 			"Use root_function to focus on a specific subtree (omit for full profile). "+
 			"Use profiler_top first to identify interesting functions, then drill down here. "+
@@ -67,7 +66,7 @@ func RegisterProfilerFlamegraph(s *mcp.Server, client *gcpclient.Client, cache *
 		if in.ValueIndex < 0 {
 			return errResult("value_index must be non-negative"), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -87,7 +86,7 @@ func RegisterProfilerFlamegraph(s *mcp.Server, client *gcpclient.Client, cache *
 
 		sendProgress(ctx, req, 0, 2, "Downloading profile...")
 
-		p, meta, err := gcpdata.GetOrFetchProfile(ctx, client.ProfilerService(), cache, project, in.ProfileID)
+		p, meta, err := gcpdata.GetOrFetchProfile(ctx, d.Client.ProfilerService(), d.ProfileCache, project, in.ProfileID)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "profiler_flamegraph", fmt.Sprintf("fetch profile failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to fetch profile: %v", err)), nil, nil

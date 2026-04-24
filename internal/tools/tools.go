@@ -69,28 +69,36 @@ func applyMode(mode RegistrationMode, full string) string {
 	}
 }
 
+// Deps bundles every dependency that any Register* function might need. Each
+// Register* uses the subset relevant to its tool. Putting them in a single
+// struct decouples adding a new dependency (one field change) from updating
+// 22+ Register* call sites, and removes the positional-argument confusion of
+// the previous (client, querier, registry, defaultProject, profileCache, mode)
+// shape. Mode lives here too so that every tool registration is a uniform
+// (server, deps) call; the variant builders set Mode per spec.
+type Deps struct {
+	Client         *gcpclient.Client
+	Querier        gcpdata.MetricsQuerier
+	Registry       *metrics.Registry
+	DefaultProject string
+	ProfileCache   *gcpdata.ProfileCache
+	Mode           RegistrationMode
+}
+
 // RegisterCore registers the 10 core monitoring tools: logs_summary, logs_services,
 // errors_list, errors_get, metrics_snapshot, metrics_top_contributors, trace_list,
 // trace_get, profiler_list, profiler_top.
-func RegisterCore(
-	s *mcp.Server,
-	client *gcpclient.Client,
-	querier gcpdata.MetricsQuerier,
-	reg *metrics.Registry,
-	defaultProject string,
-	profileCache *gcpdata.ProfileCache,
-	mode RegistrationMode,
-) {
-	RegisterLogsSummary(s, client, mode)
-	RegisterLogsServices(s, client, mode)
-	RegisterErrorsList(s, client, mode)
-	RegisterErrorsGet(s, client, mode)
-	RegisterMetricsSnapshot(s, querier, reg, defaultProject, mode)
-	RegisterMetricsTop(s, querier, reg, defaultProject, mode)
-	RegisterTraceList(s, client, mode)
-	RegisterTraceGet(s, client, mode)
-	RegisterProfilerList(s, client, mode)
-	RegisterProfilerTop(s, client, profileCache, mode)
+func RegisterCore(s *mcp.Server, d Deps) {
+	RegisterLogsSummary(s, d)
+	RegisterLogsServices(s, d)
+	RegisterErrorsList(s, d)
+	RegisterErrorsGet(s, d)
+	RegisterMetricsSnapshot(s, d)
+	RegisterMetricsTop(s, d)
+	RegisterTraceList(s, d)
+	RegisterTraceGet(s, d)
+	RegisterProfilerList(s, d)
+	RegisterProfilerTop(s, d)
 }
 
 // Logging level constants for MCP log notifications.

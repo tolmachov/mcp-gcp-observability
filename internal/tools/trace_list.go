@@ -7,15 +7,14 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-func RegisterTraceList(s *mcp.Server, client *gcpclient.Client, mode RegistrationMode) {
-	requireClient(client)
+func RegisterTraceList(s *mcp.Server, d Deps) {
+	requireClient(d.Client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "trace_list",
-		Description: applyMode(mode, "Search for traces by criteria such as span name, latency, or time range. "+
+		Description: applyMode(d.Mode, "Search for traces by criteria such as span name, latency, or time range. "+
 			"Returns trace summaries with root span info — use trace_get with a returned trace_id for full span details. "+
 			"Supports structured filters (root_name, span_name, min_latency) or raw Cloud Trace filter syntax. "+
 			"Default time range is the last 1 hour. Requires Cloud Trace API to be enabled."),
@@ -30,7 +29,7 @@ func RegisterTraceList(s *mcp.Server, client *gcpclient.Client, mode Registratio
 		),
 		OutputSchema: outputSchemaFor[gcpdata.TraceListResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in TraceListInput) (*mcp.CallToolResult, *gcpdata.TraceListResult, error) {
-		project, err := resolveProject(in.ProjectID, client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -53,7 +52,7 @@ func RegisterTraceList(s *mcp.Server, client *gcpclient.Client, mode Registratio
 
 		sendProgress(ctx, req, 0, 1, "Listing traces...")
 
-		result, err := gcpdata.ListTraces(ctx, client.TraceClient(), project,
+		result, err := gcpdata.ListTraces(ctx, d.Client.TraceClient(), project,
 			filter, in.View, in.OrderBy, startTime, endTime, pageSize, in.PageToken)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "trace_list", fmt.Sprintf("list traces failed: %v", err))

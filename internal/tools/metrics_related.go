@@ -47,10 +47,10 @@ func classifyErr(err error) (reason string, benign bool) {
 	return err.Error(), false
 }
 
-func RegisterMetricsRelated(s *mcp.Server, querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string, mode RegistrationMode) {
+func RegisterMetricsRelated(s *mcp.Server, d Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "metrics_related",
-		Description: applyMode(mode, "Check all related metrics (configured in the semantic registry) for the given metric and return which are anomalous. "+
+		Description: applyMode(d.Mode, "Check all related metrics (configured in the semantic registry) for the given metric and return which are anomalous. "+
 			"Returns all related signals, not just anomalous ones, so you can see the full context. "+
 			"Requires the metric to be configured in the registry with related_metrics. "+
 			"Use this after metrics_snapshot to understand whether correlated signals moved together. "+
@@ -68,7 +68,7 @@ func RegisterMetricsRelated(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 		if in.MetricType == "" {
 			return errResult("metric_type is required"), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, defaultProject)
+		project, err := resolveProject(in.ProjectID, d.DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -82,7 +82,7 @@ func RegisterMetricsRelated(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 			return errResult(err.Error()), nil, nil
 		}
 
-		related := registry.RelatedMetrics(in.MetricType)
+		related := d.Registry.RelatedMetrics(in.MetricType)
 		if len(related) == 0 {
 			r := &RelatedSignalsResult{
 				Message: fmt.Sprintf("No related metrics configured for %q. Add related_metrics in the registry YAML to use this tool.", in.MetricType),
@@ -155,9 +155,9 @@ func RegisterMetricsRelated(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 					return
 				}
 
-				relMeta := registry.Lookup(relMetric)
+				relMeta := d.Registry.Lookup(relMetric)
 
-				relDesc, err := querier.GetMetricDescriptor(ctx, project, relMetric)
+				relDesc, err := d.Querier.GetMetricDescriptor(ctx, project, relMetric)
 				if err != nil {
 					mcpLog(ctx, req, logLevelWarning, "metrics_related",
 						fmt.Sprintf("descriptor lookup failed for %s: %v", relMetric, err))
@@ -185,7 +185,7 @@ func RegisterMetricsRelated(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 					return
 				}
 
-				currentSeries, currentWarnings, qErr := querier.QueryTimeSeriesAggregated(ctx, params, relAggSpec)
+				currentSeries, currentWarnings, qErr := d.Querier.QueryTimeSeriesAggregated(ctx, params, relAggSpec)
 				logAggregationWarnings(ctx, req, "metrics_related", relMetric, "current", currentWarnings)
 				addWarningNote(aggregationWarningsNote(relMetric, "current", currentWarnings))
 				if qErr != nil {
@@ -213,7 +213,7 @@ func RegisterMetricsRelated(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 				baselineParams := params
 				baselineParams.End = start
 				baselineParams.Start = start.Add(-windowDur)
-				baselineSeries, baselineWarnings, qErr := querier.QueryTimeSeriesAggregated(ctx, baselineParams, relAggSpec)
+				baselineSeries, baselineWarnings, qErr := d.Querier.QueryTimeSeriesAggregated(ctx, baselineParams, relAggSpec)
 				logAggregationWarnings(ctx, req, "metrics_related", relMetric, "baseline", baselineWarnings)
 				addWarningNote(aggregationWarningsNote(relMetric, "baseline", baselineWarnings))
 				if qErr != nil {

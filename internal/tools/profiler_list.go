@@ -6,15 +6,14 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-func RegisterProfilerList(s *mcp.Server, client *gcpclient.Client, mode RegistrationMode) {
-	requireClient(client)
+func RegisterProfilerList(s *mcp.Server, d Deps) {
+	requireClient(d.Client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "profiler_list",
-		Description: applyMode(mode, "List available Cloud Profiler profiles with metadata. "+
+		Description: applyMode(d.Mode, "List available Cloud Profiler profiles with metadata. "+
 			"Returns profile IDs, types, deployment targets, and timestamps — no profile data. "+
 			"Use the returned profile_id with profiler_top to start analyzing a profile. "+
 			"Supports filtering by profile_type (CPU, WALL, HEAP, THREADS, CONTENTION, PEAK_HEAP, HEAP_ALLOC) and target (service name). "+
@@ -29,7 +28,7 @@ func RegisterProfilerList(s *mcp.Server, client *gcpclient.Client, mode Registra
 		),
 		OutputSchema: outputSchemaFor[gcpdata.ProfileListResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerListInput) (*mcp.CallToolResult, *gcpdata.ProfileListResult, error) {
-		project, err := resolveProject(in.ProjectID, client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -41,7 +40,7 @@ func RegisterProfilerList(s *mcp.Server, client *gcpclient.Client, mode Registra
 
 		sendProgress(ctx, req, 0, 1, "Listing profiles...")
 
-		result, err := gcpdata.ListProfiles(ctx, client.ProfilerService(), project,
+		result, err := gcpdata.ListProfiles(ctx, d.Client.ProfilerService(), project,
 			in.ProfileType, in.Target, in.StartTime, in.EndTime, pageSize, in.PageToken)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "profiler_list", fmt.Sprintf("list profiles failed: %v", err))

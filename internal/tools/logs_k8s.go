@@ -7,15 +7,14 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-func RegisterLogsK8s(s *mcp.Server, client *gcpclient.Client, mode RegistrationMode) {
-	requireClient(client)
+func RegisterLogsK8s(s *mcp.Server, d Deps) {
+	requireClient(d.Client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "logs_k8s",
-		Description: applyMode(mode, "Query Kubernetes container logs with convenient filters. "+
+		Description: applyMode(d.Mode, "Query Kubernetes container logs with convenient filters. "+
 			"Automatically builds Cloud Logging filter for resource.type=\"k8s_container\". "+
 			"Preferred over logs_query for K8s workloads. Results default to newest-first (use order parameter to change)."),
 		Annotations: &mcp.ToolAnnotations{
@@ -29,11 +28,11 @@ func RegisterLogsK8s(s *mcp.Server, client *gcpclient.Client, mode RegistrationM
 		),
 		OutputSchema: outputSchemaFor[gcpdata.LogQueryResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsK8sInput) (*mcp.CallToolResult, *gcpdata.LogQueryResult, error) {
-		project, err := resolveProject(in.ProjectID, client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
-		limit := clampLimit(in.Limit, 100, client.Config().LogsMaxLimit)
+		limit := clampLimit(in.Limit, 100, d.Client.Config().LogsMaxLimit)
 
 		// Build K8s-specific filter
 		parts := []string{`resource.type="k8s_container"`}
@@ -77,7 +76,7 @@ func RegisterLogsK8s(s *mcp.Server, client *gcpclient.Client, mode RegistrationM
 
 		sendProgress(ctx, req, 0, 1, "Querying Kubernetes logs...")
 
-		result, err := gcpdata.QueryLogs(ctx, client.LoggingClient(), project, filter, limit, order, in.PageToken)
+		result, err := gcpdata.QueryLogs(ctx, d.Client.LoggingClient(), project, filter, limit, order, in.PageToken)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "logs_k8s", fmt.Sprintf("query failed for project %s: %v", project, err))
 			return errResult(fmt.Sprintf("Failed to query K8s logs: %v. Verify the project_id and that K8s logging is enabled.", err)), nil, nil

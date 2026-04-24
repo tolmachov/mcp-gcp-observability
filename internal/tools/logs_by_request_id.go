@@ -6,15 +6,14 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-func RegisterLogsByRequestID(s *mcp.Server, client *gcpclient.Client, mode RegistrationMode) {
-	requireClient(client)
+func RegisterLogsByRequestID(s *mcp.Server, d Deps) {
+	requireClient(d.Client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "logs_by_request_id",
-		Description: applyMode(mode, "Find all log entries associated with a specific request ID. "+
+		Description: applyMode(d.Mode, "Find all log entries associated with a specific request ID. "+
 			"Matches common structured-log fields such as jsonPayload.request_id, jsonPayload.requestId, labels.request_id, and labels.requestId. "+
 			"Returns logs sorted by timestamp ascending to show the full request lifecycle. "+
 			"Get request IDs from logs_find_requests results. "+
@@ -29,11 +28,11 @@ func RegisterLogsByRequestID(s *mcp.Server, client *gcpclient.Client, mode Regis
 		if in.RequestID == "" {
 			return errResult("request_id is required"), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
-		limit := clampLimit(in.Limit, 100, client.Config().LogsMaxLimit)
+		limit := clampLimit(in.Limit, 100, d.Client.Config().LogsMaxLimit)
 
 		timeFilter, err := buildTimeFilter(in.TimeFilterInput)
 		if err != nil {
@@ -42,7 +41,7 @@ func RegisterLogsByRequestID(s *mcp.Server, client *gcpclient.Client, mode Regis
 
 		sendProgress(ctx, req, 0, 1, "Querying logs by request ID...")
 
-		result, err := gcpdata.QueryLogsByRequestID(ctx, client.LoggingClient(), project, in.RequestID, timeFilter, limit, in.PageToken)
+		result, err := gcpdata.QueryLogsByRequestID(ctx, d.Client.LoggingClient(), project, in.RequestID, timeFilter, limit, in.PageToken)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "logs_by_request_id", fmt.Sprintf("request ID query failed for %s: %v", in.RequestID, err))
 			return errResult(fmt.Sprintf("Failed to query logs by request ID: %v. Verify the request_id is correct. Use logs_find_requests to discover valid request IDs.", err)), nil, nil

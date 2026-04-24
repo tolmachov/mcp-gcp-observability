@@ -6,15 +6,14 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-func RegisterProfilerTrends(s *mcp.Server, client *gcpclient.Client, cache *gcpdata.ProfileCache, mode RegistrationMode) {
-	requireClient(client)
+func RegisterProfilerTrends(s *mcp.Server, d Deps) {
+	requireClient(d.Client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "profiler_trends",
-		Description: applyMode(mode, "Show how function costs change over time across multiple profiles (Profile history). "+
+		Description: applyMode(d.Mode, "Show how function costs change over time across multiple profiles (Profile history). "+
 			"Analyzes multiple profiles of the same type and target to build a time series of "+
 			"self and cumulative cost for top functions. Useful for detecting performance regressions "+
 			"or improvements over time. Both profile_type and target are required. "+
@@ -38,7 +37,7 @@ func RegisterProfilerTrends(s *mcp.Server, client *gcpclient.Client, cache *gcpd
 		if in.Target == "" {
 			return errResult("target is required (service name from profiler_list results)"), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -53,7 +52,7 @@ func RegisterProfilerTrends(s *mcp.Server, client *gcpclient.Client, cache *gcpd
 			sendProgress(ctx, req, float64(current), float64(total), msg)
 		}
 
-		result, err := gcpdata.ComputeTrends(ctx, client.ProfilerService(), cache, project,
+		result, err := gcpdata.ComputeTrends(ctx, d.Client.ProfilerService(), d.ProfileCache, project,
 			in.ProfileType, in.Target, in.FunctionFilter,
 			in.ValueIndex, maxProfiles, maxFunctions, progressFn)
 		if err != nil {

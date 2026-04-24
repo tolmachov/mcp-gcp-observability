@@ -10,7 +10,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
@@ -51,11 +50,11 @@ var traceDetailSchema = &jsonschema.Schema{
 	},
 }
 
-func RegisterTraceGet(s *mcp.Server, client *gcpclient.Client, mode RegistrationMode) {
-	requireClient(client)
+func RegisterTraceGet(s *mcp.Server, d Deps) {
+	requireClient(d.Client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "trace_get",
-		Description: applyMode(mode, "Get trace details with all spans by trace ID. "+
+		Description: applyMode(d.Mode, "Get trace details with all spans by trace ID. "+
 			"Returns a span tree (parent-child hierarchy) sorted by start time, showing the full request execution flow. "+
 			"Use trace IDs from logs_find_requests results or the trace field in logs_query output. "+
 			"Requires Cloud Trace API to be enabled in the project."),
@@ -69,14 +68,14 @@ func RegisterTraceGet(s *mcp.Server, client *gcpclient.Client, mode Registration
 		if in.TraceID == "" {
 			return errResult("trace_id is required"), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
 
 		sendProgress(ctx, req, 0, 1, "Fetching trace...")
 
-		result, err := gcpdata.GetTrace(ctx, client.TraceClient(), project, in.TraceID)
+		result, err := gcpdata.GetTrace(ctx, d.Client.TraceClient(), project, in.TraceID)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "trace_get", fmt.Sprintf("get trace %s failed: %v", in.TraceID, err))
 			return errResult(formatTraceGetError(in.TraceID, err)), nil, nil

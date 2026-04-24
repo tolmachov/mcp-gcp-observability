@@ -11,10 +11,10 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
 
-func RegisterMetricsList(s *mcp.Server, querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string, mode RegistrationMode) {
+func RegisterMetricsList(s *mcp.Server, d Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "metrics_list",
-		Description: applyMode(mode, "Discover available metrics from Cloud Monitoring and the semantic registry. "+
+		Description: applyMode(d.Mode, "Discover available metrics from Cloud Monitoring and the semantic d.Registry. "+
 			"Use this first to find metric_type values before calling metrics_snapshot. "+
 			"The 'match' parameter searches metric names, the auto-derived service prefix, "+
 			"and semantic keywords — so category synonyms like 'queue', 'cache', 'database', "+
@@ -32,7 +32,7 @@ func RegisterMetricsList(s *mcp.Server, querier gcpdata.MetricsQuerier, registry
 		),
 		OutputSchema: outputSchemaFor[MetricsListResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsListInput) (*mcp.CallToolResult, *MetricsListResult, error) {
-		project, err := resolveProject(in.ProjectID, defaultProject)
+		project, err := resolveProject(in.ProjectID, d.DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -49,7 +49,7 @@ func RegisterMetricsList(s *mcp.Server, querier gcpdata.MetricsQuerier, registry
 		sendProgress(ctx, req, 0, 1, "Discovering metrics...")
 
 		// Registry entries.
-		registryEntries := registry.List(in.Match, kind)
+		registryEntries := d.Registry.List(in.Match, kind)
 		seen := make(map[string]bool, len(registryEntries))
 
 		var entries []MetricsListEntry
@@ -75,25 +75,25 @@ func RegisterMetricsList(s *mcp.Server, querier gcpdata.MetricsQuerier, registry
 			apiLimit *= 4 // Over-fetch to compensate for local kind filtering.
 		}
 		if apiLimit > 0 {
-			descriptors, err := querier.ListMetricDescriptors(ctx, project, apiFilter, apiLimit)
+			descriptors, err := d.Querier.ListMetricDescriptors(ctx, project, apiFilter, apiLimit)
 			if err != nil {
 				mcpLog(ctx, req, logLevelError, "metrics_list", fmt.Sprintf("listing metric descriptors failed: %v", err))
 				return errResult(fmt.Sprintf("Failed to list metrics: %v", err)), nil, nil
 			}
 
-			for _, d := range descriptors {
-				if seen[d.Type] {
+			for _, desc := range descriptors {
+				if seen[desc.Type] {
 					continue
 				}
-				meta := registry.Lookup(d.Type)
+				meta := d.Registry.Lookup(desc.Type)
 				if kind != "" && meta.Kind != kind {
 					continue
 				}
 				entries = append(entries, MetricsListEntry{
-					MetricType:      d.Type,
-					DisplayName:     d.DisplayName,
+					MetricType:      desc.Type,
+					DisplayName:     desc.DisplayName,
 					Kind:            string(meta.Kind),
-					Unit:            unitFromDescriptor(d, meta),
+					Unit:            unitFromDescriptor(desc, meta),
 					BetterDirection: string(meta.BetterDirection),
 					AutoDetected:    meta.AutoDetected,
 				})

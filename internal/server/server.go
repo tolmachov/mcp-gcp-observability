@@ -138,18 +138,16 @@ const (
 	VariantMonitoring VariantID = "monitoring"
 )
 
-// registerFn populates srv with the tools belonging to one variant.
-type registerFn func(srv *mcp.Server, client *gcpclient.Client, querier gcpdata.MetricsQuerier,
-	reg *metrics.Registry, defaultProject string, profileCache *gcpdata.ProfileCache)
-
-// variantSpec declares one capability set: how to populate its *mcp.Server,
-// plus the metadata exposed during variants negotiation.
+// variantSpec declares one capability set: a register function (signature
+// shared with registerAllTools / tools.RegisterCore), the mode it should
+// register tools with, and the metadata exposed during variants negotiation.
 type variantSpec struct {
 	id          VariantID
 	description string
 	hints       map[string]string
 	status      variants.VariantStatus
-	register    registerFn
+	register    func(srv *mcp.Server, d tools.Deps)
+	mode        tools.RegistrationMode
 }
 
 // variantSpecs lists every supported variant in negotiation-priority order.
@@ -163,30 +161,24 @@ var variantSpecs = []variantSpec{
 		description: "All GCP observability tools (22) with complete descriptions. Optimized for interactive incident investigation.",
 		hints:       map[string]string{variants.HintUseCase: "human-assistant", variants.HintContextSize: "standard"},
 		status:      variants.Stable,
-		register: func(srv *mcp.Server, client *gcpclient.Client, querier gcpdata.MetricsQuerier,
-			reg *metrics.Registry, defaultProject string, profileCache *gcpdata.ProfileCache) {
-			registerAllTools(srv, client, querier, reg, defaultProject, profileCache, tools.ModeStandard)
-		},
+		register:    registerAllTools,
+		mode:        tools.ModeStandard,
 	},
 	{
 		id:          VariantCompact,
 		description: "All GCP observability tools (22) with concise descriptions (~50% shorter). Optimized for autonomous agents and tight context budgets.",
 		hints:       map[string]string{variants.HintUseCase: "autonomous-agent", variants.HintContextSize: "compact"},
 		status:      variants.Stable,
-		register: func(srv *mcp.Server, client *gcpclient.Client, querier gcpdata.MetricsQuerier,
-			reg *metrics.Registry, defaultProject string, profileCache *gcpdata.ProfileCache) {
-			registerAllTools(srv, client, querier, reg, defaultProject, profileCache, tools.ModeCompact)
-		},
+		register:    registerAllTools,
+		mode:        tools.ModeCompact,
 	},
 	{
 		id:          VariantMonitoring,
 		description: "Core GCP tools only (10): logs_summary, logs_services, errors_list/get, metrics_snapshot/top_contributors, trace_list/get, profiler_list/top. For automated monitoring bots and scheduled health checks.",
 		hints:       map[string]string{variants.HintUseCase: "autonomous-agent", variants.HintContextSize: "compact"},
 		status:      variants.Experimental,
-		register: func(srv *mcp.Server, client *gcpclient.Client, querier gcpdata.MetricsQuerier,
-			reg *metrics.Registry, defaultProject string, profileCache *gcpdata.ProfileCache) {
-			tools.RegisterCore(srv, client, querier, reg, defaultProject, profileCache, tools.ModeCompact)
-		},
+		register:    tools.RegisterCore,
+		mode:        tools.ModeCompact,
 	},
 }
 
@@ -316,7 +308,14 @@ func (s *Server) buildSingleVariantServer(
 	}
 
 	srv := s.newMCPInstance()
-	spec.register(srv, client, querier, reg, defaultProject, profileCache)
+	spec.register(srv, tools.Deps{
+		Client:         client,
+		Querier:        querier,
+		Registry:       reg,
+		DefaultProject: defaultProject,
+		ProfileCache:   profileCache,
+		Mode:           spec.mode,
+	})
 	if err := s.registerResources(srv, client, reg); err != nil {
 		return nil, err
 	}
@@ -324,44 +323,36 @@ func (s *Server) buildSingleVariantServer(
 	return srv, nil
 }
 
-// registerAllTools registers all 22 GCP observability tools on srv with the
-// given mode controlling description verbosity.
-func registerAllTools(
-	srv *mcp.Server,
-	client *gcpclient.Client,
-	querier gcpdata.MetricsQuerier,
-	reg *metrics.Registry,
-	defaultProject string,
-	profileCache *gcpdata.ProfileCache,
-	mode tools.RegistrationMode,
-) {
+// registerAllTools registers all 22 GCP observability tools on srv. The Mode
+// field of d controls description verbosity (Standard vs Compact).
+func registerAllTools(srv *mcp.Server, d tools.Deps) {
 	// Logs
-	tools.RegisterLogsQuery(srv, client, mode)
-	tools.RegisterLogsByTrace(srv, client, mode)
-	tools.RegisterLogsByRequestID(srv, client, mode)
-	tools.RegisterLogsFindRequests(srv, client, mode)
-	tools.RegisterLogsK8s(srv, client, mode)
-	tools.RegisterLogsServices(srv, client, mode)
-	tools.RegisterLogsSummary(srv, client, mode)
+	tools.RegisterLogsQuery(srv, d)
+	tools.RegisterLogsByTrace(srv, d)
+	tools.RegisterLogsByRequestID(srv, d)
+	tools.RegisterLogsFindRequests(srv, d)
+	tools.RegisterLogsK8s(srv, d)
+	tools.RegisterLogsServices(srv, d)
+	tools.RegisterLogsSummary(srv, d)
 	// Errors
-	tools.RegisterErrorsList(srv, client, mode)
-	tools.RegisterErrorsGet(srv, client, mode)
+	tools.RegisterErrorsList(srv, d)
+	tools.RegisterErrorsGet(srv, d)
 	// Traces
-	tools.RegisterTraceGet(srv, client, mode)
-	tools.RegisterTraceList(srv, client, mode)
+	tools.RegisterTraceGet(srv, d)
+	tools.RegisterTraceList(srv, d)
 	// Metrics
-	tools.RegisterMetricsList(srv, querier, reg, defaultProject, mode)
-	tools.RegisterMetricsSnapshot(srv, querier, reg, defaultProject, mode)
-	tools.RegisterMetricsTop(srv, querier, reg, defaultProject, mode)
-	tools.RegisterMetricsRelated(srv, querier, reg, defaultProject, mode)
-	tools.RegisterMetricsCompare(srv, querier, reg, defaultProject, mode)
+	tools.RegisterMetricsList(srv, d)
+	tools.RegisterMetricsSnapshot(srv, d)
+	tools.RegisterMetricsTop(srv, d)
+	tools.RegisterMetricsRelated(srv, d)
+	tools.RegisterMetricsCompare(srv, d)
 	// Profiler
-	tools.RegisterProfilerList(srv, client, mode)
-	tools.RegisterProfilerTop(srv, client, profileCache, mode)
-	tools.RegisterProfilerPeek(srv, client, profileCache, mode)
-	tools.RegisterProfilerFlamegraph(srv, client, profileCache, mode)
-	tools.RegisterProfilerCompare(srv, client, profileCache, mode)
-	tools.RegisterProfilerTrends(srv, client, profileCache, mode)
+	tools.RegisterProfilerList(srv, d)
+	tools.RegisterProfilerTop(srv, d)
+	tools.RegisterProfilerPeek(srv, d)
+	tools.RegisterProfilerFlamegraph(srv, d)
+	tools.RegisterProfilerCompare(srv, d)
+	tools.RegisterProfilerTrends(srv, d)
 }
 
 // buildVariantsServer constructs a variants.Server with one *mcp.Server per
@@ -386,9 +377,18 @@ func (s *Server) buildVariantsServer(
 	impl := &mcp.Implementation{Name: "mcp-gcp-observability", Version: s.version}
 	vs := variants.NewServer(impl)
 
+	deps := tools.Deps{
+		Client:         client,
+		Querier:        querier,
+		Registry:       reg,
+		DefaultProject: defaultProject,
+		ProfileCache:   profileCache,
+		// Mode set per spec inside the loop.
+	}
 	for i, spec := range variantSpecs {
 		srv := s.newMCPInstance()
-		spec.register(srv, client, querier, reg, defaultProject, profileCache)
+		deps.Mode = spec.mode
+		spec.register(srv, deps)
 		if err := s.registerResources(srv, client, reg); err != nil {
 			return nil, err
 		}

@@ -167,7 +167,12 @@ func listToolsViaInMemory(t *testing.T, srv *mcp.Server) []*mcp.Tool {
 func TestRegisterAllToolsCount(t *testing.T) {
 	s := testServer(t)
 	srv := s.newMCPInstance()
-	registerAllTools(srv, &gcpclient.Client{}, nil, metrics.NewRegistry(), "test", nil, tools.ModeStandard)
+	registerAllTools(srv, tools.Deps{
+		Client:         &gcpclient.Client{},
+		Registry:       metrics.NewRegistry(),
+		DefaultProject: "test",
+		Mode:           tools.ModeStandard,
+	})
 
 	tls := listToolsViaInMemory(t, srv)
 	assert.Len(t, tls, 22, "registerAllTools must register exactly 22 tools")
@@ -199,7 +204,12 @@ func TestBuildVariantsServerHappyPath(t *testing.T) {
 func TestCompactModeRealDescriptionsSane(t *testing.T) {
 	s := testServer(t)
 	srv := s.newMCPInstance()
-	registerAllTools(srv, &gcpclient.Client{}, nil, metrics.NewRegistry(), "test", nil, tools.ModeCompact)
+	registerAllTools(srv, tools.Deps{
+		Client:         &gcpclient.Client{},
+		Registry:       metrics.NewRegistry(),
+		DefaultProject: "test",
+		Mode:           tools.ModeCompact,
+	})
 
 	tls := listToolsViaInMemory(t, srv)
 	require.NotEmpty(t, tls)

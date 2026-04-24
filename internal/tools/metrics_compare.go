@@ -42,10 +42,10 @@ func compareCallResult(result *CompareResult) *mcp.CallToolResult {
 	}
 }
 
-func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string, mode RegistrationMode) {
+func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "metrics_compare",
-		Description: applyMode(mode, "Compare two arbitrary time windows for the same metric. "+
+		Description: applyMode(d.Mode, "Compare two arbitrary time windows for the same metric. "+
 			"Useful for deploy diff, before/after comparisons, or ad-hoc analysis. "+
 			"Returns mean values, delta, trend shift, and classification for each window. "+
 			"Also renders an interactive dual-series chart inline in the chat (hosts that support MCP app widgets). "+
@@ -64,7 +64,7 @@ func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 		if in.MetricType == "" {
 			return errResult("metric_type is required"), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, defaultProject)
+		project, err := resolveProject(in.ProjectID, d.DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -102,12 +102,12 @@ func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 			return errResult(fmt.Sprintf("window_b_to must be after window_b_from (got %s to %s)", bFrom.Format(time.RFC3339), bTo.Format(time.RFC3339))), nil, nil
 		}
 
-		meta := registry.Lookup(in.MetricType)
+		meta := d.Registry.Lookup(in.MetricType)
 		stepSeconds := int64(60)
 
 		sendProgress(ctx, req, 1, 4, "Looking up metric descriptor")
 
-		descriptor, err := querier.GetMetricDescriptor(ctx, project, in.MetricType)
+		descriptor, err := d.Querier.GetMetricDescriptor(ctx, project, in.MetricType)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "metrics_compare", fmt.Sprintf("metric descriptor lookup failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to look up metric descriptor: %v. Verify the metric_type.", err)), nil, nil
@@ -159,7 +159,7 @@ func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 				errA = ctx.Err()
 				return
 			}
-			seriesA, warningsA, errA = querier.QueryTimeSeriesAggregated(ctx, paramsA, aggSpec)
+			seriesA, warningsA, errA = d.Querier.QueryTimeSeriesAggregated(ctx, paramsA, aggSpec)
 		}()
 		go func() {
 			defer wg.Done()
@@ -176,7 +176,7 @@ func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 				errB = ctx.Err()
 				return
 			}
-			seriesB, warningsB, errB = querier.QueryTimeSeriesAggregated(ctx, paramsB, aggSpec)
+			seriesB, warningsB, errB = d.Querier.QueryTimeSeriesAggregated(ctx, paramsB, aggSpec)
 		}()
 		wg.Wait()
 		logAggregationWarnings(ctx, req, "metrics_compare", in.MetricType, windowALabel, warningsA)
@@ -199,7 +199,7 @@ func RegisterMetricsCompare(s *mcp.Server, querier gcpdata.MetricsQuerier, regis
 				return errResult(formatRegistryMisconfigError(in.MetricType, errors.Join(errA, errB))), nil, nil
 			}
 			if isInvalidFilterError(errA) || isInvalidFilterError(errB) {
-				return errResult(enrichInvalidFilterError(ctx, req, querier, project, in.MetricType, in.Filter, errors.Join(errA, errB))), nil, nil
+				return errResult(enrichInvalidFilterError(ctx, req, d.Querier, project, in.MetricType, in.Filter, errors.Join(errA, errB))), nil, nil
 			}
 			return errResult(fmt.Sprintf("Failed to query: %s", msg)), nil, nil
 		}

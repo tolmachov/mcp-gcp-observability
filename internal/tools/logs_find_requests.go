@@ -6,15 +6,14 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-func RegisterLogsFindRequests(s *mcp.Server, client *gcpclient.Client, mode RegistrationMode) {
-	requireClient(client)
+func RegisterLogsFindRequests(s *mcp.Server, d Deps) {
+	requireClient(d.Client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "logs_find_requests",
-		Description: applyMode(mode, "Find examples of HTTP requests by URL pattern. "+
+		Description: applyMode(d.Mode, "Find examples of HTTP requests by URL pattern. "+
 			"Returns trace_id and request_id for each request, enabling deeper investigation with logs_by_trace, logs_by_request_id, or trace_get."),
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
@@ -36,11 +35,11 @@ func RegisterLogsFindRequests(s *mcp.Server, client *gcpclient.Client, mode Regi
 		if in.Method != "" && !validMethods[in.Method] {
 			return errResult(fmt.Sprintf("invalid method %q: must be one of GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS", in.Method)), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
-		limit := clampLimit(in.Limit, 20, client.Config().LogsMaxLimit)
+		limit := clampLimit(in.Limit, 20, d.Client.Config().LogsMaxLimit)
 
 		timeFilter, err := buildTimeFilter(in.TimeFilterInput)
 		if err != nil {
@@ -49,7 +48,7 @@ func RegisterLogsFindRequests(s *mcp.Server, client *gcpclient.Client, mode Regi
 
 		sendProgress(ctx, req, 0, 1, "Finding requests...")
 
-		result, err := gcpdata.FindRequests(ctx, client.LoggingClient(), project, in.URLPattern, in.Method, in.StatusCode, in.TracedOnly, timeFilter, limit)
+		result, err := gcpdata.FindRequests(ctx, d.Client.LoggingClient(), project, in.URLPattern, in.Method, in.StatusCode, in.TracedOnly, timeFilter, limit)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "logs_find_requests", fmt.Sprintf("find requests failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to find requests: %v. Verify the project_id and that the URL pattern is correct.", err)), nil, nil

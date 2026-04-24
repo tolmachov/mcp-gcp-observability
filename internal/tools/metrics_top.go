@@ -17,10 +17,10 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
 
-func RegisterMetricsTop(s *mcp.Server, querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string, mode RegistrationMode) {
+func RegisterMetricsTop(s *mcp.Server, d Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "metrics_top_contributors",
-		Description: applyMode(mode, "Break down a metric by a label dimension to find which label values contribute most to an anomaly. "+
+		Description: applyMode(d.Mode, "Break down a metric by a label dimension to find which label values contribute most to an anomaly. "+
 			"Shows each contributor's delta from baseline and share of the total anomaly. "+
 			"The `dimension` parameter must be a fully-qualified label key — e.g. `metric.labels.response_code` or "+
 			"`resource.labels.instance_id`. Call metrics_snapshot first to see `available_labels` "+
@@ -41,7 +41,7 @@ func RegisterMetricsTop(s *mcp.Server, querier gcpdata.MetricsQuerier, registry 
 		if in.MetricType == "" {
 			return errResult("metric_type is required"), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, defaultProject)
+		project, err := resolveProject(in.ProjectID, d.DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -70,18 +70,18 @@ func RegisterMetricsTop(s *mcp.Server, querier gcpdata.MetricsQuerier, registry 
 			return errResult(errMsg), nil, nil
 		}
 
-		meta := registry.Lookup(in.MetricType)
+		meta := d.Registry.Lookup(in.MetricType)
 		now := time.Now().UTC()
 		start := now.Add(-windowDur)
 
 		sendProgress(ctx, req, 1, 4, "Looking up metric descriptor")
 
-		descriptor, err := querier.GetMetricDescriptor(ctx, project, in.MetricType)
+		descriptor, err := d.Querier.GetMetricDescriptor(ctx, project, in.MetricType)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "metrics_top_contributors", fmt.Sprintf("metric descriptor lookup failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to look up metric descriptor: %v. Verify the metric_type.", err)), nil, nil
 		}
-		availableLabels := availableLabelsFromDescriptor(ctx, req, querier, project, in.MetricType, descriptor)
+		availableLabels := availableLabelsFromDescriptor(ctx, req, d.Querier, project, in.MetricType, descriptor)
 
 		aggSpec := meta.ResolveAggregation()
 		if err := aggSpec.Validate(); err != nil {
@@ -110,11 +110,11 @@ func RegisterMetricsTop(s *mcp.Server, querier gcpdata.MetricsQuerier, registry 
 			GroupByFields: []string{in.Dimension},
 			Reducer:       reducer,
 		}
-		currentSeries, err := querier.QueryTimeSeries(ctx, currentParams)
+		currentSeries, err := d.Querier.QueryTimeSeries(ctx, currentParams)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "metrics_top_contributors", fmt.Sprintf("current window query failed: %v", err))
 			if isInvalidFilterError(err) {
-				return errResult(enrichInvalidFilterError(ctx, req, querier, project, in.MetricType, in.Filter, err)), nil, nil
+				return errResult(enrichInvalidFilterError(ctx, req, d.Querier, project, in.MetricType, in.Filter, err)), nil, nil
 			}
 			return errResult(fmt.Sprintf("Failed to query metric: %v", err)), nil, nil
 		}
@@ -142,7 +142,7 @@ func RegisterMetricsTop(s *mcp.Server, querier gcpdata.MetricsQuerier, registry 
 		sendProgress(ctx, req, 3, 4, "Querying baseline ("+string(baselineMode)+")")
 
 		var baselineErrNote string
-		baselineByLabel, baselinePartialNote, err := queryContributorBaselines(ctx, req, querier, currentParams, windowDur, baselineMode, in.EventTime, in.Dimension)
+		baselineByLabel, baselinePartialNote, err := queryContributorBaselines(ctx, req, d.Querier, currentParams, windowDur, baselineMode, in.EventTime, in.Dimension)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "metrics_top_contributors", fmt.Sprintf("baseline query failed: %v", err))
 			baselineByLabel = map[string]contributorBaseline{}

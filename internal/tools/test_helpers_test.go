@@ -30,24 +30,35 @@ func newTestToolServer(t *testing.T) *testToolServer {
 	return &testToolServer{server: s, t: t}
 }
 
+// metricsTestDeps builds a Deps suitable for metrics-tool registration: the
+// querier/registry/project are set, ProfileCache and Client are nil (unused
+// by metrics tools), and Mode defaults to Standard.
+func metricsTestDeps(querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string) Deps {
+	return Deps{
+		Querier:        querier,
+		Registry:       registry,
+		DefaultProject: defaultProject,
+	}
+}
+
 func (ts *testToolServer) registerMetricsSnapshot(querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string) {
-	RegisterMetricsSnapshot(ts.server, querier, registry, defaultProject, ModeStandard)
+	RegisterMetricsSnapshot(ts.server, metricsTestDeps(querier, registry, defaultProject))
 }
 
 func (ts *testToolServer) registerMetricsTop(querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string) {
-	RegisterMetricsTop(ts.server, querier, registry, defaultProject, ModeStandard)
+	RegisterMetricsTop(ts.server, metricsTestDeps(querier, registry, defaultProject))
 }
 
 func (ts *testToolServer) registerMetricsRelated(querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string) {
-	RegisterMetricsRelated(ts.server, querier, registry, defaultProject, ModeStandard)
+	RegisterMetricsRelated(ts.server, metricsTestDeps(querier, registry, defaultProject))
 }
 
 func (ts *testToolServer) registerMetricsCompare(querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string) {
-	RegisterMetricsCompare(ts.server, querier, registry, defaultProject, ModeStandard)
+	RegisterMetricsCompare(ts.server, metricsTestDeps(querier, registry, defaultProject))
 }
 
 func (ts *testToolServer) registerMetricsList(querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string) {
-	RegisterMetricsList(ts.server, querier, registry, defaultProject, ModeStandard)
+	RegisterMetricsList(ts.server, metricsTestDeps(querier, registry, defaultProject))
 }
 
 // connect starts the server and connects a client via InMemoryTransport.

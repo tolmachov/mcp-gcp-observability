@@ -7,15 +7,14 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-func RegisterProfilerCompare(s *mcp.Server, client *gcpclient.Client, cache *gcpdata.ProfileCache, mode RegistrationMode) {
-	requireClient(client)
+func RegisterProfilerCompare(s *mcp.Server, d Deps) {
+	requireClient(d.Client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "profiler_compare",
-		Description: applyMode(mode, "Compare two profiles and identify regressions and improvements. "+
+		Description: applyMode(d.Mode, "Compare two profiles and identify regressions and improvements. "+
 			"Takes a current profile_id and a base_profile_id, computes the diff, and returns a summary. "+
 			"The returned diff_id can be used with profiler_top, profiler_peek, and profiler_flamegraph "+
 			"to navigate the diff — positive values mean regression, negative mean improvement. "+
@@ -39,14 +38,14 @@ func RegisterProfilerCompare(s *mcp.Server, client *gcpclient.Client, cache *gcp
 		if strings.HasPrefix(in.ProfileID, "diff:") || strings.HasPrefix(in.BaseProfileID, "diff:") {
 			return errResult("profile_id and base_profile_id must be real profile IDs from profiler_list, not diff_ids from profiler_compare"), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
 
 		sendProgress(ctx, req, 0, 2, "Comparing profiles...")
 
-		result, diffProfile, err := gcpdata.CompareProfiles(ctx, client.ProfilerService(), cache, project,
+		result, diffProfile, err := gcpdata.CompareProfiles(ctx, d.Client.ProfilerService(), d.ProfileCache, project,
 			in.ProfileID, in.BaseProfileID, in.ValueIndex, 10)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "profiler_compare", fmt.Sprintf("compare profiles failed: %v", err))
@@ -67,7 +66,7 @@ func RegisterProfilerCompare(s *mcp.Server, client *gcpclient.Client, cache *gcp
 				Target:      result.CurrentMeta.Target,
 				IsDiff:      true,
 			}
-			cache.Put(project+"/"+result.DiffID, diffProfile, diffMeta)
+			d.ProfileCache.Put(project+"/"+result.DiffID, diffProfile, diffMeta)
 		}
 
 		return nil, result, nil

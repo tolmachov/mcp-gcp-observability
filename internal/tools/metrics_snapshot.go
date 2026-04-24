@@ -77,10 +77,10 @@ func snapshotCallResult(result *MetricSnapshotResult) *mcp.CallToolResult {
 	}
 }
 
-func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string, mode RegistrationMode) {
+func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "metrics_snapshot",
-		Description: applyMode(mode, "Get a semantic snapshot of a metric with baseline comparison, trend detection, and classification. "+
+		Description: applyMode(d.Mode, "Get a semantic snapshot of a metric with baseline comparison, trend detection, and classification. "+
 			"Returns current value, baseline delta, trend, SLO breach status, and a classification label. "+
 			"Also renders an interactive time-series chart inline in the chat (hosts that support MCP app widgets). "+
 			"The response includes `available_labels` — the metric.labels.* and resource.labels.* keys this metric accepts — "+
@@ -97,7 +97,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, regi
 		// Static UI resource URI — signals chart support to the host for prefetch.
 		// Per-call data is delivered via structuredContent through the MCP Apps bridge.
 		Meta: mcp.Meta{"ui": map[string]any{"resourceUri": chartStaticURI}},
-		InputSchema:  inputSchemaWithEnums[MetricsSnapshotInput](
+		InputSchema: inputSchemaWithEnums[MetricsSnapshotInput](
 			enumPatch{"window", enumWindow},
 			enumPatch{"baseline_mode", enumBaselineMode},
 		),
@@ -106,7 +106,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, regi
 		if in.MetricType == "" {
 			return errResult("metric_type is required"), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, defaultProject)
+		project, err := resolveProject(in.ProjectID, d.DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -136,13 +136,13 @@ func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, regi
 			return errResult(err.Error()), nil, nil
 		}
 
-		meta := registry.Lookup(in.MetricType)
+		meta := d.Registry.Lookup(in.MetricType)
 		now := time.Now().UTC()
 		start := now.Add(-windowDur)
 
 		sendProgress(ctx, req, 1, 4, "Looking up metric descriptor")
 
-		descriptor, err := querier.GetMetricDescriptor(ctx, project, in.MetricType)
+		descriptor, err := d.Querier.GetMetricDescriptor(ctx, project, in.MetricType)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "metrics_snapshot", fmt.Sprintf("metric descriptor lookup failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to look up metric descriptor: %v. Verify the metric_type.", err)), nil, nil
@@ -168,7 +168,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, regi
 			MetricKind:  descriptor.Kind,
 			ValueType:   descriptor.ValueType,
 		}
-		currentSeries, currentWarnings, err := querier.QueryTimeSeriesAggregated(ctx, currentParams, aggSpec)
+		currentSeries, currentWarnings, err := d.Querier.QueryTimeSeriesAggregated(ctx, currentParams, aggSpec)
 		logAggregationWarnings(ctx, req, "metrics_snapshot", in.MetricType, "current", currentWarnings)
 		currentWarningsNote := aggregationWarningsNote(in.MetricType, "current", currentWarnings)
 		if err != nil {
@@ -177,7 +177,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, regi
 				return errResult(formatRegistryMisconfigError(in.MetricType, err)), nil, nil
 			}
 			if isInvalidFilterError(err) {
-				return errResult(enrichInvalidFilterError(ctx, req, querier, project, in.MetricType, in.Filter, err)), nil, nil
+				return errResult(enrichInvalidFilterError(ctx, req, d.Querier, project, in.MetricType, in.Filter, err)), nil, nil
 			}
 			return errResult(fmt.Sprintf("Failed to query metric: %v", err)), nil, nil
 		}
@@ -206,7 +206,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, regi
 					From: start.Format(time.RFC3339),
 					To:   now.Format(time.RFC3339),
 				},
-				AvailableLabels: availableLabelsFromDescriptor(ctx, req, querier, project, in.MetricType, descriptor),
+				AvailableLabels: availableLabelsFromDescriptor(ctx, req, d.Querier, project, in.MetricType, descriptor),
 			}
 			return snapshotCallResult(r), r, nil
 		}
@@ -214,13 +214,13 @@ func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, regi
 		sendProgress(ctx, req, 3, 4, "Querying baseline ("+string(baselineMode)+")")
 
 		var baselineErrNote string
-		baseline, baselinePartialNote, err := buildBaselineStats(ctx, req, querier, currentParams, aggSpec, windowDur, baselineMode, in.EventTime, int(stepSeconds))
+		baseline, baselinePartialNote, err := buildBaselineStats(ctx, req, d.Querier, currentParams, aggSpec, windowDur, baselineMode, in.EventTime, int(stepSeconds))
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "metrics_snapshot", fmt.Sprintf("baseline query failed: %v", err))
 			baseline = metrics.BaselineStats{}
 			// Classify error type to help user understand whether to retry or fix configuration
 			if invalidAggregationSpecError(err) {
-				baselineErrNote = fmt.Sprintf("Baseline skipped: registry misconfiguration for metric %q. Fix the aggregation block in the metrics_registry.yaml file; retrying will not help. %v",
+				baselineErrNote = fmt.Sprintf("Baseline skipped: registry misconfiguration for metric %q. Fix the aggregation block in the metrics_d.Registry.yaml file; retrying will not help. %v",
 					in.MetricType, err)
 			} else {
 				baselineErrNote = fmt.Sprintf("Baseline query (%s) temporarily failed: %v. You can retry. Returning current-window snapshot with baseline_reliable=false; delta fields are not meaningful.",
@@ -305,7 +305,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, querier gcpdata.MetricsQuerier, regi
 			}
 		}
 
-		result.AvailableLabels = availableLabelsFromDescriptor(ctx, req, querier, project, in.MetricType, descriptor)
+		result.AvailableLabels = availableLabelsFromDescriptor(ctx, req, d.Querier, project, in.MetricType, descriptor)
 
 		result.ChartPoints = toChartPoints(currentPoints)
 		return snapshotCallResult(result), result, nil

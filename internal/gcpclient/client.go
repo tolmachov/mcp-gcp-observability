@@ -11,10 +11,10 @@ import (
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
 
+	cloudprofiler "cloud.google.com/go/cloudprofiler/apiv2"
 	errorreporting "cloud.google.com/go/errorreporting/apiv1beta1"
 	logging "cloud.google.com/go/logging/apiv2"
 	monitoring "cloud.google.com/go/monitoring/apiv3/v2"
-	cloudprofiler "cloud.google.com/go/cloudprofiler/apiv2"
 	cloudtrace "cloud.google.com/go/trace/apiv1"
 )
 

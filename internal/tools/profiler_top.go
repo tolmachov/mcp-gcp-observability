@@ -6,15 +6,14 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-func RegisterProfilerTop(s *mcp.Server, client *gcpclient.Client, cache *gcpdata.ProfileCache, mode RegistrationMode) {
-	requireClient(client)
+func RegisterProfilerTop(s *mcp.Server, d Deps) {
+	requireClient(d.Client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "profiler_top",
-		Description: applyMode(mode, "Show top functions from a profile ranked by resource consumption (like pprof top). "+
+		Description: applyMode(d.Mode, "Show top functions from a profile ranked by resource consumption (like pprof top). "+
 			"Returns a flat ranking of functions by self or cumulative cost. "+
 			"Use profile_id from profiler_list results, or diff_id from profiler_compare. "+
 			"Start here to identify hotspots, then use profiler_peek for caller/callee context. "+
@@ -35,7 +34,7 @@ func RegisterProfilerTop(s *mcp.Server, client *gcpclient.Client, cache *gcpdata
 		if in.ValueIndex < 0 {
 			return errResult("value_index must be non-negative"), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -44,7 +43,7 @@ func RegisterProfilerTop(s *mcp.Server, client *gcpclient.Client, cache *gcpdata
 
 		sendProgress(ctx, req, 0, 2, "Downloading profile...")
 
-		p, meta, err := gcpdata.GetOrFetchProfile(ctx, client.ProfilerService(), cache, project, in.ProfileID)
+		p, meta, err := gcpdata.GetOrFetchProfile(ctx, d.Client.ProfilerService(), d.ProfileCache, project, in.ProfileID)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "profiler_top", fmt.Sprintf("fetch profile failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to fetch profile: %v", err)), nil, nil

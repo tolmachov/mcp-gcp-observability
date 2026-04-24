@@ -338,16 +338,13 @@ func TestRegistrationModeString(t *testing.T) {
 func TestRegisterCoreToolCount(t *testing.T) {
 	ts := newTestToolServer(t)
 	// Use non-nil client (required by requireClient at registration time).
-	// Metrics and profile deps can be nil — they are only accessed inside handlers.
-	RegisterCore(
-		ts.server,
-		&gcpclient.Client{},
-		nil, // MetricsQuerier — interface, nil OK for registration
-		metrics.NewRegistry(),
-		"test-project",
-		nil, // ProfileCache — only used inside handlers
-		ModeStandard,
-	)
+	// Querier and ProfileCache can be nil — they are only accessed inside handlers.
+	RegisterCore(ts.server, Deps{
+		Client:         &gcpclient.Client{},
+		Registry:       metrics.NewRegistry(),
+		DefaultProject: "test-project",
+		Mode:           ModeStandard,
+	})
 
 	ctx := context.Background()
 	ts.connect(ctx)

@@ -6,15 +6,14 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-func RegisterLogsSummary(s *mcp.Server, client *gcpclient.Client, mode RegistrationMode) {
-	requireClient(client)
+func RegisterLogsSummary(s *mcp.Server, d Deps) {
+	requireClient(d.Client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "logs_summary",
-		Description: applyMode(mode, "Get an aggregated summary of logs (based on up to 1000 sampled entries): severity distribution, top services, top errors, and sample entries. "+
+		Description: applyMode(d.Mode, "Get an aggregated summary of logs (based on up to 1000 sampled entries): severity distribution, top services, top errors, and sample entries. "+
 			"Useful for initial triage before drilling down with logs_query or logs_k8s. "+
 			"Does NOT return full log entries — use logs_query for that."),
 		Annotations: &mcp.ToolAnnotations{
@@ -24,7 +23,7 @@ func RegisterLogsSummary(s *mcp.Server, client *gcpclient.Client, mode Registrat
 		},
 		OutputSchema: outputSchemaFor[gcpdata.LogsSummary](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsSummaryInput) (*mcp.CallToolResult, *gcpdata.LogsSummary, error) {
-		project, err := resolveProject(in.ProjectID, client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -38,7 +37,7 @@ func RegisterLogsSummary(s *mcp.Server, client *gcpclient.Client, mode Registrat
 
 		sendProgress(ctx, req, 0, 1000, "Scanning log entries")
 
-		result, err := gcpdata.SummarizeLogs(ctx, client.LoggingClient(), project, filter,
+		result, err := gcpdata.SummarizeLogs(ctx, d.Client.LoggingClient(), project, filter,
 			func(scanned, total int) {
 				sendProgress(ctx, req, float64(scanned), float64(total),
 					fmt.Sprintf("Scanned %d/%d entries", scanned, total))

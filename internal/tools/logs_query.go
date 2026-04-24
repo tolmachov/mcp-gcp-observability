@@ -6,15 +6,14 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-func RegisterLogsQuery(s *mcp.Server, client *gcpclient.Client, mode RegistrationMode) {
-	requireClient(client)
+func RegisterLogsQuery(s *mcp.Server, d Deps) {
+	requireClient(d.Client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "logs_query",
-		Description: applyMode(mode, "Execute an arbitrary Cloud Logging query with full filter syntax. "+
+		Description: applyMode(d.Mode, "Execute an arbitrary Cloud Logging query with full filter syntax. "+
 			"Use Cloud Logging filter language (e.g. severity>=ERROR, resource.type=\"k8s_container\"). "+
 			"For Kubernetes logs, prefer logs_k8s which builds filters automatically. "+
 			"For initial triage, use logs_summary instead."),
@@ -28,14 +27,14 @@ func RegisterLogsQuery(s *mcp.Server, client *gcpclient.Client, mode Registratio
 		),
 		OutputSchema: outputSchemaFor[gcpdata.LogQueryResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsQueryInput) (*mcp.CallToolResult, *gcpdata.LogQueryResult, error) {
-		project, err := resolveProject(in.ProjectID, client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
 		if in.Filter == "" {
 			return errResult("filter is required"), nil, nil
 		}
-		limit := clampLimit(in.Limit, 100, client.Config().LogsMaxLimit)
+		limit := clampLimit(in.Limit, 100, d.Client.Config().LogsMaxLimit)
 		order := in.Order
 		if order == "" {
 			order = "desc"
@@ -52,7 +51,7 @@ func RegisterLogsQuery(s *mcp.Server, client *gcpclient.Client, mode Registratio
 
 		sendProgress(ctx, req, 0, 1, "Querying logs...")
 
-		result, err := gcpdata.QueryLogs(ctx, client.LoggingClient(), project, filter, limit, order, in.PageToken)
+		result, err := gcpdata.QueryLogs(ctx, d.Client.LoggingClient(), project, filter, limit, order, in.PageToken)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "logs_query", fmt.Sprintf("query failed for project %s: %v", project, err))
 			return errResult(fmt.Sprintf("Failed to query logs: %v. Verify the project_id and filter syntax.", err)), nil, nil

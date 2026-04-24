@@ -6,15 +6,14 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-func RegisterProfilerPeek(s *mcp.Server, client *gcpclient.Client, cache *gcpdata.ProfileCache, mode RegistrationMode) {
-	requireClient(client)
+func RegisterProfilerPeek(s *mcp.Server, d Deps) {
+	requireClient(d.Client)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "profiler_peek",
-		Description: applyMode(mode, "Show callers and callees of a specific function in a profile (like pprof peek). "+
+		Description: applyMode(d.Mode, "Show callers and callees of a specific function in a profile (like pprof peek). "+
 			"Navigates the call graph: who calls this function, and what does it call? "+
 			"Use function names from profiler_top results. Substring matching is used. "+
 			"If the name is ambiguous, the error will list matching candidates — use a more specific name. "+
@@ -35,7 +34,7 @@ func RegisterProfilerPeek(s *mcp.Server, client *gcpclient.Client, cache *gcpdat
 		if in.FunctionName == "" {
 			return errResult("function_name is required"), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -44,7 +43,7 @@ func RegisterProfilerPeek(s *mcp.Server, client *gcpclient.Client, cache *gcpdat
 
 		sendProgress(ctx, req, 0, 2, "Downloading profile...")
 
-		p, meta, err := gcpdata.GetOrFetchProfile(ctx, client.ProfilerService(), cache, project, in.ProfileID)
+		p, meta, err := gcpdata.GetOrFetchProfile(ctx, d.Client.ProfilerService(), d.ProfileCache, project, in.ProfileID)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "profiler_peek", fmt.Sprintf("fetch profile failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to fetch profile: %v", err)), nil, nil
