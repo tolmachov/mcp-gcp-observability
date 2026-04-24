@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -160,10 +161,10 @@ func listToolsViaInMemory(t *testing.T, srv *mcp.Server) []*mcp.Tool {
 	return result.Tools
 }
 
-// TestRegisterAllToolsCount pins the "22 tools" claim that appears in the
-// registerAllTools doc, the variant Description strings, and the
-// buildVariantsServer doc. Anyone adding or removing a Register* call inside
-// registerAllTools without updating this test will trip immediately.
+// TestRegisterAllToolsCount pins allToolsCount against the tools that
+// registerAllTools actually registers. Every variant Description string
+// interpolates allToolsCount, so this test is the choke point that keeps
+// the constant honest.
 func TestRegisterAllToolsCount(t *testing.T) {
 	s := testServer(t)
 	srv := s.newMCPInstance()
@@ -175,7 +176,32 @@ func TestRegisterAllToolsCount(t *testing.T) {
 	})
 
 	tls := listToolsViaInMemory(t, srv)
-	assert.Len(t, tls, 22, "registerAllTools must register exactly 22 tools")
+	assert.Len(t, tls, allToolsCount,
+		"registerAllTools registered %d tools; update allToolsCount if the change is intentional", len(tls))
+}
+
+// TestVariantDescriptionsInterpolateCounts guards the buildVariantSpecs
+// fmt.Sprintf calls — a broken format string (missing %d, literal number
+// left behind, %%d escaping regression) would silently ship a malformed
+// description to clients.
+func TestVariantDescriptionsInterpolateCounts(t *testing.T) {
+	allCountStr := fmt.Sprintf("(%d)", allToolsCount)
+	coreCountStr := fmt.Sprintf("(%d)", tools.CoreToolsCount)
+
+	full, ok := findVariantSpec(string(VariantFull))
+	require.True(t, ok)
+	assert.Contains(t, full.description, allCountStr,
+		"full variant description must interpolate allToolsCount")
+
+	compact, ok := findVariantSpec(string(VariantCompact))
+	require.True(t, ok)
+	assert.Contains(t, compact.description, allCountStr,
+		"compact variant description must interpolate allToolsCount")
+
+	monitoring, ok := findVariantSpec(string(VariantMonitoring))
+	require.True(t, ok)
+	assert.Contains(t, monitoring.description, coreCountStr,
+		"monitoring variant description must interpolate tools.CoreToolsCount")
 }
 
 // TestBuildVariantsServerHappyPath verifies the core feature of the variants

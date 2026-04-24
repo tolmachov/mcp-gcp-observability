@@ -138,6 +138,11 @@ const (
 	VariantMonitoring VariantID = "monitoring"
 )
 
+// allToolsCount is the number of tools registerAllTools registers. Single
+// source of truth for the "full"/"compact" variants' tool-count claim;
+// pinned by TestRegisterAllToolsCount.
+const allToolsCount = 22
+
 // variantSpec declares one capability set: a register function (signature
 // shared with registerAllTools / tools.RegisterCore), the mode it should
 // register tools with, and the metadata exposed during variants negotiation.
@@ -154,32 +159,37 @@ type variantSpec struct {
 // Adding a variant here automatically wires it into --variant validation,
 // the forced-variant build path, and the variants-protocol negotiation —
 // the table is the single source of truth, so the slice and dispatch cannot
-// drift apart.
-var variantSpecs = []variantSpec{
-	{
-		id:          VariantFull,
-		description: "All GCP observability tools (22) with complete descriptions. Optimized for interactive incident investigation.",
-		hints:       map[string]string{variants.HintUseCase: "human-assistant", variants.HintContextSize: "standard"},
-		status:      variants.Stable,
-		register:    registerAllTools,
-		mode:        tools.ModeStandard,
-	},
-	{
-		id:          VariantCompact,
-		description: "All GCP observability tools (22) with concise descriptions (~50% shorter). Optimized for autonomous agents and tight context budgets.",
-		hints:       map[string]string{variants.HintUseCase: "autonomous-agent", variants.HintContextSize: "compact"},
-		status:      variants.Stable,
-		register:    registerAllTools,
-		mode:        tools.ModeCompact,
-	},
-	{
-		id:          VariantMonitoring,
-		description: "Core GCP tools only (10): logs_summary, logs_services, errors_list/get, metrics_snapshot/top_contributors, trace_list/get, profiler_list/top. For automated monitoring bots and scheduled health checks.",
-		hints:       map[string]string{variants.HintUseCase: "autonomous-agent", variants.HintContextSize: "compact"},
-		status:      variants.Experimental,
-		register:    tools.RegisterCore,
-		mode:        tools.ModeCompact,
-	},
+// drift apart. Built via buildVariantSpecs so the description strings can
+// interpolate allToolsCount / tools.CoreToolsCount.
+var variantSpecs = buildVariantSpecs()
+
+func buildVariantSpecs() []variantSpec {
+	return []variantSpec{
+		{
+			id:          VariantFull,
+			description: fmt.Sprintf("All GCP observability tools (%d) with complete descriptions. Optimized for interactive incident investigation.", allToolsCount),
+			hints:       map[string]string{variants.HintUseCase: "human-assistant", variants.HintContextSize: "standard"},
+			status:      variants.Stable,
+			register:    registerAllTools,
+			mode:        tools.ModeStandard,
+		},
+		{
+			id:          VariantCompact,
+			description: fmt.Sprintf("All GCP observability tools (%d) with concise descriptions (~50%% shorter). Optimized for autonomous agents and tight context budgets.", allToolsCount),
+			hints:       map[string]string{variants.HintUseCase: "autonomous-agent", variants.HintContextSize: "compact"},
+			status:      variants.Stable,
+			register:    registerAllTools,
+			mode:        tools.ModeCompact,
+		},
+		{
+			id:          VariantMonitoring,
+			description: fmt.Sprintf("Core GCP tools only (%d): logs_summary, logs_services, errors_list/get, metrics_snapshot/top_contributors, trace_list/get, profiler_list/top. For automated monitoring bots and scheduled health checks.", tools.CoreToolsCount),
+			hints:       map[string]string{variants.HintUseCase: "autonomous-agent", variants.HintContextSize: "compact"},
+			status:      variants.Experimental,
+			register:    tools.RegisterCore,
+			mode:        tools.ModeCompact,
+		},
+	}
 }
 
 // KnownVariantIDs returns a copy of the supported variant IDs in negotiation
@@ -323,8 +333,9 @@ func (s *Server) buildSingleVariantServer(
 	return srv, nil
 }
 
-// registerAllTools registers all 22 GCP observability tools on srv. The Mode
-// field of d controls description verbosity (Standard vs Compact).
+// registerAllTools registers every GCP observability tool on srv. The Mode
+// field of d controls description verbosity (Standard vs Compact). Count is
+// allToolsCount; TestRegisterAllToolsCount asserts the two match.
 func registerAllTools(srv *mcp.Server, d tools.Deps) {
 	// Logs
 	tools.RegisterLogsQuery(srv, d)

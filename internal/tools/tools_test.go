@@ -330,11 +330,12 @@ func TestRegistrationModeString(t *testing.T) {
 	assert.Equal(t, "RegistrationMode(99)", RegistrationMode(99).String())
 }
 
-// TestRegisterCoreToolCount verifies that RegisterCore registers exactly 10 tools
-// as documented: logs_summary, logs_services, errors_list, errors_get,
-// metrics_snapshot, metrics_top_contributors, trace_list, trace_get,
-// profiler_list, profiler_top. If this count changes, the "monitoring" variant
-// contract is broken.
+// TestRegisterCoreToolCount pins CoreToolsCount against the tools that
+// RegisterCore actually registers. The "monitoring" variant Description
+// interpolates CoreToolsCount, so this test is the choke point that keeps
+// the constant honest. Expected tools: logs_summary, logs_services,
+// errors_list, errors_get, metrics_snapshot, metrics_top_contributors,
+// trace_list, trace_get, profiler_list, profiler_top.
 func TestRegisterCoreToolCount(t *testing.T) {
 	ts := newTestToolServer(t)
 	// Use non-nil client (required by requireClient at registration time).
@@ -352,7 +353,8 @@ func TestRegisterCoreToolCount(t *testing.T) {
 
 	result, err := ts.session.ListTools(ctx, nil)
 	require.NoError(t, err)
-	assert.Len(t, result.Tools, 10, "RegisterCore must register exactly 10 monitoring-variant tools")
+	assert.Len(t, result.Tools, CoreToolsCount,
+		"RegisterCore registered %d tools; update CoreToolsCount if the change is intentional", len(result.Tools))
 
 	wantTools := []string{
 		"logs_summary", "logs_services",

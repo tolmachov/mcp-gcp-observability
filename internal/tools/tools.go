@@ -85,9 +85,14 @@ type Deps struct {
 	Mode           RegistrationMode
 }
 
-// RegisterCore registers the 10 core monitoring tools: logs_summary, logs_services,
+// CoreToolsCount is the number of tools RegisterCore registers. Single
+// source of truth for the "monitoring" variant's tool-count claim; pinned
+// by TestRegisterCoreToolCount.
+const CoreToolsCount = 10
+
+// RegisterCore registers the core monitoring tools: logs_summary, logs_services,
 // errors_list, errors_get, metrics_snapshot, metrics_top_contributors, trace_list,
-// trace_get, profiler_list, profiler_top.
+// trace_get, profiler_list, profiler_top. Count is CoreToolsCount.
 func RegisterCore(s *mcp.Server, d Deps) {
 	RegisterLogsSummary(s, d)
 	RegisterLogsServices(s, d)
