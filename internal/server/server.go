@@ -442,9 +442,13 @@ func (s *Server) runStdio(ctx context.Context, runner mcpRunner) error {
 // Extracted to avoid duplication between runHTTP and runMCPHTTP.
 func (s *Server) serveHTTP(ctx context.Context, handler http.Handler, addr string) error {
 	s.logger.Info("Starting streamable HTTP server", "addr", addr)
+	// go-sdk v1.6.0 disabled built-in cross-origin protection by default
+	// (previously on, now gated behind the enableoriginverification MCPGODEBUG
+	// flag until v1.8.0). Restore it explicitly via the stdlib middleware so the
+	// HTTP transport is not exposed to DNS-rebinding / cross-origin attacks.
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: handler,
+		Handler: http.NewCrossOriginProtection().Handler(handler),
 	}
 	shutdownDone := make(chan error, 1)
 	serverExited := make(chan struct{})

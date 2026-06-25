@@ -1,6 +1,6 @@
 module github.com/tolmachov/mcp-gcp-observability
 
-go 1.26.1
+go 1.26.4
 
 require (
 	cloud.google.com/go/cloudprofiler v0.7.0
@@ -8,11 +8,11 @@ require (
 	cloud.google.com/go/logging v1.16.0
 	cloud.google.com/go/monitoring v1.27.0
 	cloud.google.com/go/trace v1.14.0
-	github.com/google/jsonschema-go v0.4.2
+	github.com/google/jsonschema-go v0.4.3
 	github.com/google/pprof v0.0.0-20260402051712-545e8a4df936
 	github.com/joho/godotenv v1.5.1
-	github.com/modelcontextprotocol/experimental-ext-variants/go/sdk v0.0.0-20260323153957-e5e8f117e868
-	github.com/modelcontextprotocol/go-sdk v1.5.0
+	github.com/modelcontextprotocol/experimental-ext-variants/go/sdk v0.0.0-20260529081704-cfc05d6f5eb8
+	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/stretchr/testify v1.11.1
 	github.com/urfave/cli/v3 v3.8.0
 	google.golang.org/api v0.276.0
