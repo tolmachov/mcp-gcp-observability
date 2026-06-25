@@ -237,6 +237,45 @@ func TestNewCachedServiceLister(t *testing.T) {
 	})
 }
 
+func TestProjectFromURI(t *testing.T) {
+	tests := []struct {
+		uri        string
+		defProject string
+		want       string
+	}{
+		{"gcp-logs://my-project/recent", "fallback", "my-project"},
+		{"gcp-errors://proj-123/groups", "fallback", "proj-123"},
+		{"gcp-traces://p/recent", "fallback", "p"},
+		{"gcp-logs:///recent", "fallback", "fallback"},    // empty host → default
+		{"::not a uri::", "fallback", "fallback"},         // parse error → default
+		{"gcp-logs://only-host", "fallback", "only-host"}, // no path still yields host
+		{"gcp-logs:///recent", "", ""},                    // empty host, no default
+	}
+	for _, tc := range tests {
+		assert.Equal(t, tc.want, projectFromURI(tc.uri, tc.defProject), "uri=%s", tc.uri)
+	}
+}
+
+// TestResourceTemplateURIsValid guards that the navigable resource-template URIs
+// are valid RFC 6570 templates: AddResourceTemplate panics on an invalid or
+// non-absolute template, so this would crash a real server at startup otherwise.
+func TestResourceTemplateURIsValid(t *testing.T) {
+	srv := mcp.NewServer(&mcp.Implementation{Name: "t", Version: "0"}, nil)
+	uris := []string{
+		"gcp-logs://{project}/recent",
+		"gcp-errors://{project}/groups",
+		"gcp-traces://{project}/recent",
+	}
+	require.NotPanics(t, func() {
+		for _, uri := range uris {
+			srv.AddResourceTemplate(
+				&mcp.ResourceTemplate{URITemplate: uri, Name: uri, MIMEType: "application/json"},
+				func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) { return nil, nil },
+			)
+		}
+	})
+}
+
 // TestBuildSingleVariantServerUnknownVariant verifies that buildSingleVariantServer
 // returns a descriptive error for unknown variant IDs without panicking.
 // This guards the case where Run()'s upfront validation is bypassed (e.g. in tests).
