@@ -73,6 +73,30 @@ type RequestList struct {
 	TruncationHint string        `json:"truncation_hint,omitempty"`
 }
 
+// TraceFromLog is a distinct trace discovered by scanning logs, with context
+// aggregated from the matching log entries.
+type TraceFromLog struct {
+	TraceID       string `json:"trace_id"`
+	LogCount      int    `json:"log_count"`
+	FirstSeen     string `json:"first_seen,omitempty"`
+	LastSeen      string `json:"last_seen,omitempty"`
+	MaxSeverity   string `json:"max_severity,omitempty"`
+	Service       string `json:"service,omitempty"`
+	ResourceType  string `json:"resource_type,omitempty"`
+	SampleMessage string `json:"sample_message,omitempty"`
+}
+
+// TraceFromLogsList is the response for trace_find_from_logs. Traces are sorted
+// by log volume (most active first). ScannedEntries is how many log entries were
+// examined to produce the result.
+type TraceFromLogsList struct {
+	Count          int            `json:"count"`
+	ScannedEntries int            `json:"scanned_entries"`
+	Traces         []TraceFromLog `json:"traces"`
+	Truncated      bool           `json:"truncated,omitempty"`
+	TruncationHint string         `json:"truncation_hint,omitempty"`
+}
+
 // ErrorGroup represents an aggregated error group from Error Reporting.
 type ErrorGroup struct {
 	GroupID          string   `json:"group_id"`
@@ -91,6 +115,33 @@ type ErrorGroupList struct {
 	Groups         []ErrorGroup `json:"groups"`
 	Truncated      bool         `json:"truncated,omitempty"`
 	TruncationHint string       `json:"truncation_hint,omitempty"`
+}
+
+// ErrorTrend describes how one error group's frequency changed between the older
+// and recent halves of the analysis window.
+type ErrorTrend struct {
+	GroupID     string `json:"group_id"`
+	Service     string `json:"service,omitempty"`
+	Message     string `json:"message,omitempty"`
+	Trend       string `json:"trend"` // new, growing, shrinking, disappeared, flat
+	OlderCount  int64  `json:"older_count"`
+	RecentCount int64  `json:"recent_count"`
+	Delta       int64  `json:"delta"` // recent minus older; positive means worsening
+	TotalCount  int64  `json:"total_count"`
+	FirstSeen   string `json:"first_seen,omitempty"`
+	LastSeen    string `json:"last_seen,omitempty"`
+}
+
+// ErrorTrendList is the response for errors_trends. Trends are sorted with the
+// most worsened groups (largest positive delta) first; Summary holds the group
+// count per trend category.
+type ErrorTrendList struct {
+	Count          int            `json:"count"`
+	WindowHours    int            `json:"window_hours"`
+	Summary        map[string]int `json:"summary"`
+	Trends         []ErrorTrend   `json:"trends"`
+	Truncated      bool           `json:"truncated,omitempty"`
+	TruncationHint string         `json:"truncation_hint,omitempty"`
 }
 
 // ErrorInstance represents a single error event.

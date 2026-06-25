@@ -143,7 +143,7 @@ const (
 // allToolsCount is the number of tools registerAllTools registers. Single
 // source of truth for the "full"/"compact" variants' tool-count claim;
 // pinned by TestRegisterAllToolsCount.
-const allToolsCount = 22
+const allToolsCount = 24
 
 // variantSpec declares one capability set: a register function (signature
 // shared with registerAllTools / tools.RegisterCore), the mode it should
@@ -355,9 +355,11 @@ func registerAllTools(srv *mcp.Server, d tools.Deps) {
 	// Errors
 	tools.RegisterErrorsList(srv, d)
 	tools.RegisterErrorsGet(srv, d)
+	tools.RegisterErrorsTrends(srv, d)
 	// Traces
 	tools.RegisterTraceGet(srv, d)
 	tools.RegisterTraceList(srv, d)
+	tools.RegisterTraceFindFromLogs(srv, d)
 	// Metrics
 	tools.RegisterMetricsList(srv, d)
 	tools.RegisterMetricsSnapshot(srv, d)

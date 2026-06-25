@@ -50,6 +50,15 @@ type LogsFindRequestsInput struct {
 	Limit      int    `json:"limit,omitempty"      jsonschema:"Maximum number of requests to return (default 20, server max applies)"`
 }
 
+// TraceFindFromLogsInput is the input for trace_find_from_logs.
+type TraceFindFromLogsInput struct {
+	ProjectInput
+	TimeFilterInput
+	Filter    string `json:"filter"                jsonschema:"Cloud Logging filter to scan for traces (e.g. 'severity>=ERROR resource.type=\"k8s_container\"'). Entries without a trace are ignored."`
+	ScanLimit int    `json:"scan_limit,omitempty"  jsonschema:"Maximum number of log entries to scan (default 500, server max applies). Higher values discover more traces at the cost of latency."`
+	Limit     int    `json:"limit,omitempty"       jsonschema:"Maximum number of distinct traces to return (default 20, max 100)."`
+}
+
 // LogsK8sInput is the input for logs_k8s.
 type LogsK8sInput struct {
 	ProjectInput
