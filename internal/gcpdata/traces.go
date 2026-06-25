@@ -2,6 +2,7 @@ package gcpdata
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -81,7 +82,7 @@ func ListTraces(
 	var traces []TraceSummary
 	for {
 		trace, err := it.Next()
-		if err == iterator.Done {
+		if errors.Is(err, iterator.Done) {
 			break
 		}
 		if err != nil {

@@ -14,6 +14,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
+	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 	"github.com/tolmachov/mcp-gcp-observability/internal/tools"
 )
@@ -113,6 +114,166 @@ func TestPromptCompleter_NonEmptyRegistry(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, result.Completion.Values, 1)
 	assert.Equal(t, metricType, result.Completion.Values[0])
+}
+
+func TestPromptCompleter_ProfileType(t *testing.T) {
+	c := &promptCompleter{}
+	result, err := c.Handle(context.Background(), &mcp.CompleteRequest{
+		Params: &mcp.CompleteParams{
+			Ref:      &mcp.CompleteReference{Type: "ref/prompt", Name: "investigate-profile"},
+			Argument: mcp.CompleteParamsArgument{Name: "profile_type", Value: "he"},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"HEAP", "HEAP_ALLOC", "PEAK_HEAP"}, result.Completion.Values)
+}
+
+// TestPromptCompleter_ProfileTypeWrongPrompt guards that profile_type is only
+// completed for the prompt that declares it.
+func TestPromptCompleter_ProfileTypeWrongPrompt(t *testing.T) {
+	c := &promptCompleter{}
+	result, err := c.Handle(context.Background(), &mcp.CompleteRequest{
+		Params: &mcp.CompleteParams{
+			Ref:      &mcp.CompleteReference{Type: "ref/prompt", Name: "investigate-metrics"},
+			Argument: mcp.CompleteParamsArgument{Name: "profile_type", Value: ""},
+		},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, result.Completion.Values)
+}
+
+func TestPromptCompleter_Service(t *testing.T) {
+	calls := 0
+	c := &promptCompleter{
+		loadServices: func(context.Context) []string {
+			calls++
+			return []string{"checkout", "checkout-worker", "payments"}
+		},
+	}
+	for _, prompt := range []string{"investigate-errors", "investigate-metrics", "investigate-profile"} {
+		result, err := c.Handle(context.Background(), &mcp.CompleteRequest{
+			Params: &mcp.CompleteParams{
+				Ref:      &mcp.CompleteReference{Type: "ref/prompt", Name: prompt},
+				Argument: mcp.CompleteParamsArgument{Name: "service", Value: "checkout"},
+			},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"checkout", "checkout-worker"}, result.Completion.Values, "prompt %s", prompt)
+	}
+	assert.Equal(t, 3, calls, "loadServices should be consulted for each service-bearing prompt")
+}
+
+// TestPromptCompleter_ServiceNoLoader verifies completion degrades gracefully
+// when no GCP client has been wired in (loadServices is nil).
+func TestPromptCompleter_ServiceNoLoader(t *testing.T) {
+	c := &promptCompleter{}
+	result, err := c.Handle(context.Background(), &mcp.CompleteRequest{
+		Params: &mcp.CompleteParams{
+			Ref:      &mcp.CompleteReference{Type: "ref/prompt", Name: "investigate-errors"},
+			Argument: mcp.CompleteParamsArgument{Name: "service", Value: ""},
+		},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, result.Completion.Values)
+}
+
+func TestPromptCompleter_ResourceProject(t *testing.T) {
+	c := &promptCompleter{defaultProject: "my-project"}
+	result, err := c.Handle(context.Background(), &mcp.CompleteRequest{
+		Params: &mcp.CompleteParams{
+			Ref:      &mcp.CompleteReference{Type: "ref/resource", Name: "gcp-logs://{project}/recent"},
+			Argument: mcp.CompleteParamsArgument{Name: "project", Value: "my"},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-project"}, result.Completion.Values)
+}
+
+// TestPromptCompleter_TruncatesAt100 verifies the result is capped at 100 values
+// with HasMore set when more candidates match.
+func TestPromptCompleter_TruncatesAt100(t *testing.T) {
+	services := make([]string, 250)
+	for i := range services {
+		services[i] = fmt.Sprintf("svc-%03d", i)
+	}
+	c := &promptCompleter{loadServices: func(context.Context) []string { return services }}
+	result, err := c.Handle(context.Background(), &mcp.CompleteRequest{
+		Params: &mcp.CompleteParams{
+			Ref:      &mcp.CompleteReference{Type: "ref/prompt", Name: "investigate-errors"},
+			Argument: mcp.CompleteParamsArgument{Name: "service", Value: "svc"},
+		},
+	})
+	require.NoError(t, err)
+	assert.Len(t, result.Completion.Values, maxCompletionValues)
+	assert.True(t, result.Completion.HasMore)
+}
+
+// TestNewCachedServiceLister verifies the lister caches the first fetch (success
+// or failure) for the session and never calls through twice.
+func TestNewCachedServiceLister(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	t.Run("caches successful fetch", func(t *testing.T) {
+		calls := 0
+		load := newCachedServiceLister(func(context.Context) (*gcpdata.ServiceList, error) {
+			calls++
+			return &gcpdata.ServiceList{Services: []gcpdata.ServiceInfo{{Name: "a"}, {Name: ""}, {Name: "b"}}}, nil
+		}, logger)
+		got := load(context.Background())
+		assert.Equal(t, []string{"a", "b"}, got)
+		_ = load(context.Background())
+		assert.Equal(t, 1, calls, "fetch must run at most once")
+	})
+
+	t.Run("caches failure as empty", func(t *testing.T) {
+		calls := 0
+		load := newCachedServiceLister(func(context.Context) (*gcpdata.ServiceList, error) {
+			calls++
+			return nil, fmt.Errorf("boom")
+		}, logger)
+		assert.Empty(t, load(context.Background()))
+		assert.Empty(t, load(context.Background()))
+		assert.Equal(t, 1, calls, "fetch must not retry on every call")
+	})
+}
+
+func TestProjectFromURI(t *testing.T) {
+	tests := []struct {
+		uri        string
+		defProject string
+		want       string
+	}{
+		{"gcp-logs://my-project/recent", "fallback", "my-project"},
+		{"gcp-errors://proj-123/groups", "fallback", "proj-123"},
+		{"gcp-traces://p/recent", "fallback", "p"},
+		{"gcp-logs:///recent", "fallback", "fallback"},    // empty host → default
+		{"::not a uri::", "fallback", "fallback"},         // parse error → default
+		{"gcp-logs://only-host", "fallback", "only-host"}, // no path still yields host
+		{"gcp-logs:///recent", "", ""},                    // empty host, no default
+	}
+	for _, tc := range tests {
+		assert.Equal(t, tc.want, projectFromURI(tc.uri, tc.defProject), "uri=%s", tc.uri)
+	}
+}
+
+// TestResourceTemplateURIsValid guards that the navigable resource-template URIs
+// are valid RFC 6570 templates: AddResourceTemplate panics on an invalid or
+// non-absolute template, so this would crash a real server at startup otherwise.
+func TestResourceTemplateURIsValid(t *testing.T) {
+	srv := mcp.NewServer(&mcp.Implementation{Name: "t", Version: "0"}, nil)
+	uris := []string{
+		"gcp-logs://{project}/recent",
+		"gcp-errors://{project}/groups",
+		"gcp-traces://{project}/recent",
+	}
+	require.NotPanics(t, func() {
+		for _, uri := range uris {
+			srv.AddResourceTemplate(
+				&mcp.ResourceTemplate{URITemplate: uri, Name: uri, MIMEType: "application/json"},
+				func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) { return nil, nil },
+			)
+		}
+	})
 }
 
 // TestBuildSingleVariantServerUnknownVariant verifies that buildSingleVariantServer

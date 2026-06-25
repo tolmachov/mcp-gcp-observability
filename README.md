@@ -117,6 +117,7 @@ make build
 |------|-------------|
 | `errors_list` | List error groups sorted by count |
 | `errors_get` | Get error group details with individual events and stack traces |
+| `errors_trends` | Classify error groups as new/growing/shrinking/disappeared over a window |
 
 ### Tracing
 
@@ -124,6 +125,7 @@ make build
 |------|-------------|
 | `trace_list` | Search traces by span name, latency, or time range |
 | `trace_get` | Get trace details with complete span tree by trace ID |
+| `trace_find_from_logs` | Discover traces by scanning logs matching a filter |
 
 ### Metrics
 

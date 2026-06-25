@@ -9,10 +9,12 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/experimental-ext-variants/go/sdk/variants"
@@ -141,7 +143,7 @@ const (
 // allToolsCount is the number of tools registerAllTools registers. Single
 // source of truth for the "full"/"compact" variants' tool-count claim;
 // pinned by TestRegisterAllToolsCount.
-const allToolsCount = 22
+const allToolsCount = 24
 
 // variantSpec declares one capability set: a register function (signature
 // shared with registerAllTools / tools.RegisterCore), the mode it should
@@ -259,6 +261,11 @@ func (s *Server) Run(ctx context.Context, transport Transport, httpAddr string, 
 
 	querier := gcpdata.NewMonitoringQuerier(client.MonitoringClient())
 	defaultProject := client.Config().DefaultProject
+
+	s.completer.defaultProject = defaultProject
+	s.completer.loadServices = newCachedServiceLister(func(ctx context.Context) (*gcpdata.ServiceList, error) {
+		return gcpdata.ListServices(ctx, client.LoggingClient(), defaultProject, "")
+	}, s.logger)
 	profileCache := gcpdata.NewProfileCache(10)
 
 	if variantID != "" {
@@ -348,9 +355,11 @@ func registerAllTools(srv *mcp.Server, d tools.Deps) {
 	// Errors
 	tools.RegisterErrorsList(srv, d)
 	tools.RegisterErrorsGet(srv, d)
+	tools.RegisterErrorsTrends(srv, d)
 	// Traces
 	tools.RegisterTraceGet(srv, d)
 	tools.RegisterTraceList(srv, d)
+	tools.RegisterTraceFindFromLogs(srv, d)
 	// Metrics
 	tools.RegisterMetricsList(srv, d)
 	tools.RegisterMetricsSnapshot(srv, d)
@@ -442,9 +451,13 @@ func (s *Server) runStdio(ctx context.Context, runner mcpRunner) error {
 // Extracted to avoid duplication between runHTTP and runMCPHTTP.
 func (s *Server) serveHTTP(ctx context.Context, handler http.Handler, addr string) error {
 	s.logger.Info("Starting streamable HTTP server", "addr", addr)
+	// go-sdk v1.6.0 disabled built-in cross-origin protection by default
+	// (previously on, now gated behind the enableoriginverification MCPGODEBUG
+	// flag until v1.8.0). Restore it explicitly via the stdlib middleware so the
+	// HTTP transport is not exposed to DNS-rebinding / cross-origin attacks.
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: handler,
+		Handler: http.NewCrossOriginProtection().Handler(handler),
 	}
 	shutdownDone := make(chan error, 1)
 	serverExited := make(chan struct{})
@@ -543,7 +556,89 @@ func (s *Server) registerResources(srv *mcp.Server, client *gcpclient.Client, re
 
 	tools.RegisterMetricsChartStaticResource(srv)
 	tools.RegisterMetricsCompareChartStaticResource(srv)
+	s.registerResourceTemplates(srv, client)
 	return nil
+}
+
+// resourceTemplateTimeout bounds the GCP calls backing the navigable resource
+// templates so a slow backend cannot hang a resources/read request.
+const resourceTemplateTimeout = 30 * time.Second
+
+// registerResourceTemplates adds URI-templated resources that let clients
+// navigate a project's recent observability data like a filesystem:
+//
+//	gcp-logs://{project}/recent     — severity/error/service summary of recent logs
+//	gcp-errors://{project}/groups   — current Error Reporting groups
+//	gcp-traces://{project}/recent   — traces from the last hour
+//
+// The {project} segment defaults to the configured project when the client
+// leaves it empty (e.g. gcp-logs:///recent).
+func (s *Server) registerResourceTemplates(srv *mcp.Server, client *gcpclient.Client) {
+	defaultProject := client.Config().DefaultProject
+
+	addTemplate := func(uriTemplate, name, description string, fetch func(ctx context.Context, project string) (any, error)) {
+		srv.AddResourceTemplate(
+			&mcp.ResourceTemplate{
+				URITemplate: uriTemplate,
+				Name:        name,
+				Description: description,
+				MIMEType:    "application/json",
+			},
+			func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+				project := projectFromURI(req.Params.URI, defaultProject)
+				if project == "" {
+					return nil, fmt.Errorf("no project in URI %q and no default project configured", req.Params.URI)
+				}
+				cctx, cancel := context.WithTimeout(ctx, resourceTemplateTimeout)
+				defer cancel()
+				data, err := fetch(cctx, project)
+				if err != nil {
+					return nil, fmt.Errorf("reading resource %q: %w", req.Params.URI, err)
+				}
+				payload, err := json.Marshal(data)
+				if err != nil {
+					return nil, fmt.Errorf("marshaling resource %q: %w", req.Params.URI, err)
+				}
+				return &mcp.ReadResourceResult{
+					Contents: []*mcp.ResourceContents{{
+						URI:      req.Params.URI,
+						MIMEType: "application/json",
+						Text:     string(payload),
+					}},
+				}, nil
+			},
+		)
+	}
+
+	addTemplate("gcp-logs://{project}/recent", "Recent Logs Summary",
+		"Severity distribution, top errors and top services from recent logs for the given project.",
+		func(ctx context.Context, project string) (any, error) {
+			return gcpdata.SummarizeLogs(ctx, client.LoggingClient(), project, "", nil)
+		})
+
+	addTemplate("gcp-errors://{project}/groups", "Error Reporting Groups",
+		"Current Error Reporting groups for the given project over the last 24 hours, by count.",
+		func(ctx context.Context, project string) (any, error) {
+			return gcpdata.ListErrors(ctx, client.ErrorsClient(), project, 24, 50, "", "")
+		})
+
+	addTemplate("gcp-traces://{project}/recent", "Recent Traces",
+		"Traces from the last hour for the given project.",
+		func(ctx context.Context, project string) (any, error) {
+			now := time.Now()
+			return gcpdata.ListTraces(ctx, client.TraceClient(), project,
+				"", "", "", now.Add(-time.Hour), now, 50, "")
+		})
+}
+
+// projectFromURI extracts the {project} segment (the URI host) from a templated
+// resource URI such as gcp-logs://my-project/recent, falling back to the
+// configured default when the host is empty.
+func projectFromURI(uri, defaultProject string) string {
+	if u, err := url.Parse(uri); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return defaultProject
 }
 
 // registerPrompts adds MCP prompts for common observability workflows to srv.
@@ -745,9 +840,28 @@ STEP 6 — Report results.`, projectPath, outputPath, outputPath, serverBinary)
 	})
 }
 
-// promptCompleter provides autocomplete for prompt arguments.
+// maxCompletionValues caps the number of values returned for a single
+// completion request. The MCP spec limits completions to 100 entries; when more
+// match we truncate and signal HasMore so the client can refine its prefix.
+const maxCompletionValues = 100
+
+// serviceCompletionTimeout bounds the one-time log scan used to discover
+// service names for completion, so a slow Cloud Logging call cannot stall the
+// editor while the user is typing an argument.
+const serviceCompletionTimeout = 5 * time.Second
+
+// promptCompleter provides autocomplete for prompt and resource-template
+// arguments. Per the MCP spec, completion/complete serves suggestions for
+// prompt arguments (ref/prompt) and resource-template arguments (ref/resource)
+// — never for tool arguments.
 type promptCompleter struct {
 	registry *metrics.Registry
+	// loadServices lazily discovers service names (by scanning recent logs) and
+	// caches them for the session. nil until a GCP client is wired in Run.
+	loadServices func(ctx context.Context) []string
+	// defaultProject is the configured GCP project, offered when completing the
+	// {project} argument of resource templates.
+	defaultProject string
 }
 
 // defaultMetricCandidates are common GCP metric types shown when the registry is empty.
@@ -766,13 +880,17 @@ var defaultMetricCandidates = []string{
 	"appengine.googleapis.com/http/server/response_latencies",
 }
 
-func (p *promptCompleter) Handle(_ context.Context, req *mcp.CompleteRequest) (*mcp.CompleteResult, error) {
-	prefix := strings.ToLower(req.Params.Argument.Value)
-	var values []string
+// profileTypeCandidates are the Cloud Profiler profile types accepted by the
+// profile_type argument of the investigate-profile prompt.
+var profileTypeCandidates = []string{
+	"CPU", "HEAP", "HEAP_ALLOC", "WALL", "CONTENTION", "THREADS", "PEAK_HEAP",
+}
 
-	// Only complete metric_type for the investigate-metrics prompt.
-	if req.Params.Ref != nil && req.Params.Ref.Type == "ref/prompt" && req.Params.Ref.Name == "investigate-metrics" && req.Params.Argument.Name == "metric_type" {
-		candidates := p.metricCandidates()
+func (p *promptCompleter) Handle(ctx context.Context, req *mcp.CompleteRequest) (*mcp.CompleteResult, error) {
+	var values []string
+	if req.Params.Ref != nil {
+		candidates := p.candidatesFor(ctx, req.Params.Ref.Type, req.Params.Ref.Name, req.Params.Argument.Name)
+		prefix := strings.ToLower(req.Params.Argument.Value)
 		for _, c := range candidates {
 			if prefix == "" || strings.Contains(strings.ToLower(c), prefix) {
 				values = append(values, c)
@@ -780,12 +898,86 @@ func (p *promptCompleter) Handle(_ context.Context, req *mcp.CompleteRequest) (*
 		}
 	}
 
+	total := len(values)
+	if total > maxCompletionValues {
+		values = values[:maxCompletionValues]
+	}
 	return &mcp.CompleteResult{
 		Completion: mcp.CompletionResultDetails{
 			Values:  values,
-			HasMore: len(values) > 100,
+			HasMore: total > maxCompletionValues,
 		},
 	}, nil
+}
+
+// candidatesFor returns the unfiltered candidate list for a completion ref, or
+// nil when the argument has no completion source. Completion is scoped to the
+// arguments each prompt actually declares (so an unknown prompt or undeclared
+// argument yields nothing), while resource templates share the {project} source.
+func (p *promptCompleter) candidatesFor(ctx context.Context, refType, refName, argName string) []string {
+	switch refType {
+	case "ref/prompt":
+		return p.promptArgCandidates(ctx, refName, argName)
+	case "ref/resource":
+		if argName == "project" && p.defaultProject != "" {
+			return []string{p.defaultProject}
+		}
+	}
+	return nil
+}
+
+// promptArgCandidates maps a (prompt, argument) pair to its completion source.
+// The pairs mirror the arguments declared in registerPrompts: metric_type on
+// investigate-metrics, profile_type on investigate-profile, and service on the
+// three prompts that accept a service filter.
+func (p *promptCompleter) promptArgCandidates(ctx context.Context, prompt, arg string) []string {
+	switch {
+	case prompt == "investigate-metrics" && arg == "metric_type":
+		return p.metricCandidates()
+	case arg == "service" && (prompt == "investigate-errors" || prompt == "investigate-metrics" || prompt == "investigate-profile"):
+		if p.loadServices == nil {
+			return nil
+		}
+		return p.loadServices(ctx)
+	case prompt == "investigate-profile" && arg == "profile_type":
+		return profileTypeCandidates
+	}
+	return nil
+}
+
+// newCachedServiceLister wraps a service-discovery fetch in a session-lifetime
+// cache so completion never re-scans logs on every keystroke. The first call
+// runs fetch under a bounded timeout; the result (including an empty list on
+// error) is cached for all subsequent calls.
+func newCachedServiceLister(fetch func(ctx context.Context) (*gcpdata.ServiceList, error), logger *slog.Logger) func(ctx context.Context) []string {
+	var (
+		mu     sync.Mutex
+		loaded bool
+		cached []string
+	)
+	return func(ctx context.Context) []string {
+		mu.Lock()
+		defer mu.Unlock()
+		if loaded {
+			return cached
+		}
+		loaded = true // cache even on failure to avoid re-scanning logs while typing
+		cctx, cancel := context.WithTimeout(ctx, serviceCompletionTimeout)
+		defer cancel()
+		list, err := fetch(cctx)
+		if err != nil {
+			logger.Warn("service completion: discovery failed, caching empty result", "err", err)
+			return nil
+		}
+		names := make([]string, 0, len(list.Services))
+		for _, svc := range list.Services {
+			if svc.Name != "" {
+				names = append(names, svc.Name)
+			}
+		}
+		cached = names
+		return cached
+	}
 }
 
 func (p *promptCompleter) metricCandidates() []string {
