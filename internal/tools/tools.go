@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -350,6 +352,52 @@ func clampLimit(limit, fallback, maxLimit int) int {
 		return maxLimit
 	}
 	return limit
+}
+
+// weeklyBaselineWeeks is the number of prior same-weekday windows sampled for
+// the same_weekday_hour baseline mode.
+const weeklyBaselineWeeks = 4
+
+// runWeeklyBaseline runs work for each of the last weeklyBaselineWeeks weeks
+// (1..N weeks back) concurrently and returns the collected errors. Each work
+// call gets the 1-based weeksBack and should write only its own result slot —
+// indices are disjoint, so those writes need no locking; any other shared
+// state it touches must do its own synchronization. A work error is wrapped
+// with the week offset; a panic is recovered, logged (labeled with tool), and
+// recorded as an error rather than crashing the request. Shared by
+// metrics_snapshot and metrics_top_contributors, whose same_weekday_hour
+// baselines differ only in the per-week body.
+func runWeeklyBaseline(ctx context.Context, tool string, work func(weeksBack int) error) []error {
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	var errs []error
+	addErr := func(e error) {
+		mu.Lock()
+		errs = append(errs, e)
+		mu.Unlock()
+	}
+	for w := 1; w <= weeklyBaselineWeeks; w++ {
+		wg.Add(1)
+		go func(weeksBack int) {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					stack := debug.Stack()
+					notifyErrLog.Load().Error(tool+": panic in baseline goroutine", "weeks_back", weeksBack, "panic", r, "stack", string(stack))
+					addErr(fmt.Errorf("week -%d: panic: %v", weeksBack, r))
+				}
+			}()
+			if ctx.Err() != nil {
+				addErr(fmt.Errorf("week -%d: %w", weeksBack, ctx.Err()))
+				return
+			}
+			if err := work(weeksBack); err != nil {
+				addErr(fmt.Errorf("week -%d: %w", weeksBack, err))
+			}
+		}(w)
+	}
+	wg.Wait()
+	return errs
 }
 
 // safeClassification converts a Classification to string for JSON output,

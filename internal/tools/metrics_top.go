@@ -5,10 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"runtime/debug"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -352,52 +350,24 @@ func queryContributorBaselines(
 
 	switch mode {
 	case BaselineModeSameWeekdayHour:
-		const weeks = 4
-		perWeek := make([][]gcpdata.MetricTimeSeries, weeks)
-		var mu sync.Mutex
-		var wg sync.WaitGroup
-		var errs []error
+		perWeek := make([][]gcpdata.MetricTimeSeries, weeklyBaselineWeeks)
 
-		for w := 1; w <= weeks; w++ {
-			wg.Add(1)
-			go func(weeksBack int) {
-				defer wg.Done()
-				defer func() {
-					if r := recover(); r != nil {
-						stack := debug.Stack()
-						msg := fmt.Sprintf("panic in baseline week -%d: %v\n%s", weeksBack, r, stack)
-						notifyErrLog.Load().Error("metrics_top_contributors: panic in baseline goroutine", "weeks_back", weeksBack, "panic", r, "stack", string(stack))
-						mcpLog(ctx, req, logLevelError, "metrics_top_contributors", msg)
-						mu.Lock()
-						errs = append(errs, fmt.Errorf("week -%d: panic: %v", weeksBack, r))
-						mu.Unlock()
-					}
-				}()
-				if ctx.Err() != nil {
-					mu.Lock()
-					errs = append(errs, fmt.Errorf("week -%d: %w", weeksBack, ctx.Err()))
-					mu.Unlock()
-					return
-				}
-				p := currentParams
-				p.Start = currentParams.Start.AddDate(0, 0, -7*weeksBack)
-				p.End = currentParams.End.AddDate(0, 0, -7*weeksBack)
-				series, err := querier.QueryTimeSeries(ctx, p)
-				series, truncated := stripTruncatedSeries(series)
-				mu.Lock()
-				defer mu.Unlock()
-				if err != nil {
-					errs = append(errs, fmt.Errorf("week -%d: %w", weeksBack, err))
-					return
-				}
-				if truncated {
-					mcpLog(ctx, req, logLevelWarning, "metrics_top_contributors",
-						fmt.Sprintf("baseline week -%d: time series result was truncated at server limit; baseline may be incomplete", weeksBack))
-				}
-				perWeek[weeksBack-1] = series
-			}(w)
-		}
-		wg.Wait()
+		errs := runWeeklyBaseline(ctx, "metrics_top_contributors", func(weeksBack int) error {
+			p := currentParams
+			p.Start = currentParams.Start.AddDate(0, 0, -7*weeksBack)
+			p.End = currentParams.End.AddDate(0, 0, -7*weeksBack)
+			series, err := querier.QueryTimeSeries(ctx, p)
+			if err != nil {
+				return err
+			}
+			series, truncated := stripTruncatedSeries(series)
+			if truncated {
+				mcpLog(ctx, req, logLevelWarning, "metrics_top_contributors",
+					fmt.Sprintf("baseline week -%d: time series result was truncated at server limit; baseline may be incomplete", weeksBack))
+			}
+			perWeek[weeksBack-1] = series
+			return nil
+		})
 
 		nonEmpty := 0
 		for i, ws := range perWeek {
@@ -405,7 +375,7 @@ func queryContributorBaselines(
 				continue
 			}
 			nonEmpty++
-			addBucket(i, weeks, ws)
+			addBucket(i, weeklyBaselineWeeks, ws)
 		}
 		if nonEmpty == 0 && len(errs) > 0 {
 			return nil, "", fmt.Errorf("all %d baseline queries failed; first error: %w", len(errs), errors.Join(errs...))
@@ -413,9 +383,9 @@ func queryContributorBaselines(
 		if len(errs) > 0 && nonEmpty > 0 {
 			mcpLog(ctx, req, logLevelWarning, "metrics_top_contributors",
 				fmt.Sprintf("baseline partial failure: %d of %d weeks failed (%v); using %d weeks of data",
-					len(errs), weeks, errors.Join(errs...), nonEmpty))
+					len(errs), weeklyBaselineWeeks, errors.Join(errs...), nonEmpty))
 			partialNote = fmt.Sprintf("Baseline partial failure (%s): %d of %d weekly samples could not be fetched; baseline computed from %d weeks. Results may be less reliable.",
-				string(BaselineModeSameWeekdayHour), len(errs), weeks, nonEmpty)
+				string(BaselineModeSameWeekdayHour), len(errs), weeklyBaselineWeeks, nonEmpty)
 		}
 		return result, partialNote, nil
 

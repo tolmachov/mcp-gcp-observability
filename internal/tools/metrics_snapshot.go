@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -449,55 +448,32 @@ func buildRobustWeeklyBaseline(
 	aggSpec metrics.AggregationSpec,
 	expectedPerWeek int,
 ) (metrics.BaselineStats, string, error) {
-	const weeks = 4
-	weekly := make([][]metrics.Point, weeks)
-	warningNotes := make([]string, 0, weeks)
-	warningNotesSeen := make(map[string]bool, weeks)
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	var errs []error
+	weekly := make([][]metrics.Point, weeklyBaselineWeeks)
+	warningNotes := make([]string, 0, weeklyBaselineWeeks)
+	warningNotesSeen := make(map[string]bool, weeklyBaselineWeeks)
+	var noteMu sync.Mutex
 
-	for w := 1; w <= weeks; w++ {
-		wg.Add(1)
-		go func(weeksBack int) {
-			defer wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					stack := debug.Stack()
-					notifyErrLog.Load().Error("metrics_snapshot: panic in baseline goroutine", "weeks_back", weeksBack, "panic", r, "stack", string(stack))
-					mu.Lock()
-					errs = append(errs, fmt.Errorf("week -%d: panic: %v", weeksBack, r))
-					mu.Unlock()
-				}
-			}()
-			if ctx.Err() != nil {
-				mu.Lock()
-				errs = append(errs, fmt.Errorf("week -%d: %w", weeksBack, ctx.Err()))
-				mu.Unlock()
-				return
+	errs := runWeeklyBaseline(ctx, "metrics_snapshot", func(weeksBack int) error {
+		p := params
+		p.Start = params.Start.AddDate(0, 0, -7*weeksBack)
+		p.End = params.End.AddDate(0, 0, -7*weeksBack)
+		series, warnings, err := querier.QueryTimeSeriesAggregated(ctx, p, aggSpec)
+		label := fmt.Sprintf("baseline (same_weekday_hour week -%d)", weeksBack)
+		logAggregationWarnings(ctx, req, "metrics_snapshot", params.MetricType, label, warnings)
+		if note := aggregationWarningsNote(params.MetricType, label, warnings); note != "" {
+			noteMu.Lock()
+			if !warningNotesSeen[note] {
+				warningNotesSeen[note] = true
+				warningNotes = append(warningNotes, note)
 			}
-			p := params
-			p.Start = params.Start.AddDate(0, 0, -7*weeksBack)
-			p.End = params.End.AddDate(0, 0, -7*weeksBack)
-			series, warnings, err := querier.QueryTimeSeriesAggregated(ctx, p, aggSpec)
-			logAggregationWarnings(ctx, req, "metrics_snapshot", params.MetricType,
-				fmt.Sprintf("baseline (same_weekday_hour week -%d)", weeksBack), warnings)
-			warningNote := aggregationWarningsNote(params.MetricType,
-				fmt.Sprintf("baseline (same_weekday_hour week -%d)", weeksBack), warnings)
-			mu.Lock()
-			defer mu.Unlock()
-			if warningNote != "" && !warningNotesSeen[warningNote] {
-				warningNotesSeen[warningNote] = true
-				warningNotes = append(warningNotes, warningNote)
-			}
-			if err != nil {
-				errs = append(errs, fmt.Errorf("week -%d: %w", weeksBack, err))
-				return
-			}
-			weekly[weeksBack-1] = mergePoints(series)
-		}(w)
-	}
-	wg.Wait()
+			noteMu.Unlock()
+		}
+		if err != nil {
+			return err
+		}
+		weekly[weeksBack-1] = mergePoints(series)
+		return nil
+	})
 
 	nonEmpty := 0
 	for _, w := range weekly {
@@ -521,15 +497,15 @@ func buildRobustWeeklyBaseline(
 		if hasPanic {
 			mcpLog(ctx, req, logLevelError, "metrics_snapshot",
 				fmt.Sprintf("baseline partial failure: UNEXPECTED PANICS in %d of %d weeks; %v",
-					len(errs), weeks, errors.Join(errs...)))
+					len(errs), weeklyBaselineWeeks, errors.Join(errs...)))
 			partialNote = fmt.Sprintf("Baseline partial failure (%s): UNEXPECTED PANICS occurred in %d of %d weekly queries. This is a bug in the code, not a transient failure. Baseline computed from %d weeks, but results may be unreliable. Please report this issue.",
-				string(BaselineModeSameWeekdayHour), len(errs), weeks, nonEmpty)
+				string(BaselineModeSameWeekdayHour), len(errs), weeklyBaselineWeeks, nonEmpty)
 		} else {
 			mcpLog(ctx, req, logLevelWarning, "metrics_snapshot",
 				fmt.Sprintf("baseline partial failure: %d of %d weeks failed (%v); using %d weeks of data",
-					len(errs), weeks, errors.Join(errs...), nonEmpty))
+					len(errs), weeklyBaselineWeeks, errors.Join(errs...), nonEmpty))
 			partialNote = fmt.Sprintf("Baseline partial failure (%s): %d of %d weekly samples could not be fetched; baseline computed from %d weeks. Results may be less reliable.",
-				string(BaselineModeSameWeekdayHour), len(errs), weeks, nonEmpty)
+				string(BaselineModeSameWeekdayHour), len(errs), weeklyBaselineWeeks, nonEmpty)
 		}
 	}
 
