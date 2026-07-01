@@ -357,6 +357,22 @@ type Point struct {
 	Value     float64
 }
 
+// Window is the wall-clock range a set of points was requested for. It is
+// distinct from the span of the points actually returned: when a metric stops
+// reporting mid-window, the observed span shrinks while the requested Window
+// does not. Data-quality reliability is judged against the Window so a dead
+// trailing region is not mistaken for a complete series. A zero Window (both
+// bounds zero) means "unknown" and falls back to span-based accounting.
+type Window struct {
+	Start time.Time
+	End   time.Time
+}
+
+// known reports whether the window has usable bounds.
+func (w Window) known() bool {
+	return !w.Start.IsZero() && !w.End.IsZero() && w.End.After(w.Start)
+}
+
 type SignalFeatures struct {
 	Current float64
 	Mean    float64

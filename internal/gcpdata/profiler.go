@@ -67,7 +67,7 @@ func ListProfiles(
 	}
 
 	// When filtering client-side, request large pages to reduce round-trips.
-	apiPageSize := int32(pageSize)
+	apiPageSize := safeInt32(pageSize)
 	if needsFilter && apiPageSize < 1000 {
 		apiPageSize = 1000
 	}
@@ -108,7 +108,7 @@ func ListProfiles(
 		result.Summary.CountByType[meta.ProfileType]++
 		result.Summary.CountByTarget[meta.Target]++
 
-		// Trim to exactly pageSize to honour the caller's contract.
+		// Trim to exactly pageSize to honor the caller's contract.
 		if len(result.Profiles) >= pageSize {
 			result.Profiles = result.Profiles[:pageSize]
 			// Recompute summary for trimmed set.
@@ -698,8 +698,8 @@ func buildDiffProfile(current, base *profile.Profile) (*profile.Profile, error) 
 	return merged, nil
 }
 
-// prefetchResult summarises the outcome of a bulk prefetch so the caller
-// can emit a diagnostic warning when the optimisation fails.
+// prefetchResult summarizes the outcome of a bulk prefetch so the caller
+// can emit a diagnostic warning when the optimization fails.
 type prefetchResult struct {
 	Cached int
 	Errors int
@@ -840,7 +840,7 @@ func ComputeTrends(
 			break
 		}
 		if !discovered {
-			return nil, fmt.Errorf("failed to discover top functions: could not download or analyze any profile (last error: %v)", lastErr)
+			return nil, fmt.Errorf("failed to discover top functions: could not download or analyze any profile (last error: %w)", lastErr)
 		}
 	}
 
@@ -857,7 +857,7 @@ func ComputeTrends(
 	total := len(profiles.Profiles)
 	for i, meta := range profiles.Profiles {
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("cancelled after %d/%d profiles: %w", i, total, ctx.Err())
+			return nil, fmt.Errorf("canceled after %d/%d profiles: %w", i, total, ctx.Err())
 		}
 		if progressFn != nil {
 			progressFn(i, total, fmt.Sprintf("Analyzing profile %d/%d...", i+1, total))
@@ -907,7 +907,7 @@ func ComputeTrends(
 	}
 
 	if len(funcMeta) == 0 && downloadErrors > 0 {
-		return nil, fmt.Errorf("failed to analyze any profiles: %d/%d downloads failed (last error: %v)", downloadErrors, total, lastDownloadErr)
+		return nil, fmt.Errorf("failed to analyze any profiles: %d/%d downloads failed (last error: %w)", downloadErrors, total, lastDownloadErr)
 	}
 
 	// Rank by peak cumulative, take top N.
@@ -1040,7 +1040,7 @@ func profileFromAPI(p *cloudprofilerpb.Profile) ProfileMeta {
 		ProfileID: p.Name,
 	}
 	// ProfileType is a proto enum — convert to the string name (e.g. "CPU", "HEAP").
-	// Only accept values that are in the known set; unrecognised numeric values
+	// Only accept values that are in the known set; unrecognized numeric values
 	// (returned as their decimal string, e.g. "999") are treated as unset.
 	pt := p.ProfileType.String()
 	if validProfileTypes[pt] {
@@ -1104,9 +1104,7 @@ func findInTrie(root *trieNode, name string) (*trieNode, error) {
 		if strings.Contains(node.name, name) && node != root {
 			matches = append(matches, node)
 		}
-		for _, child := range sortedChildren(node) {
-			queue = append(queue, child)
-		}
+		queue = append(queue, sortedChildren(node)...)
 	}
 	switch len(matches) {
 	case 0:

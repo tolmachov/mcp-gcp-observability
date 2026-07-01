@@ -14,7 +14,7 @@ import (
 func RegisterMetricsList(s *mcp.Server, d Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "metrics_list",
-		Description: applyMode(d.Mode, "Discover available metrics from Cloud Monitoring and the semantic d.Registry. "+
+		Description: applyMode(d.Mode, "Discover available metrics from Cloud Monitoring and the semantic registry. "+
 			"Use this first to find metric_type values before calling metrics_snapshot. "+
 			"The 'match' parameter searches metric names, the auto-derived service prefix, "+
 			"and semantic keywords — so category synonyms like 'queue', 'cache', 'database', "+

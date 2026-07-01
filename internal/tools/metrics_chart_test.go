@@ -74,7 +74,7 @@ func TestToChartPoints(t *testing.T) {
 		}
 		got := toChartPoints(pts)
 		require.Len(t, got, 1)
-		assert.Equal(t, int64(now.Add(3*time.Minute).Unix()), got[0].TS)
+		assert.Equal(t, now.Add(3*time.Minute).Unix(), got[0].TS)
 		assert.Equal(t, 42.0, got[0].V)
 	})
 

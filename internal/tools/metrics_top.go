@@ -198,7 +198,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 		var totalAbsDelta float64
 
 		for _, c := range attributed {
-			f := metrics.ProcessWithBaselineStats(c.current, c.base, meta, int(stepSeconds))
+			f := metrics.ProcessWithBaselineStats(c.current, c.base, meta, int(stepSeconds), metrics.Window{Start: start, End: now})
 			ad := math.Abs(f.DeltaAbs)
 			totalAbsDelta += ad
 			processed = append(processed, processedContrib{

@@ -28,7 +28,7 @@ func TestProcessStable(t *testing.T) {
 		baseline[i] = 0.5
 	}
 	meta := MetricMeta{Kind: KindLatency, Unit: "seconds", BetterDirection: DirectionDown}
-	f := Process(makePoints(values, 60), makePoints(baseline, 60), meta, 60, len(baseline))
+	f := Process(makePoints(values, 60), makePoints(baseline, 60), meta, 60, len(baseline), Window{})
 
 	assert.Equal(t, ClassStable, f.Classification)
 	assert.InDelta(t, 0, f.DeltaPct, 0.01)
@@ -58,7 +58,7 @@ func TestProcessStepRegression(t *testing.T) {
 		BetterDirection: DirectionDown,
 		SLOThreshold:    &slo,
 	}
-	f := Process(makePoints(values, 60), makePoints(baseline, 60), meta, 60, len(baseline))
+	f := Process(makePoints(values, 60), makePoints(baseline, 60), meta, 60, len(baseline), Window{})
 
 	assert.Equal(t, ClassStepRegression, f.Classification)
 	assert.True(t, f.StepChangeDetected)
@@ -80,7 +80,7 @@ func TestProcessSaturation(t *testing.T) {
 		BetterDirection: DirectionDown,
 		SaturationCap:   &satCap,
 	}
-	f := Process(makePoints(values, 60), makePoints(baseline, 60), meta, 60, len(baseline))
+	f := Process(makePoints(values, 60), makePoints(baseline, 60), meta, 60, len(baseline), Window{})
 
 	assert.Equal(t, ClassSaturation, f.Classification)
 	assert.True(t, f.SaturationDetected)
@@ -98,7 +98,7 @@ func TestProcessSpike(t *testing.T) {
 	values[26] = 3.5
 
 	meta := MetricMeta{Kind: KindLatency, Unit: "seconds", BetterDirection: DirectionDown}
-	f := Process(makePoints(values, 60), makePoints(baseline, 60), meta, 60, len(baseline))
+	f := Process(makePoints(values, 60), makePoints(baseline, 60), meta, 60, len(baseline), Window{})
 
 	assert.Equal(t, ClassSpike, f.Classification)
 	assert.Greater(t, f.SpikeCount, 0, "expected spikes detected")
@@ -116,7 +116,7 @@ func TestProcessNoisy(t *testing.T) {
 		baseline[i] = 0.5
 	}
 	meta := MetricMeta{Kind: KindLatency, Unit: "seconds", BetterDirection: DirectionDown}
-	f := Process(makePoints(values, 60), makePoints(baseline, 60), meta, 60, len(baseline))
+	f := Process(makePoints(values, 60), makePoints(baseline, 60), meta, 60, len(baseline), Window{})
 
 	assert.Equal(t, ClassNoisy, f.Classification)
 }
@@ -136,7 +136,7 @@ func TestProcessDirectionUpSLOBreach(t *testing.T) {
 		BetterDirection: DirectionUp,
 		SLOThreshold:    &slo,
 	}
-	f := Process(makePoints(values, 60), makePoints(baseline, 60), meta, 60, len(baseline))
+	f := Process(makePoints(values, 60), makePoints(baseline, 60), meta, 60, len(baseline), Window{})
 
 	assert.True(t, f.SLOBreach, "expected SLO breach for availability below threshold")
 	assert.Equal(t, 1.0, f.BreachRatio)
@@ -151,7 +151,7 @@ func TestProcessZeroBaseline(t *testing.T) {
 		baseline[i] = 0.0
 	}
 	meta := MetricMeta{Kind: KindErrorRate, Unit: "count", BetterDirection: DirectionDown}
-	f := Process(makePoints(values, 60), makePoints(baseline, 60), meta, 60, len(baseline))
+	f := Process(makePoints(values, 60), makePoints(baseline, 60), meta, 60, len(baseline), Window{})
 
 	assert.NotZero(t, f.DeltaPct, "DeltaPct should not be 0 when baseline is 0 and current is non-zero")
 	assert.NotEqual(t, ClassStable, f.Classification, "classification should not be 'stable' for a spike from zero")
@@ -162,7 +162,7 @@ func TestProcessFewPoints(t *testing.T) {
 	values := []float64{1.0, 1.0, 5.0, 5.0, 5.0}
 	baseline := []float64{1.0, 1.0, 1.0, 1.0, 1.0}
 	meta := MetricMeta{Kind: KindLatency, Unit: "seconds", BetterDirection: DirectionDown}
-	f := Process(makePoints(values, 60), makePoints(baseline, 60), meta, 60, len(baseline))
+	f := Process(makePoints(values, 60), makePoints(baseline, 60), meta, 60, len(baseline), Window{})
 
 	assert.False(t, f.StepChangeDetected, "step change should not be detected with fewer than 6 points")
 }
@@ -177,7 +177,7 @@ func TestIsBreachDirectionNone(t *testing.T) {
 
 func TestProcessEmptyPoints(t *testing.T) {
 	meta := MetricMeta{Kind: KindLatency}
-	f := Process(nil, nil, meta, 60, 0)
+	f := Process(nil, nil, meta, 60, 0, Window{})
 	assert.Empty(t, f.Classification, "expected empty classification for no points")
 }
 
@@ -199,7 +199,7 @@ func TestSpikeDetectionRequiresMinSample(t *testing.T) {
 	// the z-score math to ever reach 3.0 regardless of value magnitude.
 	values := []float64{1, 1, 1, 1, 100}
 	meta := MetricMeta{Kind: KindLatency, BetterDirection: DirectionDown}
-	f := Process(makePoints(values, 60), nil, meta, 60, 0)
+	f := Process(makePoints(values, 60), nil, meta, 60, 0, Window{})
 
 	assert.Zero(t, f.SpikeCount, "sample size %d is below minimum", len(values))
 	assert.Zero(t, f.MaxZScore, "spike detection should be skipped")
@@ -222,13 +222,13 @@ func TestSpikeDetectionUsesKindSpecificThreshold(t *testing.T) {
 
 	t.Run("latency default threshold 3.0", func(t *testing.T) {
 		meta := MetricMeta{Kind: KindLatency, BetterDirection: DirectionDown}
-		f := Process(makePoints(values, 60), nil, meta, 60, 0)
+		f := Process(makePoints(values, 60), nil, meta, 60, 0, Window{})
 		assert.Greater(t, f.SpikeCount, 0, "MaxZScore=%.2f at threshold 3.0", f.MaxZScore)
 	})
 
 	t.Run("error_rate lower threshold 2.5", func(t *testing.T) {
 		meta := MetricMeta{Kind: KindErrorRate, BetterDirection: DirectionDown}
-		f := Process(makePoints(values, 60), nil, meta, 60, 0)
+		f := Process(makePoints(values, 60), nil, meta, 60, 0, Window{})
 		assert.Greater(t, f.SpikeCount, 0, "MaxZScore=%.2f at threshold 2.5", f.MaxZScore)
 	})
 }
@@ -250,13 +250,13 @@ func TestStepChangeThresholdScalesByKind(t *testing.T) {
 
 	t.Run("error_rate: 12% clears 2*5=10 and is a step change", func(t *testing.T) {
 		meta := MetricMeta{Kind: KindErrorRate, BetterDirection: DirectionDown}
-		f := Process(makePoints(values, 60), nil, meta, 60, 0)
+		f := Process(makePoints(values, 60), nil, meta, 60, 0, Window{})
 		assert.True(t, f.StepChangeDetected, "expected true for 12%% shift on error_rate (threshold=10)")
 	})
 
 	t.Run("throughput: 12% is below 2*15=30 and is not a step change", func(t *testing.T) {
 		meta := MetricMeta{Kind: KindThroughput, BetterDirection: DirectionNone}
-		f := Process(makePoints(values, 60), nil, meta, 60, 0)
+		f := Process(makePoints(values, 60), nil, meta, 60, 0, Window{})
 		assert.False(t, f.StepChangeDetected, "expected false for 12%% shift on throughput (threshold=30)")
 	})
 }
@@ -271,7 +271,7 @@ func TestCVFloorForNearZeroMetrics(t *testing.T) {
 
 	meta := MetricMeta{Kind: KindErrorRate, BetterDirection: DirectionDown}
 	baseline := make([]float64, 60)
-	f := Process(makePoints(values, 60), makePoints(baseline, 60), meta, 60, 60)
+	f := Process(makePoints(values, 60), makePoints(baseline, 60), meta, 60, 60, Window{})
 
 	// Without the floor, CV would explode (stddev / tiny mean → huge).
 	// With the nearZeroEpsilon floor, CV stays bounded and classification
@@ -294,7 +294,7 @@ func TestTrendScoreIsWindowNormalized(t *testing.T) {
 		baseline[i] = 1.0
 	}
 	meta := MetricMeta{Kind: KindLatency, BetterDirection: DirectionDown}
-	f := Process(makePoints(values, 60), makePoints(baseline, 60), meta, 60, 60)
+	f := Process(makePoints(values, 60), makePoints(baseline, 60), meta, 60, 60, Window{})
 
 	// TrendScore should be ≈ 0.10 (10% of baseline across the window).
 	assert.InDelta(t, 0.10, f.TrendScore, 0.02, "window-normalized total drift")
@@ -313,17 +313,17 @@ func TestConfidenceReflectsReliability(t *testing.T) {
 	meta := MetricMeta{Kind: KindLatency, BetterDirection: DirectionDown}
 
 	t.Run("high: both reliable", func(t *testing.T) {
-		f := Process(makePoints(values, 60), makePoints(baseline, 60), meta, 60, 60)
+		f := Process(makePoints(values, 60), makePoints(baseline, 60), meta, 60, 60, Window{})
 		assert.Equal(t, ConfidenceHigh, f.Confidence)
 	})
 
 	t.Run("medium: baseline unreliable (too few points)", func(t *testing.T) {
-		f := Process(makePoints(values, 60), makePoints(baseline[:5], 60), meta, 60, 60)
+		f := Process(makePoints(values, 60), makePoints(baseline[:5], 60), meta, 60, 60, Window{})
 		assert.Equal(t, ConfidenceMedium, f.Confidence)
 	})
 
 	t.Run("low: no baseline at all", func(t *testing.T) {
-		f := Process(makePoints(values, 60), nil, meta, 60, 60)
+		f := Process(makePoints(values, 60), nil, meta, 60, 60, Window{})
 		assert.Equal(t, ConfidenceLow, f.Confidence)
 	})
 }
@@ -343,7 +343,7 @@ func TestDeltaPctNearZeroBaseline(t *testing.T) {
 		for i := range baseline {
 			baseline[i].Value = 5e-7 // below nearZeroEpsilon=1e-6
 		}
-		f := Process(current, baseline, meta, 60, len(baseline))
+		f := Process(current, baseline, meta, 60, len(baseline), Window{})
 		assert.False(t, math.IsInf(f.DeltaPct, 0), "DeltaPct must not be Inf for near-zero baseline")
 		assert.False(t, math.IsNaN(f.DeltaPct), "DeltaPct must not be NaN for near-zero baseline")
 		assert.NotZero(t, f.DeltaPct, "DeltaPct should be non-zero when current differs from near-zero baseline")
@@ -354,7 +354,7 @@ func TestDeltaPctNearZeroBaseline(t *testing.T) {
 		for i := range baseline {
 			baseline[i].Value = 2e-6 // above nearZeroEpsilon=1e-6
 		}
-		f := Process(current, baseline, meta, 60, len(baseline))
+		f := Process(current, baseline, meta, 60, len(baseline), Window{})
 		assert.False(t, math.IsInf(f.DeltaPct, 0), "DeltaPct must not be Inf")
 		assert.False(t, math.IsNaN(f.DeltaPct), "DeltaPct must not be NaN")
 		// current=1.0, baseline=2e-6 → DeltaPct ≈ (1-2e-6)/2e-6 * 100 ≈ 5e7
@@ -386,7 +386,33 @@ func TestDataQualityWithGaps(t *testing.T) {
 		{Timestamp: time.Date(2026, 1, 1, 0, 6, 0, 0, time.UTC), Value: 1},
 		{Timestamp: time.Date(2026, 1, 1, 0, 7, 0, 0, time.UTC), Value: 1},
 	}
-	dq := computeDataQuality(points, 60)
+	dq := computeDataQuality(points, 60, Window{})
 	assert.Equal(t, 1, dq.GapCount)
 	assert.Equal(t, 300, dq.MaxGapSeconds)
+}
+
+// A metric that stops reporting halfway through the requested window must be
+// judged unreliable, not "complete", even though the points it did emit are
+// perfectly contiguous. Without the window bounds the span-based heuristic
+// would compute expected≈actual and mark it reliable.
+func TestDataQualityDeadMetricWindowAware(t *testing.T) {
+	windowStart := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	windowEnd := windowStart.Add(60 * time.Minute)
+
+	// 20 contiguous 1-minute points, then silence for the remaining ~40 min.
+	var points []Point
+	for i := range 20 {
+		points = append(points, Point{Timestamp: windowStart.Add(time.Duration(i) * time.Minute), Value: 1})
+	}
+
+	// Span-based (unknown window): looks fine — expected ~= actual.
+	spanDQ := computeDataQuality(points, 60, Window{})
+	assert.True(t, spanDQ.Reliable, "span-based accounting cannot see the dead trailing region")
+
+	// Window-aware: expected reflects the full hour and the trailing silence is
+	// a gap, so the series is correctly flagged unreliable.
+	winDQ := computeDataQuality(points, 60, Window{Start: windowStart, End: windowEnd})
+	assert.False(t, winDQ.Reliable, "dead trailing region must make the window unreliable")
+	assert.Greater(t, winDQ.ExpectedPoints, winDQ.ActualPoints)
+	assert.GreaterOrEqual(t, winDQ.GapCount, 1, "trailing silence should count as a gap")
 }

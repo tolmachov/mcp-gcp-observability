@@ -260,14 +260,14 @@ func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 			}
 			if len(pointsA) > 0 {
 				expectedA := expectedPointsForWindow(aTo.Sub(aFrom), int(stepSeconds))
-				fA := metrics.Process(pointsA, nil, meta, int(stepSeconds), expectedA)
+				fA := metrics.Process(pointsA, nil, meta, int(stepSeconds), expectedA, metrics.Window{Start: aFrom, End: aTo})
 				result.WindowAMean = fA.Mean
 				result.ClassificationA = safeClassification(fA.Classification)
 				result.ClassificationConfidenceA = string(fA.Confidence)
 			}
 			if len(pointsB) > 0 {
 				expectedB := expectedPointsForWindow(bTo.Sub(bFrom), int(stepSeconds))
-				fB := metrics.Process(pointsB, nil, meta, int(stepSeconds), expectedB)
+				fB := metrics.Process(pointsB, nil, meta, int(stepSeconds), expectedB, metrics.Window{Start: bFrom, End: bTo})
 				result.WindowBMean = fB.Mean
 				result.ClassificationB = safeClassification(fB.Classification)
 				result.ClassificationConfidenceB = string(fB.Confidence)
@@ -285,8 +285,8 @@ func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 		// Window A has no baseline — it is the reference window for Window B.
 		// Pass expectedBaselinePoints=0 to skip baseline reliability checks;
 		// deriveConfidence returns ConfidenceLow when BaselinePointCount == 0.
-		fA := metrics.Process(pointsA, nil, meta, int(stepSeconds), 0)
-		fB := metrics.Process(pointsB, pointsA, meta, int(stepSeconds), expectedBaseA)
+		fA := metrics.Process(pointsA, nil, meta, int(stepSeconds), 0, metrics.Window{Start: aFrom, End: aTo})
+		fB := metrics.Process(pointsB, pointsA, meta, int(stepSeconds), expectedBaseA, metrics.Window{Start: bFrom, End: bTo})
 
 		trendShift := "unchanged"
 		if classificationSeverity(fB.Classification) > classificationSeverity(fA.Classification) {

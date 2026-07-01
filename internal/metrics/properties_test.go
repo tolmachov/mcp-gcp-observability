@@ -208,7 +208,7 @@ func TestProperty_ComputeDataQuality_RegularGrid(t *testing.T) {
 		stepSec := rapid.IntRange(1, 3600).Draw(t, "step")
 		pts := uniformPoints(n, stepSec, 1.0)
 
-		dq := computeDataQuality(pts, stepSec)
+		dq := computeDataQuality(pts, stepSec, Window{})
 
 		assert.Equal(t, 0, dq.GapCount, "regular grid must have no gaps")
 		assert.Equal(t, 0, dq.MaxGapSeconds, "regular grid must have zero max gap")
@@ -223,14 +223,14 @@ func TestProperty_ComputeDataQuality_NonNegative(t *testing.T) {
 		stepSec := rapid.IntRange(1, 3600).Draw(t, "step")
 		t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 		pts := make([]Point, n)
-		var cursor time.Time = t0
+		cursor := t0
 		for i := range pts {
 			gap := time.Duration(rapid.IntRange(1, 10000).Draw(t, "gap")) * time.Second
 			cursor = cursor.Add(gap)
 			pts[i] = Point{Timestamp: cursor, Value: 1.0}
 		}
 
-		dq := computeDataQuality(pts, stepSec)
+		dq := computeDataQuality(pts, stepSec, Window{})
 
 		assert.GreaterOrEqual(t, dq.GapCount, 0)
 		assert.GreaterOrEqual(t, dq.MaxGapSeconds, 0)
@@ -240,14 +240,14 @@ func TestProperty_ComputeDataQuality_NonNegative(t *testing.T) {
 // TestProperty_ComputeDataQuality_EmptyOrSingle verifies degenerate inputs.
 func TestProperty_ComputeDataQuality_EmptyOrSingle(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
-		dq := computeDataQuality(nil, 60)
+		dq := computeDataQuality(nil, 60, Window{})
 		assert.Equal(t, 0, dq.GapCount)
 		assert.Equal(t, 0, dq.MaxGapSeconds)
 	})
 	rapid.Check(t, func(t *rapid.T) {
 		stepSec := rapid.IntRange(1, 3600).Draw(t, "step")
 		pts := uniformPoints(1, stepSec, 1.0)
-		dq := computeDataQuality(pts, stepSec)
+		dq := computeDataQuality(pts, stepSec, Window{})
 		assert.Equal(t, 0, dq.GapCount, "single point must have no gaps")
 		assert.Equal(t, 0, dq.MaxGapSeconds)
 	})
@@ -385,7 +385,7 @@ func TestProperty_Process_SpikeAndBreachRatiosInRange(t *testing.T) {
 			BetterDirection: DirectionDown,
 			SLOThreshold:    &slo,
 		}
-		f := Process(pts, nil, meta, 60, 0)
+		f := Process(pts, nil, meta, 60, 0, Window{})
 
 		assert.GreaterOrEqual(t, f.SpikeRatio, 0.0, "SpikeRatio must be >= 0")
 		assert.LessOrEqual(t, f.SpikeRatio, 1.0, "SpikeRatio must be <= 1")
@@ -406,7 +406,7 @@ func TestProperty_Process_DeltaPctFinite(t *testing.T) {
 			pointsFromValues(values, 60),
 			pointsFromValues(bvalues, 60),
 			MetricMeta{Kind: KindLatency, BetterDirection: DirectionDown},
-			60, n,
+			60, n, Window{},
 		)
 
 		assert.False(t, math.IsNaN(f.DeltaPct), "DeltaPct must not be NaN")
@@ -425,7 +425,7 @@ func TestProperty_Process_NoBaselineNeverHighConfidence(t *testing.T) {
 			pointsFromValues(values, 60),
 			nil,
 			MetricMeta{Kind: KindLatency, BetterDirection: DirectionDown},
-			60, 0,
+			60, 0, Window{},
 		)
 		assert.NotEqual(t, ConfidenceHigh, f.Confidence,
 			"no baseline must never produce high confidence")
@@ -442,7 +442,7 @@ func TestProperty_Process_SpikeCountNonNegative(t *testing.T) {
 			pointsFromValues(values, 60),
 			nil,
 			MetricMeta{Kind: KindLatency, BetterDirection: DirectionDown},
-			60, 0,
+			60, 0, Window{},
 		)
 		assert.GreaterOrEqual(t, f.SpikeCount, 0)
 	})

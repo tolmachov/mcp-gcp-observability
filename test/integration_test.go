@@ -139,8 +139,10 @@ func TestListTools(t *testing.T) {
 		"logs_services",
 		"errors_list",
 		"errors_get",
+		"errors_trends",
 		"trace_get",
 		"trace_list",
+		"trace_find_from_logs",
 		"metrics_list",
 		"metrics_snapshot",
 		"metrics_top_contributors",
@@ -162,6 +164,17 @@ func TestListTools(t *testing.T) {
 	for _, expected := range expectedTools {
 		assert.True(t, toolNames[expected], "expected tool %q not found", expected)
 	}
+
+	// Exact-set check: fail if the server exposes a tool the list doesn't
+	// know about, so newly added tools are not silently left unasserted.
+	expectedSet := make(map[string]bool, len(expectedTools))
+	for _, name := range expectedTools {
+		expectedSet[name] = true
+	}
+	for name := range toolNames {
+		assert.True(t, expectedSet[name], "server exposes tool %q not present in expectedTools; add it here", name)
+	}
+	assert.Len(t, toolsResult.Tools, len(expectedTools), "tool count drifted from expectedTools")
 }
 
 func TestLogsQuery(t *testing.T) {

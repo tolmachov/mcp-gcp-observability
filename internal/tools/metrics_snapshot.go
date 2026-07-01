@@ -220,7 +220,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 			baseline = metrics.BaselineStats{}
 			// Classify error type to help user understand whether to retry or fix configuration
 			if invalidAggregationSpecError(err) {
-				baselineErrNote = fmt.Sprintf("Baseline skipped: registry misconfiguration for metric %q. Fix the aggregation block in the metrics_d.Registry.yaml file; retrying will not help. %v",
+				baselineErrNote = fmt.Sprintf("Baseline skipped: registry misconfiguration for metric %q. Fix the aggregation block in the metrics registry YAML file; retrying will not help. %v",
 					in.MetricType, err)
 			} else {
 				baselineErrNote = fmt.Sprintf("Baseline query (%s) temporarily failed: %v. You can retry. Returning current-window snapshot with baseline_reliable=false; delta fields are not meaningful.",
@@ -231,7 +231,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 		sendProgress(ctx, req, 4, 4, "Processing results")
 
 		// Process.
-		f := metrics.ProcessWithBaselineStats(currentPoints, baseline, meta, int(stepSeconds))
+		f := metrics.ProcessWithBaselineStats(currentPoints, baseline, meta, int(stepSeconds), metrics.Window{Start: start, End: now})
 
 		// Build output.
 		result := &MetricSnapshotResult{

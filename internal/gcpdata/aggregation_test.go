@@ -341,7 +341,7 @@ func testFoldSingleSeriesDeparture(t *testing.T) {
 	freshAt := []metrics.Point{{Timestamp: t0, Value: 42}}
 
 	// Append silent timestamps well beyond the carry bound. foldGroupSeries
-	// collects all distinct timestamps from the series; we synthesise a second
+	// collects all distinct timestamps from the series; we synthesize a second
 	// fake series that only supplies the timestamps (no values), so the fold
 	// still sees the later buckets.
 	const extraBuckets = maxCarryForwardBuckets + 3

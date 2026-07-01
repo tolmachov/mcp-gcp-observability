@@ -46,6 +46,17 @@ linters:
     misspell:
       locale: US
 
+  exclusions:
+    rules:
+      # Test files legitimately write world-readable fixture files, read paths
+      # built from test-local variables, use fixed-argument helpers, and call
+      # SDK methods directly. These checks add only noise there.
+      - path: _test\.go
+        linters:
+          - gosec
+          - unparam
+          - wrapcheck
+
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0

@@ -43,7 +43,7 @@ func (m RegistrationMode) String() string {
 //
 // Caveat: this naive scan cuts at abbreviations like "e.g." or "i.e." that
 // occur in the first sentence — see TestCompactDesc for the documented
-// behaviour. Tool descriptions should avoid such abbreviations in the
+// behavior. Tool descriptions should avoid such abbreviations in the
 // opening sentence; TestCompactModeRealDescriptionsSane guards against
 // regressions.
 func compactDesc(desc string) string {

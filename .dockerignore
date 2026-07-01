@@ -1,0 +1,21 @@
+# Keep the build context small and free of secrets / local artifacts.
+.git
+.gitignore
+.env
+.env.example
+.idea/
+.claude/
+.vscode/
+
+# Compiled binary (rebuilt inside the image)
+mcp-gcp-observability
+mcp-gcp-observability.exe
+
+# Test / coverage artifacts
+*.test
+*.out
+coverage.html
+internal/metrics/testdata/rapid/
+
+# Docs not needed at build time
+*.md

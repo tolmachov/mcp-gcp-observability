@@ -66,7 +66,9 @@ func LoadRegistry(path string) (*Registry, error) {
 		return &Registry{metrics: base.Metrics}, nil
 	}
 
-	data, err := os.ReadFile(path)
+	// The registry path is an operator-supplied config file (METRICS_REGISTRY_FILE
+	// / --metrics-registry); loading it by that exact path is the whole point.
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path is an intentional operator-provided config file
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
@@ -112,7 +114,7 @@ func parseRegistryRawBytes(data []byte) (map[string]map[string]any, error) {
 		Metrics map[string]map[string]any `yaml:"metrics"`
 	}
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unmarshaling registry overlay YAML: %w", err)
 	}
 	if cfg.Metrics == nil {
 		cfg.Metrics = make(map[string]map[string]any)
@@ -395,7 +397,7 @@ func toFloat64(v any) (float64, bool) {
 func parseRegistryBytes(data []byte) (*RegistryConfig, error) {
 	var cfg RegistryConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unmarshaling registry YAML: %w", err)
 	}
 	if cfg.Metrics == nil {
 		cfg.Metrics = make(map[string]MetricMeta)

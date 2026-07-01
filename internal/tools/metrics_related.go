@@ -29,7 +29,7 @@ func classifyErr(err error) (reason string, benign bool) {
 		return "", true
 	}
 	if errors.Is(err, context.Canceled) {
-		return "cancelled", true
+		return "canceled", true
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Sprintf("deadline exceeded: %v", err), false
@@ -37,7 +37,7 @@ func classifyErr(err error) (reason string, benign bool) {
 	if st, ok := status.FromError(err); ok {
 		switch st.Code() {
 		case codes.Canceled:
-			return "cancelled", true
+			return "canceled", true
 		case codes.DeadlineExceeded:
 			return fmt.Sprintf("deadline exceeded: %v", err), false
 		case codes.NotFound:
@@ -226,7 +226,7 @@ func RegisterMetricsRelated(s *mcp.Server, d Deps) {
 				baselinePoints := mergePoints(baselineSeries)
 				expectedBaseline := expectedPointsForWindow(windowDur, int(stepSeconds))
 
-				f := metrics.Process(currentPoints, baselinePoints, relMeta, int(stepSeconds), expectedBaseline)
+				f := metrics.Process(currentPoints, baselinePoints, relMeta, int(stepSeconds), expectedBaseline, metrics.Window{Start: start, End: now})
 
 				anomaly := f.Classification != metrics.ClassStable && f.Classification != metrics.ClassNoisy
 				mu.Lock()

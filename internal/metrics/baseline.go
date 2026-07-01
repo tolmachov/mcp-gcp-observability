@@ -71,9 +71,19 @@ func ComputeRobustBaselineStats(buckets [][]Point, expectedPointsPerBucket int) 
 	mad := median(devs)
 	var robustStddev float64
 	if mad > 0 {
+		// Between-bucket dispersion: how much the per-bucket (per-week) mean
+		// level moves week to week. 1.4826 normalizes MAD to a stddev-equivalent
+		// for normal data.
 		robustStddev = 1.4826 * mad
 	} else {
-		// All bucket means identical: use mean of stddevs for within-bucket variance.
+		// Degenerate case — every bucket mean is identical, so between-bucket
+		// dispersion is zero and uninformative. Fall back to the mean
+		// within-bucket stddev so BaselineStddev is not reported as 0 for a
+		// baseline that clearly has intra-window variation. NOTE: this is a
+		// different quantity (within- vs between-bucket) from the branch above;
+		// the two are not directly comparable in scale. This is tolerated only
+		// because BaselineStddev is informational and not consumed by the
+		// classifier — revisit this if a consumer starts relying on it.
 		robustStddev = mean(perBucketStddevs)
 	}
 

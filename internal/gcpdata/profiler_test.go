@@ -757,7 +757,7 @@ func TestProfileFromAPI(t *testing.T) {
 		assert.Empty(t, meta.ProfileType)
 	})
 
-	t.Run("unrecognised enum value does not expose raw proto representation", func(t *testing.T) {
+	t.Run("unrecognized enum value does not expose raw proto representation", func(t *testing.T) {
 		// Simulate a future profile type that the current proto descriptor doesn't know.
 		// proto.String() returns the decimal string "999" for unknown values.
 		p := &cloudprofilerpb.Profile{
@@ -765,7 +765,7 @@ func TestProfileFromAPI(t *testing.T) {
 			ProfileType: cloudprofilerpb.ProfileType(999),
 		}
 		meta := profileFromAPI(p)
-		assert.Empty(t, meta.ProfileType, "unrecognised enum value should yield empty ProfileType, not the raw numeric string")
+		assert.Empty(t, meta.ProfileType, "unrecognized enum value should yield empty ProfileType, not the raw numeric string")
 	})
 
 	t.Run("nil Deployment", func(t *testing.T) {

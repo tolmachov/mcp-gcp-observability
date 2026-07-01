@@ -62,7 +62,7 @@ func ListTraces(
 	req := &tracepb.ListTracesRequest{
 		ProjectId: project,
 		View:      parseViewType(view),
-		PageSize:  int32(pageSize),
+		PageSize:  safeInt32(pageSize),
 		StartTime: timestamppb.New(startTime),
 		EndTime:   timestamppb.New(endTime),
 	}

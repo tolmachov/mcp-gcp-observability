@@ -23,3 +23,6 @@ coverage.html
 
 # Data files
 downloaded-logs.json
+
+# rapid property-test failure seeds (machine-specific paths, regenerated locally)
+testdata/rapid/

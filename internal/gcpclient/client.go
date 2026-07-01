@@ -49,7 +49,7 @@ func (c *Client) ProfilerService() *cloudprofiler.ExportClient { return c.profil
 func (c *Client) Config() Config { return *c.config }
 
 // NewForTesting constructs a Client wrapping the given config without
-// initialising any GCP API clients. Config() works; the *Client getters
+// initializing any GCP API clients. Config() works; the *Client getters
 // (LoggingClient, ErrorsClient, etc.) all return nil. Use only in tests
 // that need to register tools or build resources but do not invoke handlers.
 func NewForTesting(cfg Config) *Client {

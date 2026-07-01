@@ -70,6 +70,26 @@ const (
 	flappingBreachRatioMax = 0.85
 )
 
+// Decision-tree tuning constants for classifyCore. Kept named (rather than
+// inline literals) so the thresholds are greppable and documented in one place.
+const (
+	// spikeMaxRatio: a spike is a short burst, so at most this fraction of
+	// points may be outliers before it is treated as a sustained shift.
+	spikeMaxRatio = 0.15
+	// spikeMaxAbsDeltaPct: a spike must not have moved the window mean by more
+	// than this — beyond it the deviation is a level shift, not a burst.
+	spikeMaxAbsDeltaPct = 20.0
+	// lowBreachRatio: below this breach fraction the SLO is "mostly healthy",
+	// the precondition for recovery and improvement classifications.
+	lowBreachRatio = 0.2
+	// stepChangeMaxCV: a step regression must be a clean level shift, so the
+	// window's coefficient of variation must stay below this.
+	stepChangeMaxCV = 0.35
+	// significantNoiseCV: with a significant delta but a CV above this, the
+	// signal is too noisy to call a regression and is labeled noisy instead.
+	significantNoiseCV = 0.4
+)
+
 // Classify applies a deterministic decision tree to produce a classification.
 //
 // After the decision tree runs, a final data-quality pass downgrades
@@ -102,7 +122,7 @@ func classifyCore(f *SignalFeatures, meta MetricMeta, thr ClassificationThreshol
 	// 2. Spike: short burst, not sustained.
 	// SpikeRatio < 0.15: burst affects <15% of points.
 	// absDelta < 20: overall deviation is moderate (spike has not shifted the mean much).
-	if f.MaxZScore >= thr.SpikeZScore && f.SpikeRatio < 0.15 && absDelta < 20 {
+	if f.MaxZScore >= thr.SpikeZScore && f.SpikeRatio < spikeMaxRatio && absDelta < spikeMaxAbsDeltaPct {
 		return ClassSpike
 	}
 
@@ -134,7 +154,7 @@ func classifyCore(f *SignalFeatures, meta MetricMeta, thr ClassificationThreshol
 	// Requires both an active SLO (so BreachRatio is meaningful) AND a trend
 	// strong enough to oppose the delta. Without an SLO, BreachRatio is
 	// always 0 and this branch would fire on any ordinary direction reversal.
-	if meta.SLOThreshold != nil && f.BreachRatio < 0.2 {
+	if meta.SLOThreshold != nil && f.BreachRatio < lowBreachRatio {
 		isReturningToBaseline := (f.DeltaPct > 0 && f.TrendScore < -TrendFlatBand) ||
 			(f.DeltaPct < 0 && f.TrendScore > TrendFlatBand)
 		if isReturningToBaseline {
@@ -146,7 +166,7 @@ func classifyCore(f *SignalFeatures, meta MetricMeta, thr ClassificationThreshol
 	// StepChangeDetected already enforces the kind-scaled step threshold
 	// (2 * SignificantDeltaPct) inside the processor; here we only gate
 	// on noise level and whether the SLO is being breached often enough.
-	if f.StepChangeDetected && f.CV < 0.35 && f.BreachRatio > thr.BreachRatioForRegress {
+	if f.StepChangeDetected && f.CV < stepChangeMaxCV && f.BreachRatio > thr.BreachRatioForRegress {
 		return ClassStepRegression
 	}
 
@@ -162,7 +182,7 @@ func classifyCore(f *SignalFeatures, meta MetricMeta, thr ClassificationThreshol
 	if !degrading && meta.BetterDirection != DirectionNone {
 		favorableTrend := (meta.BetterDirection == DirectionDown && f.TrendScore < -TrendStrongBand) ||
 			(meta.BetterDirection == DirectionUp && f.TrendScore > TrendStrongBand)
-		if favorableTrend && f.BreachRatio < 0.2 {
+		if favorableTrend && f.BreachRatio < lowBreachRatio {
 			return ClassImprovement
 		}
 	}
@@ -170,7 +190,7 @@ func classifyCore(f *SignalFeatures, meta MetricMeta, thr ClassificationThreshol
 	// 9. High noise with significant deviation.
 	// Higher bar than CVForNoisy: catches cases where delta is significant
 	// but signal is too unreliable to classify as regression.
-	if f.CV > 0.4 {
+	if f.CV > significantNoiseCV {
 		return ClassNoisy
 	}
 

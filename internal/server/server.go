@@ -458,12 +458,19 @@ func (s *Server) serveHTTP(ctx context.Context, handler http.Handler, addr strin
 	srv := &http.Server{
 		Addr:    addr,
 		Handler: http.NewCrossOriginProtection().Handler(handler),
+		// Bound the header-read phase to blunt Slowloris-style slow-header attacks.
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 	shutdownDone := make(chan error, 1)
 	serverExited := make(chan struct{})
-	go func() {
+	// G118: the shutdown goroutine deliberately detaches from ctx (see below);
+	// it is a server-lifecycle goroutine, not a request-scoped one.
+	go func() { //nolint:gosec // G118: intentional detached shutdown context
 		select {
 		case <-ctx.Done():
+			// Shutdown deliberately starts from a fresh Background context: ctx
+			// is already canceled here, so reusing it would abort the graceful
+			// drain immediately.
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			shutdownDone <- srv.Shutdown(shutdownCtx)

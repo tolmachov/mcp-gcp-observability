@@ -23,16 +23,24 @@ const minCurrentWindowPoints = 3
 // for metrics oscillating near zero (e.g., error_rate when healthy).
 const nearZeroEpsilon = 1e-6
 
+// saturationApproachFraction: the tail mean is considered saturated once it
+// reaches this fraction of the configured capacity ceiling (within 5%).
+const saturationApproachFraction = 0.95
+
 // Process computes statistical features relative to a raw baseline.
-// expectedBaselinePoints: expected point count for reliability checks (0 if unknown).
-func Process(points, baselinePoints []Point, meta MetricMeta, stepSeconds int, expectedBaselinePoints int) SignalFeatures {
+// expectedBaselinePoints is the expected baseline point count for reliability
+// checks (0 if unknown). window is the requested wall-clock range used for
+// data-quality reliability; pass the zero Window when the range is unknown to
+// fall back to span-based accounting (see Window).
+func Process(points, baselinePoints []Point, meta MetricMeta, stepSeconds, expectedBaselinePoints int, window Window) SignalFeatures {
 	baseline := ComputeBaselineStats(baselinePoints, expectedBaselinePoints)
-	return ProcessWithBaselineStats(points, baseline, meta, stepSeconds)
+	return ProcessWithBaselineStats(points, baseline, meta, stepSeconds, window)
 }
 
-// ProcessWithBaselineStats computes features using precomputed baseline stats.
-// For robust aggregation (e.g., same_weekday_hour with median/MAD).
-func ProcessWithBaselineStats(points []Point, baseline BaselineStats, meta MetricMeta, stepSeconds int) SignalFeatures {
+// ProcessWithBaselineStats computes features using precomputed baseline stats
+// (e.g. same_weekday_hour with median/MAD). window is the requested wall-clock
+// range used for data-quality reliability; pass the zero Window when unknown.
+func ProcessWithBaselineStats(points []Point, baseline BaselineStats, meta MetricMeta, stepSeconds int, window Window) SignalFeatures {
 	var f SignalFeatures
 
 	if len(points) == 0 {
@@ -80,7 +88,7 @@ func ProcessWithBaselineStats(points []Point, baseline BaselineStats, meta Metri
 	computeSLOBreach(&f, points, meta, stepSeconds)
 	computeSaturation(&f, values, meta)
 
-	f.DataQuality = computeDataQuality(points, stepSeconds)
+	f.DataQuality = computeDataQuality(points, stepSeconds, window)
 	f.Confidence = deriveConfidence(&f)
 	f.Classification = Classify(&f, meta)
 
@@ -148,8 +156,11 @@ func computeTrend(f *SignalFeatures, points []Point) {
 	totalDrift := slope * windowMinutes
 
 	// Normalize drift against baseline (preferred) or current mean as fallback.
+	// Use an epsilon floor, not == 0: a baseline of 1e-9 is non-zero but would
+	// otherwise be kept as the denominator, fail the nearZeroEpsilon guard
+	// below, and silently leave TrendScore at 0 even when Mean is meaningful.
 	denomNorm := math.Abs(f.Baseline)
-	if denomNorm == 0 {
+	if denomNorm <= nearZeroEpsilon {
 		denomNorm = math.Abs(f.Mean)
 	}
 	if denomNorm > nearZeroEpsilon {
@@ -185,11 +196,17 @@ func computeStepChange(f *SignalFeatures, points []Point, thr ClassificationThre
 	meanFirst := mean(firstThird)
 	meanLast := mean(lastThird)
 
-	denom := math.Abs(meanFirst)
-	if denom == 0 {
+	// Floor the denominator at nearZeroEpsilon rather than testing == 0.
+	// A meanFirst of, say, 1e-9 is technically non-zero but dividing by it
+	// produces an astronomically large changePct from ordinary noise. Prefer
+	// meanFirst; fall back to meanLast; give up only when both are negligible.
+	var denom float64
+	switch {
+	case math.Abs(meanFirst) > nearZeroEpsilon:
+		denom = math.Abs(meanFirst)
+	case math.Abs(meanLast) > nearZeroEpsilon:
 		denom = math.Abs(meanLast)
-	}
-	if denom == 0 {
+	default:
 		return
 	}
 
@@ -327,10 +344,10 @@ func computeSaturation(f *SignalFeatures, values []float64, meta MetricMeta) {
 	tail := values[len(values)-tailSize:]
 	tailMean := mean(tail)
 
-	f.SaturationDetected = tailMean >= 0.95*satCap // Within 5% of capacity ceiling.
+	f.SaturationDetected = tailMean >= saturationApproachFraction*satCap
 }
 
-func computeDataQuality(points []Point, stepSeconds int) DataQuality {
+func computeDataQuality(points []Point, stepSeconds int, window Window) DataQuality {
 	if len(points) == 0 {
 		return DataQuality{Reliable: false}
 	}
@@ -339,19 +356,37 @@ func computeDataQuality(points []Point, stepSeconds int) DataQuality {
 	}
 
 	step := time.Duration(stepSeconds) * time.Second
-	windowDuration := points[len(points)-1].Timestamp.Sub(points[0].Timestamp)
-	expected := int(windowDuration/step) + 1
+	first := points[0].Timestamp
+	last := points[len(points)-1].Timestamp
+
+	// Expected point count: prefer the requested window bounds so a metric that
+	// stopped reporting mid-window is not judged "complete" just because the
+	// points it did emit are contiguous. Fall back to the observed span when
+	// bounds are unknown (zero Window).
+	spanStart, spanEnd := first, last
+	if window.known() {
+		spanStart, spanEnd = window.Start, window.End
+	}
+	expected := int(spanEnd.Sub(spanStart)/step) + 1
 
 	var gapCount int
 	var maxGap time.Duration
-	for i := 1; i < len(points); i++ {
-		gap := points[i].Timestamp.Sub(points[i-1].Timestamp)
+	consider := func(gap time.Duration) {
 		if gap > 2*step {
 			gapCount++
 			if gap > maxGap {
 				maxGap = gap
 			}
 		}
+	}
+	// Leading/trailing gaps against the window edges catch a metric that
+	// started late or died before the window ended. Skipped for a zero Window.
+	if window.known() {
+		consider(first.Sub(window.Start))
+		consider(window.End.Sub(last))
+	}
+	for i := 1; i < len(points); i++ {
+		consider(points[i].Timestamp.Sub(points[i-1].Timestamp))
 	}
 
 	actual := len(points)
