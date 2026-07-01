@@ -13,7 +13,7 @@ import (
 // TestGenerateMetricsRegistryPromptMentionsAggregation is a regression test
 // that ensures the generate-metrics-registry MCP prompt describes the
 // "aggregation" field. The prompt is a large string constant inside
-// server.go registered via AddPrompt — there is no runtime API to inspect
+// prompts.go registered via AddPrompt — there is no runtime API to inspect
 // it without mocking the whole mcp-go server, so this test reads the Go
 // source file and asserts that the prompt text contains the critical
 // keywords. If someone removes the aggregation section from the prompt
@@ -32,15 +32,15 @@ import (
 func TestGenerateMetricsRegistryPromptMentionsAggregation(t *testing.T) {
 	_, thisFile, _, ok := runtime.Caller(0)
 	require.True(t, ok)
-	serverGoPath := strings.TrimSuffix(thisFile, "prompt_aggregation_test.go") + "server.go"
+	promptsGoPath := strings.TrimSuffix(thisFile, "prompt_aggregation_test.go") + "prompts.go"
 
-	data, err := os.ReadFile(serverGoPath)
+	data, err := os.ReadFile(promptsGoPath)
 	require.NoError(t, err)
 	src := string(data)
 
 	// Scope the search to the generate-metrics-registry prompt block so
 	// we don't match random other occurrences of "aggregation" elsewhere
-	// in server.go. The region runs from the registration marker to the
+	// in prompts.go. The region runs from the registration marker to the
 	// next AddPrompt call (or EOF) — keyword assertions then look at
 	// only this slice regardless of how the body is constructed.
 	startMarker := `"generate-metrics-registry"`
