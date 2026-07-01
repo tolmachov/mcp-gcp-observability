@@ -11,7 +11,7 @@ import (
 )
 
 func RegisterLogsK8s(s *mcp.Server, d Deps) {
-	requireClient(d.Client)
+	requireLogs(d.Logs)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "logs_k8s",
 		Description: applyMode(d.Mode, "Query Kubernetes container logs with convenient filters. "+
@@ -28,11 +28,11 @@ func RegisterLogsK8s(s *mcp.Server, d Deps) {
 		),
 		OutputSchema: outputSchemaFor[gcpdata.LogQueryResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsK8sInput) (*mcp.CallToolResult, *gcpdata.LogQueryResult, error) {
-		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
-		limit := clampLimit(in.Limit, 100, d.Client.Config().LogsMaxLimit)
+		limit := clampLimit(in.Limit, 100, d.LogsMaxLimit)
 
 		// Build K8s-specific filter
 		parts := []string{`resource.type="k8s_container"`}
@@ -76,7 +76,7 @@ func RegisterLogsK8s(s *mcp.Server, d Deps) {
 
 		sendProgress(ctx, req, 0, 1, "Querying Kubernetes logs...")
 
-		result, err := gcpdata.QueryLogs(ctx, d.Client.LoggingClient(), project, filter, limit, order, in.PageToken)
+		result, err := d.Logs.QueryLogs(ctx, project, filter, limit, order, in.PageToken)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "logs_k8s", fmt.Sprintf("query failed for project %s: %v", project, err))
 			return errResult(fmt.Sprintf("Failed to query K8s logs: %v. Verify the project_id and that K8s logging is enabled.", err)), nil, nil

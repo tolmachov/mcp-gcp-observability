@@ -285,7 +285,7 @@ func TestBuildSingleVariantServerUnknownVariant(t *testing.T) {
 		version:   "test",
 		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	_, err := s.buildSingleVariantServer("bogus", nil, nil, nil, "", nil)
+	_, err := s.buildSingleVariantServer("bogus", nil, nil, tools.Deps{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "bogus")
 	assert.Contains(t, err.Error(), "must be one of")
@@ -330,7 +330,10 @@ func TestRegisterAllToolsCount(t *testing.T) {
 	s := testServer(t)
 	srv := s.newMCPInstance()
 	registerAllTools(srv, tools.Deps{
-		Client:         &gcpclient.Client{},
+		Logs:           stubBackends{},
+		Errors:         stubBackends{},
+		Traces:         stubBackends{},
+		Profiler:       stubBackends{},
 		Registry:       metrics.NewRegistry(),
 		DefaultProject: "test",
 		Mode:           tools.ModeStandard,
@@ -372,7 +375,15 @@ func TestVariantDescriptionsInterpolateCounts(t *testing.T) {
 func TestBuildVariantsServerHappyPath(t *testing.T) {
 	s := testServer(t)
 	client := gcpclient.NewForTesting(gcpclient.Config{DefaultProject: "test"})
-	vs, err := s.buildVariantsServer(client, nil, metrics.NewRegistry(), "test", nil)
+	deps := tools.Deps{
+		Logs:           stubBackends{},
+		Errors:         stubBackends{},
+		Traces:         stubBackends{},
+		Profiler:       stubBackends{},
+		Registry:       metrics.NewRegistry(),
+		DefaultProject: "test",
+	}
+	vs, err := s.buildVariantsServer(client, metrics.NewRegistry(), deps)
 	require.NoError(t, err)
 	require.NotNil(t, vs)
 	t.Cleanup(func() {
@@ -392,7 +403,10 @@ func TestCompactModeRealDescriptionsSane(t *testing.T) {
 	s := testServer(t)
 	srv := s.newMCPInstance()
 	registerAllTools(srv, tools.Deps{
-		Client:         &gcpclient.Client{},
+		Logs:           stubBackends{},
+		Errors:         stubBackends{},
+		Traces:         stubBackends{},
+		Profiler:       stubBackends{},
 		Registry:       metrics.NewRegistry(),
 		DefaultProject: "test",
 		Mode:           tools.ModeCompact,

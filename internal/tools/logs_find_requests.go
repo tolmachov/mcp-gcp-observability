@@ -10,7 +10,7 @@ import (
 )
 
 func RegisterLogsFindRequests(s *mcp.Server, d Deps) {
-	requireClient(d.Client)
+	requireLogs(d.Logs)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "logs_find_requests",
 		Description: applyMode(d.Mode, "Find examples of HTTP requests by URL pattern. "+
@@ -35,11 +35,11 @@ func RegisterLogsFindRequests(s *mcp.Server, d Deps) {
 		if in.Method != "" && !validMethods[in.Method] {
 			return errResult(fmt.Sprintf("invalid method %q: must be one of GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS", in.Method)), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
-		limit := clampLimit(in.Limit, 20, d.Client.Config().LogsMaxLimit)
+		limit := clampLimit(in.Limit, 20, d.LogsMaxLimit)
 
 		timeFilter, err := buildTimeFilter(in.TimeFilterInput)
 		if err != nil {
@@ -48,7 +48,7 @@ func RegisterLogsFindRequests(s *mcp.Server, d Deps) {
 
 		sendProgress(ctx, req, 0, 1, "Finding requests...")
 
-		result, err := gcpdata.FindRequests(ctx, d.Client.LoggingClient(), project, in.URLPattern, in.Method, in.StatusCode, in.TracedOnly, timeFilter, limit)
+		result, err := d.Logs.FindRequests(ctx, project, in.URLPattern, in.Method, in.StatusCode, in.TracedOnly, timeFilter, limit)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "logs_find_requests", fmt.Sprintf("find requests failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to find requests: %v. Verify the project_id and that the URL pattern is correct.", err)), nil, nil

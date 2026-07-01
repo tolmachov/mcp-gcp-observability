@@ -51,7 +51,7 @@ var traceDetailSchema = &jsonschema.Schema{
 }
 
 func RegisterTraceGet(s *mcp.Server, d Deps) {
-	requireClient(d.Client)
+	requireTraces(d.Traces)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "trace_get",
 		Description: applyMode(d.Mode, "Get trace details with all spans by trace ID. "+
@@ -68,14 +68,14 @@ func RegisterTraceGet(s *mcp.Server, d Deps) {
 		if in.TraceID == "" {
 			return errResult("trace_id is required"), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
 
 		sendProgress(ctx, req, 0, 1, "Fetching trace...")
 
-		result, err := gcpdata.GetTrace(ctx, d.Client.TraceClient(), project, in.TraceID)
+		result, err := d.Traces.GetTrace(ctx, project, in.TraceID)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "trace_get", fmt.Sprintf("get trace %s failed: %v", in.TraceID, err))
 			return errResult(formatTraceGetError(in.TraceID, err)), nil, nil

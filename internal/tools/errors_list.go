@@ -10,7 +10,7 @@ import (
 )
 
 func RegisterErrorsList(s *mcp.Server, d Deps) {
-	requireClient(d.Client)
+	requireErrors(d.Errors)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "errors_list",
 		Description: applyMode(d.Mode, "List error groups from Google Cloud Error Reporting, sorted by occurrence count. "+
@@ -25,7 +25,7 @@ func RegisterErrorsList(s *mcp.Server, d Deps) {
 		},
 		OutputSchema: outputSchemaFor[gcpdata.ErrorGroupList](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ErrorsListInput) (*mcp.CallToolResult, *gcpdata.ErrorGroupList, error) {
-		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -35,11 +35,11 @@ func RegisterErrorsList(s *mcp.Server, d Deps) {
 			return errResult(err.Error()), nil, nil
 		}
 
-		limit := clampLimit(in.Limit, 50, d.Client.Config().ErrorsMaxLimit)
+		limit := clampLimit(in.Limit, 50, d.ErrorsMaxLimit)
 
 		sendProgress(ctx, req, 0, 1, "Listing error groups...")
 
-		result, err := gcpdata.ListErrors(ctx, d.Client.ErrorsClient(), project, timeRangeHours, limit, in.ServiceFilter, in.VersionFilter)
+		result, err := d.Errors.ListErrors(ctx, project, timeRangeHours, limit, in.ServiceFilter, in.VersionFilter)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "errors_list", fmt.Sprintf("list errors failed for project %s: %v", project, err))
 			return errResult(fmt.Sprintf("Failed to list errors: %v. Verify the project_id and that Error Reporting API is enabled.", err)), nil, nil

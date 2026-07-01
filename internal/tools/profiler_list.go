@@ -10,7 +10,7 @@ import (
 )
 
 func RegisterProfilerList(s *mcp.Server, d Deps) {
-	requireClient(d.Client)
+	requireProfiler(d.Profiler)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "profiler_list",
 		Description: applyMode(d.Mode, "List available Cloud Profiler profiles with metadata. "+
@@ -28,7 +28,7 @@ func RegisterProfilerList(s *mcp.Server, d Deps) {
 		),
 		OutputSchema: outputSchemaFor[gcpdata.ProfileListResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerListInput) (*mcp.CallToolResult, *gcpdata.ProfileListResult, error) {
-		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -40,7 +40,7 @@ func RegisterProfilerList(s *mcp.Server, d Deps) {
 
 		sendProgress(ctx, req, 0, 1, "Listing profiles...")
 
-		result, err := gcpdata.ListProfiles(ctx, d.Client.ProfilerService(), project,
+		result, err := d.Profiler.ListProfiles(ctx, project,
 			in.ProfileType, in.Target, in.StartTime, in.EndTime, pageSize, in.PageToken)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "profiler_list", fmt.Sprintf("list profiles failed: %v", err))

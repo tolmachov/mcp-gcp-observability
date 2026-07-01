@@ -11,7 +11,6 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
@@ -72,16 +71,22 @@ func applyMode(mode RegistrationMode, full string) string {
 // Deps bundles every dependency that any Register* function might need. Each
 // Register* uses the subset relevant to its tool. Putting them in a single
 // struct decouples adding a new dependency (one field change) from updating
-// 22+ Register* call sites, and removes the positional-argument confusion of
-// the previous (client, querier, registry, defaultProject, profileCache, mode)
-// shape. Mode lives here too so that every tool registration is a uniform
+// 22+ Register* call sites, and keeps every tool registration a uniform
 // (server, deps) call; the variant builders set Mode per spec.
+//
+// Every backend is an interface (Logs/Errors/Traces/Profiler/Querier) so tool
+// handlers can be unit-tested with fakes rather than a real GCP client.
 type Deps struct {
-	Client         *gcpclient.Client
-	Querier        gcpdata.MetricsQuerier
+	Logs     gcpdata.LogsQuerier
+	Errors   gcpdata.ErrorsQuerier
+	Traces   gcpdata.TraceQuerier
+	Profiler gcpdata.ProfilerQuerier
+	Querier  gcpdata.MetricsQuerier
+
 	Registry       *metrics.Registry
 	DefaultProject string
-	ProfileCache   *gcpdata.ProfileCache
+	LogsMaxLimit   int
+	ErrorsMaxLimit int
 	Mode           RegistrationMode
 }
 
@@ -297,10 +302,30 @@ func buildTimeFilter(in TimeFilterInput) (string, error) {
 	return filter, nil
 }
 
-// requireClient validates that client is non-nil, panicking on programming errors.
-func requireClient(client *gcpclient.Client) {
-	if client == nil {
-		panic("nil client")
+// requireLogs/requireErrors/requireTraces/requireProfiler validate that the
+// backend a tool needs was wired into Deps, panicking on programming errors at
+// registration time rather than nil-dereferencing on the first request.
+func requireLogs(q gcpdata.LogsQuerier) {
+	if q == nil {
+		panic("nil LogsQuerier")
+	}
+}
+
+func requireErrors(q gcpdata.ErrorsQuerier) {
+	if q == nil {
+		panic("nil ErrorsQuerier")
+	}
+}
+
+func requireTraces(q gcpdata.TraceQuerier) {
+	if q == nil {
+		panic("nil TraceQuerier")
+	}
+}
+
+func requireProfiler(q gcpdata.ProfilerQuerier) {
+	if q == nil {
+		panic("nil ProfilerQuerier")
 	}
 }
 

@@ -45,7 +45,7 @@ var flamegraphSchema = &jsonschema.Schema{
 }
 
 func RegisterProfilerFlamegraph(s *mcp.Server, d Deps) {
-	requireClient(d.Client)
+	requireProfiler(d.Profiler)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "profiler_flamegraph",
 		Description: applyMode(d.Mode, "Get a bounded subtree of the profile call tree (like a flamegraph view). "+
@@ -66,7 +66,7 @@ func RegisterProfilerFlamegraph(s *mcp.Server, d Deps) {
 		if in.ValueIndex < 0 {
 			return errResult("value_index must be non-negative"), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -86,7 +86,7 @@ func RegisterProfilerFlamegraph(s *mcp.Server, d Deps) {
 
 		sendProgress(ctx, req, 0, 2, "Downloading profile...")
 
-		p, meta, err := gcpdata.GetOrFetchProfile(ctx, d.Client.ProfilerService(), d.ProfileCache, project, in.ProfileID)
+		p, meta, err := d.Profiler.GetOrFetchProfile(ctx, project, in.ProfileID)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "profiler_flamegraph", fmt.Sprintf("fetch profile failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to fetch profile: %v", err)), nil, nil

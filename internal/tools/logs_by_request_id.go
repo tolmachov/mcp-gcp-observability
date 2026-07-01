@@ -10,7 +10,7 @@ import (
 )
 
 func RegisterLogsByRequestID(s *mcp.Server, d Deps) {
-	requireClient(d.Client)
+	requireLogs(d.Logs)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "logs_by_request_id",
 		Description: applyMode(d.Mode, "Find all log entries associated with a specific request ID. "+
@@ -28,11 +28,11 @@ func RegisterLogsByRequestID(s *mcp.Server, d Deps) {
 		if in.RequestID == "" {
 			return errResult("request_id is required"), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
-		limit := clampLimit(in.Limit, 100, d.Client.Config().LogsMaxLimit)
+		limit := clampLimit(in.Limit, 100, d.LogsMaxLimit)
 
 		timeFilter, err := buildTimeFilter(in.TimeFilterInput)
 		if err != nil {
@@ -41,7 +41,7 @@ func RegisterLogsByRequestID(s *mcp.Server, d Deps) {
 
 		sendProgress(ctx, req, 0, 1, "Querying logs by request ID...")
 
-		result, err := gcpdata.QueryLogsByRequestID(ctx, d.Client.LoggingClient(), project, in.RequestID, timeFilter, limit, in.PageToken)
+		result, err := d.Logs.QueryLogsByRequestID(ctx, project, in.RequestID, timeFilter, limit, in.PageToken)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "logs_by_request_id", fmt.Sprintf("request ID query failed for %s: %v", in.RequestID, err))
 			return errResult(fmt.Sprintf("Failed to query logs by request ID: %v. Verify the request_id is correct. Use logs_find_requests to discover valid request IDs.", err)), nil, nil

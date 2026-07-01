@@ -10,7 +10,7 @@ import (
 )
 
 func RegisterErrorsGet(s *mcp.Server, d Deps) {
-	requireClient(d.Client)
+	requireErrors(d.Errors)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "errors_get",
 		Description: applyMode(d.Mode, "Get details for a specific error group, including individual error events, reported stack traces/messages, and structured context when available. "+
@@ -26,15 +26,15 @@ func RegisterErrorsGet(s *mcp.Server, d Deps) {
 		if in.GroupID == "" {
 			return errResult("group_id is required"), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
-		limit := clampLimit(in.Limit, 20, d.Client.Config().ErrorsMaxLimit)
+		limit := clampLimit(in.Limit, 20, d.ErrorsMaxLimit)
 
 		sendProgress(ctx, req, 0, 1, "Fetching error group details...")
 
-		result, err := gcpdata.GetErrorGroup(ctx, d.Client.ErrorsClient(), project, in.GroupID, limit, in.PageToken)
+		result, err := d.Errors.GetErrorGroup(ctx, project, in.GroupID, limit, in.PageToken)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "errors_get", fmt.Sprintf("get error group %s failed: %v", in.GroupID, err))
 			return errResult(fmt.Sprintf("Failed to get error group: %v. Verify the group_id is valid — use errors_list to find available group IDs.", err)), nil, nil

@@ -10,7 +10,7 @@ import (
 )
 
 func RegisterErrorsTrends(s *mcp.Server, d Deps) {
-	requireClient(d.Client)
+	requireErrors(d.Errors)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "errors_trends",
 		Description: applyMode(d.Mode, "Analyze how error groups changed over a lookback window from Google Cloud Error Reporting. "+
@@ -25,7 +25,7 @@ func RegisterErrorsTrends(s *mcp.Server, d Deps) {
 		},
 		OutputSchema: outputSchemaFor[gcpdata.ErrorTrendList](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ErrorsListInput) (*mcp.CallToolResult, *gcpdata.ErrorTrendList, error) {
-		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -35,11 +35,11 @@ func RegisterErrorsTrends(s *mcp.Server, d Deps) {
 			return errResult(err.Error()), nil, nil
 		}
 
-		limit := clampLimit(in.Limit, 50, d.Client.Config().ErrorsMaxLimit)
+		limit := clampLimit(in.Limit, 50, d.ErrorsMaxLimit)
 
 		sendProgress(ctx, req, 0, 1, "Analyzing error trends...")
 
-		result, err := gcpdata.AnalyzeErrorTrends(ctx, d.Client.ErrorsClient(), project, timeRangeHours, limit, in.ServiceFilter, in.VersionFilter)
+		result, err := d.Errors.AnalyzeErrorTrends(ctx, project, timeRangeHours, limit, in.ServiceFilter, in.VersionFilter)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "errors_trends", fmt.Sprintf("analyze error trends failed for project %s: %v", project, err))
 			return errResult(fmt.Sprintf("Failed to analyze error trends: %v. Verify the project_id and that Error Reporting API is enabled.", err)), nil, nil

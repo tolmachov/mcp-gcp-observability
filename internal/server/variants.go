@@ -8,7 +8,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
-	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 	"github.com/tolmachov/mcp-gcp-observability/internal/tools"
 )
@@ -27,6 +26,11 @@ const (
 // source of truth for the "full"/"compact" variants' tool-count claim;
 // pinned by TestRegisterAllToolsCount.
 const allToolsCount = 24
+
+// profileCacheSize is the number of parsed profiles the profiler querier keeps
+// in memory. Diff profiles produced by profiler_compare live only here, so this
+// also bounds how many diffs remain navigable via diff_id.
+const profileCacheSize = 10
 
 // variantSpec declares one capability set: a register function (signature
 // shared with registerAllTools / tools.RegisterCore), the mode it should
@@ -104,10 +108,8 @@ func findVariantSpec(id string) (variantSpec, bool) {
 func (s *Server) buildSingleVariantServer(
 	variantID string,
 	client *gcpclient.Client,
-	querier gcpdata.MetricsQuerier,
 	reg *metrics.Registry,
-	defaultProject string,
-	profileCache *gcpdata.ProfileCache,
+	deps tools.Deps,
 ) (result *mcp.Server, retErr error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -123,14 +125,8 @@ func (s *Server) buildSingleVariantServer(
 	}
 
 	srv := s.newMCPInstance()
-	spec.register(srv, tools.Deps{
-		Client:         client,
-		Querier:        querier,
-		Registry:       reg,
-		DefaultProject: defaultProject,
-		ProfileCache:   profileCache,
-		Mode:           spec.mode,
-	})
+	deps.Mode = spec.mode
+	spec.register(srv, deps)
 	if err := s.registerResources(srv, client, reg); err != nil {
 		return nil, err
 	}
@@ -179,10 +175,8 @@ func registerAllTools(srv *mcp.Server, d tools.Deps) {
 // is converted to an error so server startup stays non-fatal.
 func (s *Server) buildVariantsServer(
 	client *gcpclient.Client,
-	querier gcpdata.MetricsQuerier,
 	reg *metrics.Registry,
-	defaultProject string,
-	profileCache *gcpdata.ProfileCache,
+	deps tools.Deps,
 ) (result *variants.Server, retErr error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -195,14 +189,6 @@ func (s *Server) buildVariantsServer(
 	impl := &mcp.Implementation{Name: "mcp-gcp-observability", Version: s.version}
 	vs := variants.NewServer(impl)
 
-	deps := tools.Deps{
-		Client:         client,
-		Querier:        querier,
-		Registry:       reg,
-		DefaultProject: defaultProject,
-		ProfileCache:   profileCache,
-		// Mode set per spec inside the loop.
-	}
 	for i, spec := range variantSpecs {
 		srv := s.newMCPInstance()
 		deps.Mode = spec.mode

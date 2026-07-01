@@ -13,7 +13,7 @@ import (
 const maxTraceFindResults = 100
 
 func RegisterTraceFindFromLogs(s *mcp.Server, d Deps) {
-	requireClient(d.Client)
+	requireLogs(d.Logs)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "trace_find_from_logs",
 		Description: applyMode(d.Mode, "Discover traces by scanning logs that match a Cloud Logging filter. "+
@@ -31,12 +31,12 @@ func RegisterTraceFindFromLogs(s *mcp.Server, d Deps) {
 			return errResult("filter is required"), nil, nil
 		}
 
-		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
 
-		scanLimit := clampLimit(in.ScanLimit, 500, d.Client.Config().LogsMaxLimit)
+		scanLimit := clampLimit(in.ScanLimit, 500, d.LogsMaxLimit)
 		resultLimit := clampLimit(in.Limit, 20, maxTraceFindResults)
 
 		timeFilter, err := buildTimeFilter(in.TimeFilterInput)
@@ -46,7 +46,7 @@ func RegisterTraceFindFromLogs(s *mcp.Server, d Deps) {
 
 		sendProgress(ctx, req, 0, 1, "Scanning logs for traces...")
 
-		result, err := gcpdata.FindTracesFromLogs(ctx, d.Client.LoggingClient(), project, in.Filter, timeFilter, scanLimit, resultLimit)
+		result, err := d.Logs.FindTracesFromLogs(ctx, project, in.Filter, timeFilter, scanLimit, resultLimit)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "trace_find_from_logs", fmt.Sprintf("find traces from logs failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to find traces from logs: %v. Verify the project_id and filter syntax.", err)), nil, nil

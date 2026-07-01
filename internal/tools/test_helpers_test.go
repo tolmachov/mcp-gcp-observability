@@ -31,8 +31,8 @@ func newTestToolServer(t *testing.T) *testToolServer {
 }
 
 // metricsTestDeps builds a Deps suitable for metrics-tool registration: the
-// querier/registry/project are set, ProfileCache and Client are nil (unused
-// by metrics tools), and Mode defaults to Standard.
+// querier/registry/project are set, the other backend interfaces are nil
+// (unused by metrics tools), and Mode defaults to Standard.
 func metricsTestDeps(querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string) Deps {
 	return Deps{
 		Querier:        querier,

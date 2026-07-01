@@ -10,7 +10,7 @@ import (
 )
 
 func RegisterProfilerTrends(s *mcp.Server, d Deps) {
-	requireClient(d.Client)
+	requireProfiler(d.Profiler)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "profiler_trends",
 		Description: applyMode(d.Mode, "Show how function costs change over time across multiple profiles (Profile history). "+
@@ -37,7 +37,7 @@ func RegisterProfilerTrends(s *mcp.Server, d Deps) {
 		if in.Target == "" {
 			return errResult("target is required (service name from profiler_list results)"), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -52,7 +52,7 @@ func RegisterProfilerTrends(s *mcp.Server, d Deps) {
 			sendProgress(ctx, req, float64(current), float64(total), msg)
 		}
 
-		result, err := gcpdata.ComputeTrends(ctx, d.Client.ProfilerService(), d.ProfileCache, project,
+		result, err := d.Profiler.ComputeTrends(ctx, project,
 			in.ProfileType, in.Target, in.FunctionFilter,
 			in.ValueIndex, maxProfiles, maxFunctions, progressFn)
 		if err != nil {

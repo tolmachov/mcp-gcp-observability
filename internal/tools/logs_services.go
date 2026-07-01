@@ -10,7 +10,7 @@ import (
 )
 
 func RegisterLogsServices(s *mcp.Server, d Deps) {
-	requireClient(d.Client)
+	requireLogs(d.Logs)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "logs_services",
 		Description: applyMode(d.Mode, "List available services and resources in the project by scanning recent logs. "+
@@ -24,7 +24,7 @@ func RegisterLogsServices(s *mcp.Server, d Deps) {
 		},
 		OutputSchema: outputSchemaFor[gcpdata.ServiceList](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsServicesInput) (*mcp.CallToolResult, *gcpdata.ServiceList, error) {
-		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -36,7 +36,7 @@ func RegisterLogsServices(s *mcp.Server, d Deps) {
 
 		sendProgress(ctx, req, 0, 1, "Discovering services...")
 
-		result, err := gcpdata.ListServices(ctx, d.Client.LoggingClient(), project, timeFilter)
+		result, err := d.Logs.ListServices(ctx, project, timeFilter)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "logs_services", fmt.Sprintf("list services failed for project %s: %v", project, err))
 			return errResult(fmt.Sprintf("Failed to list services: %v. Verify the project_id and that Cloud Logging API is enabled.", err)), nil, nil

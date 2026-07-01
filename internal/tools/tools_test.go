@@ -7,7 +7,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 	"google.golang.org/grpc/codes"
@@ -107,13 +106,21 @@ func TestClampLimit(t *testing.T) {
 	}
 }
 
-func TestRequireClient(t *testing.T) {
-	t.Run("nil panics", func(t *testing.T) {
-		defer func() {
-			assert.NotNil(t, recover())
-		}()
-		requireClient(nil)
-	})
+func TestRequireBackendGuards(t *testing.T) {
+	cases := map[string]func(){
+		"logs":     func() { requireLogs(nil) },
+		"errors":   func() { requireErrors(nil) },
+		"traces":   func() { requireTraces(nil) },
+		"profiler": func() { requireProfiler(nil) },
+	}
+	for name, fn := range cases {
+		t.Run(name+" nil panics", func(t *testing.T) {
+			defer func() {
+				assert.NotNil(t, recover())
+			}()
+			fn()
+		})
+	}
 }
 
 func TestResolveProject(t *testing.T) {
@@ -338,14 +345,13 @@ func TestRegistrationModeString(t *testing.T) {
 // trace_list, trace_get, profiler_list, profiler_top.
 func TestRegisterCoreToolCount(t *testing.T) {
 	ts := newTestToolServer(t)
-	// Use non-nil client (required by requireClient at registration time).
-	// Querier and ProfileCache can be nil — they are only accessed inside handlers.
-	RegisterCore(ts.server, Deps{
-		Client:         &gcpclient.Client{},
-		Registry:       metrics.NewRegistry(),
-		DefaultProject: "test-project",
-		Mode:           ModeStandard,
-	})
+	// Non-nil backend fakes satisfy the requireX guards at registration time;
+	// their methods are never invoked because this test only lists tools.
+	deps := allFakeBackends()
+	deps.Registry = metrics.NewRegistry()
+	deps.DefaultProject = "test-project"
+	deps.Mode = ModeStandard
+	RegisterCore(ts.server, deps)
 
 	ctx := context.Background()
 	ts.connect(ctx)

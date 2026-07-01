@@ -11,7 +11,7 @@ import (
 )
 
 func RegisterProfilerCompare(s *mcp.Server, d Deps) {
-	requireClient(d.Client)
+	requireProfiler(d.Profiler)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "profiler_compare",
 		Description: applyMode(d.Mode, "Compare two profiles and identify regressions and improvements. "+
@@ -38,14 +38,14 @@ func RegisterProfilerCompare(s *mcp.Server, d Deps) {
 		if strings.HasPrefix(in.ProfileID, "diff:") || strings.HasPrefix(in.BaseProfileID, "diff:") {
 			return errResult("profile_id and base_profile_id must be real profile IDs from profiler_list, not diff_ids from profiler_compare"), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
 
 		sendProgress(ctx, req, 0, 2, "Comparing profiles...")
 
-		result, diffProfile, err := gcpdata.CompareProfiles(ctx, d.Client.ProfilerService(), d.ProfileCache, project,
+		result, diffProfile, err := d.Profiler.CompareProfiles(ctx, project,
 			in.ProfileID, in.BaseProfileID, in.ValueIndex, 10)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "profiler_compare", fmt.Sprintf("compare profiles failed: %v", err))
@@ -66,7 +66,7 @@ func RegisterProfilerCompare(s *mcp.Server, d Deps) {
 				Target:      result.CurrentMeta.Target,
 				IsDiff:      true,
 			}
-			d.ProfileCache.Put(project+"/"+result.DiffID, diffProfile, diffMeta)
+			d.Profiler.CacheProfile(project+"/"+result.DiffID, diffProfile, diffMeta)
 		}
 
 		return nil, result, nil

@@ -11,7 +11,7 @@ import (
 )
 
 func RegisterTraceList(s *mcp.Server, d Deps) {
-	requireClient(d.Client)
+	requireTraces(d.Traces)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "trace_list",
 		Description: applyMode(d.Mode, "Search for traces by criteria such as span name, latency, or time range. "+
@@ -29,7 +29,7 @@ func RegisterTraceList(s *mcp.Server, d Deps) {
 		),
 		OutputSchema: outputSchemaFor[gcpdata.TraceListResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in TraceListInput) (*mcp.CallToolResult, *gcpdata.TraceListResult, error) {
-		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -52,7 +52,7 @@ func RegisterTraceList(s *mcp.Server, d Deps) {
 
 		sendProgress(ctx, req, 0, 1, "Listing traces...")
 
-		result, err := gcpdata.ListTraces(ctx, d.Client.TraceClient(), project,
+		result, err := d.Traces.ListTraces(ctx, project,
 			filter, in.View, in.OrderBy, startTime, endTime, pageSize, in.PageToken)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "trace_list", fmt.Sprintf("list traces failed: %v", err))

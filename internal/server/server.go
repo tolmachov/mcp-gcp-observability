@@ -153,17 +153,29 @@ func (s *Server) Run(ctx context.Context, transport Transport, httpAddr string, 
 
 	s.completer.registry = reg
 
-	querier := gcpdata.NewMonitoringQuerier(client.MonitoringClient())
 	defaultProject := client.Config().DefaultProject
 
 	s.completer.defaultProject = defaultProject
 	s.completer.loadServices = newCachedServiceLister(func(ctx context.Context) (*gcpdata.ServiceList, error) {
 		return gcpdata.ListServices(ctx, client.LoggingClient(), defaultProject, "")
 	}, s.logger)
-	profileCache := gcpdata.NewProfileCache(10)
+
+	// One base Deps carrying every backend as an interface; the variant
+	// builders clone it and set Mode per spec.
+	deps := tools.Deps{
+		Logs:           gcpdata.NewLoggingQuerier(client.LoggingClient()),
+		Errors:         gcpdata.NewErrorReportingQuerier(client.ErrorsClient()),
+		Traces:         gcpdata.NewCloudTraceQuerier(client.TraceClient()),
+		Profiler:       gcpdata.NewCloudProfilerQuerier(client.ProfilerService(), profileCacheSize),
+		Querier:        gcpdata.NewMonitoringQuerier(client.MonitoringClient()),
+		Registry:       reg,
+		DefaultProject: defaultProject,
+		LogsMaxLimit:   s.cfg.LogsMaxLimit,
+		ErrorsMaxLimit: s.cfg.ErrorsMaxLimit,
+	}
 
 	if variantID != "" {
-		srv, buildErr := s.buildSingleVariantServer(variantID, client, querier, reg, defaultProject, profileCache)
+		srv, buildErr := s.buildSingleVariantServer(variantID, client, reg, deps)
 		if buildErr != nil {
 			return fmt.Errorf("building variant server: %w", buildErr)
 		}
@@ -178,7 +190,7 @@ func (s *Server) Run(ctx context.Context, transport Transport, httpAddr string, 
 		}
 	}
 
-	vs, err := s.buildVariantsServer(client, querier, reg, defaultProject, profileCache)
+	vs, err := s.buildVariantsServer(client, reg, deps)
 	if err != nil {
 		return fmt.Errorf("building variants server: %w", err)
 	}

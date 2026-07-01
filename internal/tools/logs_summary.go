@@ -10,7 +10,7 @@ import (
 )
 
 func RegisterLogsSummary(s *mcp.Server, d Deps) {
-	requireClient(d.Client)
+	requireLogs(d.Logs)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "logs_summary",
 		Description: applyMode(d.Mode, "Get an aggregated summary of logs (based on up to 1000 sampled entries): severity distribution, top services, top errors, and sample entries. "+
@@ -23,7 +23,7 @@ func RegisterLogsSummary(s *mcp.Server, d Deps) {
 		},
 		OutputSchema: outputSchemaFor[gcpdata.LogsSummary](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsSummaryInput) (*mcp.CallToolResult, *gcpdata.LogsSummary, error) {
-		project, err := resolveProject(in.ProjectID, d.Client.Config().DefaultProject)
+		project, err := resolveProject(in.ProjectID, d.DefaultProject)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -37,7 +37,7 @@ func RegisterLogsSummary(s *mcp.Server, d Deps) {
 
 		sendProgress(ctx, req, 0, 1000, "Scanning log entries")
 
-		result, err := gcpdata.SummarizeLogs(ctx, d.Client.LoggingClient(), project, filter,
+		result, err := d.Logs.SummarizeLogs(ctx, project, filter,
 			func(scanned, total int) {
 				sendProgress(ctx, req, float64(scanned), float64(total),
 					fmt.Sprintf("Scanned %d/%d entries", scanned, total))
