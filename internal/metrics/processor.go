@@ -6,7 +6,9 @@ import (
 	"time"
 )
 
-// minPointsForSpikeDetection: minimum sample size for z-score spike detection (~3.0 threshold).
+// minPointsForSpikeDetection is the minimum sample size for z-score spike
+// detection: with population stddev the achievable z is bounded by √(N-1), so
+// 10 points are needed to reach the ~3.0 default threshold (see computeSpikes).
 const minPointsForSpikeDetection = 10
 
 // minBaselinePoints is the absolute floor below which a baseline is never

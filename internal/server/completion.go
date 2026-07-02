@@ -118,15 +118,23 @@ func (p *promptCompleter) promptArgCandidates(ctx context.Context, prompt, arg s
 	return nil
 }
 
-// newCachedServiceLister wraps a service-discovery fetch in a session-lifetime
-// cache so completion never re-scans logs on every keystroke. The first call
-// runs fetch under a bounded timeout; the result (including an empty list on
-// error) is cached for all subsequent calls.
+// serviceCompletionRetryCooldown is how long a failed service-discovery fetch
+// suppresses retries. It keeps the "don't re-scan on every keystroke" property
+// without latching an empty result for the whole session when the first fetch
+// merely timed out on a cold Cloud Logging call.
+const serviceCompletionRetryCooldown = 30 * time.Second
+
+// newCachedServiceLister wraps a service-discovery fetch so completion never
+// re-scans logs on every keystroke. A successful fetch is cached for the rest
+// of the session; a failure is NOT cached permanently — it suppresses retries
+// only until serviceCompletionRetryCooldown elapses, so a transient cold-start
+// timeout doesn't disable completion for good.
 func newCachedServiceLister(fetch func(ctx context.Context) (*gcpdata.ServiceList, error), logger *slog.Logger) func(ctx context.Context) []string {
 	var (
-		mu     sync.Mutex
-		loaded bool
-		cached []string
+		mu        sync.Mutex
+		loaded    bool
+		cached    []string
+		nextRetry time.Time
 	)
 	return func(ctx context.Context) []string {
 		mu.Lock()
@@ -134,12 +142,18 @@ func newCachedServiceLister(fetch func(ctx context.Context) (*gcpdata.ServiceLis
 		if loaded {
 			return cached
 		}
-		loaded = true // cache even on failure to avoid re-scanning logs while typing
+		if !nextRetry.IsZero() && time.Now().Before(nextRetry) {
+			// A recent fetch failed; wait out the cooldown before retrying so
+			// typing doesn't trigger a fresh log scan on every keystroke.
+			return nil
+		}
 		cctx, cancel := context.WithTimeout(ctx, serviceCompletionTimeout)
 		defer cancel()
 		list, err := fetch(cctx)
 		if err != nil {
-			logger.Warn("service completion: discovery failed, caching empty result", "err", err)
+			nextRetry = time.Now().Add(serviceCompletionRetryCooldown)
+			logger.Warn("service completion: discovery failed, will retry after cooldown",
+				"err", err, "cooldown", serviceCompletionRetryCooldown)
 			return nil
 		}
 		names := make([]string, 0, len(list.Services))
@@ -149,6 +163,7 @@ func newCachedServiceLister(fetch func(ctx context.Context) (*gcpdata.ServiceLis
 			}
 		}
 		cached = names
+		loaded = true
 		return cached
 	}
 }

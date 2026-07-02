@@ -44,8 +44,8 @@ type TraceQuerier interface {
 }
 
 // ProfilerQuerier abstracts Cloud Profiler operations used by tool handlers.
-// The profile cache is an implementation detail owned by the concrete querier,
-// so handlers no longer thread a *ProfileCache through every call.
+// The profile cache is an implementation detail owned by the concrete querier;
+// handlers never see it.
 type ProfilerQuerier interface {
 	ListProfiles(ctx context.Context, params ListProfilesParams) (*ProfileListResult, error)
 	GetOrFetchProfile(ctx context.Context, project, profileName string) (*profile.Profile, ProfileMeta, error)

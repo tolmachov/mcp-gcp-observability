@@ -57,7 +57,7 @@ func (c Classification) isDeltaBased() bool {
 // threshold crossings to be classified as flapping. For example, with a
 // 60-point window this means at least 9 transitions (0.15 * 60). At 60-second
 // step intervals, this represents roughly a crossing every 7 minutes, which is
-// unambiguously oscillating behavior. Classification only runs when
+// unambiguously oscillating behavior. The flapping branch only runs when
 // ActualPoints >= 10 (see classifyCore).
 const flappingTransitionRate = 0.15
 
@@ -120,8 +120,8 @@ func classifyCore(f *SignalFeatures, meta MetricMeta, thr ClassificationThreshol
 	}
 
 	// 2. Spike: short burst, not sustained.
-	// SpikeRatio < 0.15: burst affects <15% of points.
-	// absDelta < 20: overall deviation is moderate (spike has not shifted the mean much).
+	// SpikeRatio below spikeMaxRatio: burst affects a small fraction of points.
+	// absDelta below spikeMaxAbsDeltaPct: the spike has not shifted the mean much.
 	if f.MaxZScore >= thr.SpikeZScore && f.SpikeRatio < spikeMaxRatio && absDelta < spikeMaxAbsDeltaPct {
 		return ClassSpike
 	}

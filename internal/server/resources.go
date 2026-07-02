@@ -78,7 +78,10 @@ func (s *Server) registerResourceTemplates(srv *mcp.Server, client *gcpclient.Cl
 				MIMEType:    "application/json",
 			},
 			func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
-				project := projectFromURI(req.Params.URI, defaultProject)
+				project, err := projectFromURI(req.Params.URI, defaultProject)
+				if err != nil {
+					return nil, err
+				}
 				if project == "" {
 					return nil, fmt.Errorf("no project in URI %q and no default project configured", req.Params.URI)
 				}
@@ -126,10 +129,16 @@ func (s *Server) registerResourceTemplates(srv *mcp.Server, client *gcpclient.Cl
 
 // projectFromURI extracts the {project} segment (the URI host) from a templated
 // resource URI such as gcp-logs://my-project/recent, falling back to the
-// configured default when the host is empty.
-func projectFromURI(uri, defaultProject string) string {
-	if u, err := url.Parse(uri); err == nil && u.Host != "" {
-		return u.Host
+// configured default when the host is empty. A URI that fails to parse is an
+// error rather than a silent fallback, so a malformed request can't quietly
+// return default-project data labeled with the requested URI.
+func projectFromURI(uri, defaultProject string) (string, error) {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return "", fmt.Errorf("malformed resource URI %q: %w", uri, err)
 	}
-	return defaultProject
+	if u.Host != "" {
+		return u.Host, nil
+	}
+	return defaultProject, nil
 }

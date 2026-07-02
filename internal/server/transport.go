@@ -44,6 +44,8 @@ func (s *Server) serveHTTP(ctx context.Context, handler http.Handler, addr strin
 	// (previously on, now gated behind the enableoriginverification MCPGODEBUG
 	// flag until v1.8.0). Restore it explicitly via the stdlib middleware so the
 	// HTTP transport is not exposed to DNS-rebinding / cross-origin attacks.
+	// Re-evaluate this when upgrading go-sdk past v1.8.0, where the built-in
+	// protection returns and this middleware may become redundant.
 	srv := &http.Server{
 		Addr:    addr,
 		Handler: http.NewCrossOriginProtection().Handler(handler),

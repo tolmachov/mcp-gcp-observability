@@ -242,17 +242,24 @@ func TestProjectFromURI(t *testing.T) {
 		uri        string
 		defProject string
 		want       string
+		wantErr    bool
 	}{
-		{"gcp-logs://my-project/recent", "fallback", "my-project"},
-		{"gcp-errors://proj-123/groups", "fallback", "proj-123"},
-		{"gcp-traces://p/recent", "fallback", "p"},
-		{"gcp-logs:///recent", "fallback", "fallback"},    // empty host → default
-		{"::not a uri::", "fallback", "fallback"},         // parse error → default
-		{"gcp-logs://only-host", "fallback", "only-host"}, // no path still yields host
-		{"gcp-logs:///recent", "", ""},                    // empty host, no default
+		{uri: "gcp-logs://my-project/recent", defProject: "fallback", want: "my-project"},
+		{uri: "gcp-errors://proj-123/groups", defProject: "fallback", want: "proj-123"},
+		{uri: "gcp-traces://p/recent", defProject: "fallback", want: "p"},
+		{uri: "gcp-logs:///recent", defProject: "fallback", want: "fallback"},    // empty host → default
+		{uri: "::not a uri::", defProject: "fallback", wantErr: true},            // parse error → explicit error
+		{uri: "gcp-logs://only-host", defProject: "fallback", want: "only-host"}, // no path still yields host
+		{uri: "gcp-logs:///recent", defProject: "", want: ""},                    // empty host, no default
 	}
 	for _, tc := range tests {
-		assert.Equal(t, tc.want, projectFromURI(tc.uri, tc.defProject), "uri=%s", tc.uri)
+		got, err := projectFromURI(tc.uri, tc.defProject)
+		if tc.wantErr {
+			assert.Error(t, err, "uri=%s", tc.uri)
+			continue
+		}
+		require.NoError(t, err, "uri=%s", tc.uri)
+		assert.Equal(t, tc.want, got, "uri=%s", tc.uri)
 	}
 }
 

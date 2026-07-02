@@ -14,7 +14,7 @@ import (
 // that ensures the generate-metrics-registry MCP prompt describes the
 // "aggregation" field. The prompt is a large string constant inside
 // prompts.go registered via AddPrompt — there is no runtime API to inspect
-// it without mocking the whole mcp-go server, so this test reads the Go
+// it without mocking the whole MCP go-sdk server, so this test reads the Go
 // source file and asserts that the prompt text contains the critical
 // keywords. If someone removes the aggregation section from the prompt
 // in the future, this test fails loudly.
@@ -45,7 +45,7 @@ func TestGenerateMetricsRegistryPromptMentionsAggregation(t *testing.T) {
 	// only this slice regardless of how the body is constructed.
 	startMarker := `"generate-metrics-registry"`
 	start := strings.Index(src, startMarker)
-	require.GreaterOrEqual(t, start, 0, "marker %q must be found in server.go", startMarker)
+	require.GreaterOrEqual(t, start, 0, "marker %q must be found in prompts.go", startMarker)
 	end := strings.Index(src[start+len(startMarker):], "AddPrompt(")
 	var body string
 	if end < 0 {

@@ -34,8 +34,9 @@ func ComputeBaselineStats(points []Point, expectedPoints int) BaselineStats {
 }
 
 // ComputeRobustBaselineStats combines per-bucket baselines using robust estimation
-// (median + MAD) to handle outlier buckets. Needs ≥2 buckets; falls back to plain
-// aggregation for 0-1 buckets. expectedPointsPerBucket is for reliability checks.
+// (median + MAD) to handle outlier buckets. Needs ≥2 non-empty buckets; falls
+// back to plain aggregation otherwise. expectedPointsPerBucket is for
+// reliability checks.
 func ComputeRobustBaselineStats(buckets [][]Point, expectedPointsPerBucket int) BaselineStats {
 	// Filter out empty buckets and flatten as a fallback.
 	var merged []Point
