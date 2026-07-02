@@ -8,7 +8,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
-	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 	"github.com/tolmachov/mcp-gcp-observability/internal/tools"
 )
 
@@ -101,25 +100,33 @@ func findVariantSpec(id string) (variantSpec, bool) {
 	return variantSpec{}, false
 }
 
+// recoverRegistrationPanic converts a panic during tool registration into a
+// returned error so server startup stays non-fatal. Deferred by both variant
+// builders. variant is "" for the multi-variant path.
+func (s *Server) recoverRegistrationPanic(variant string, retErr *error) {
+	if r := recover(); r != nil {
+		stack := debug.Stack()
+		if variant != "" {
+			s.logger.Error("tool registration panic", "variant", variant, "panic", r, "stack", string(stack))
+		} else {
+			s.logger.Error("tool registration panic", "panic", r, "stack", string(stack))
+		}
+		*retErr = fmt.Errorf("tool registration panic: %v", r)
+	}
+}
+
 // buildSingleVariantServer builds a single *mcp.Server for the given variant ID.
 // Used when --variant is specified to bypass the variants negotiation protocol.
 // Any panic during registration is caught, the stack is logged, and the panic
 // is converted to an error so server startup stays non-fatal.
 func (s *Server) buildSingleVariantServer(
-	variantID string,
+	variantID VariantID,
 	client *gcpclient.Client,
-	reg *metrics.Registry,
 	deps tools.Deps,
 ) (result *mcp.Server, retErr error) {
-	defer func() {
-		if r := recover(); r != nil {
-			stack := debug.Stack()
-			s.logger.Error("tool registration panic", "variant", variantID, "panic", r, "stack", string(stack))
-			retErr = fmt.Errorf("tool registration panic: %v", r)
-		}
-	}()
+	defer s.recoverRegistrationPanic(string(variantID), &retErr)
 
-	spec, ok := findVariantSpec(variantID)
+	spec, ok := findVariantSpec(string(variantID))
 	if !ok {
 		return nil, fmt.Errorf("unknown variant %q: must be one of %v", variantID, KnownVariantIDs())
 	}
@@ -127,7 +134,7 @@ func (s *Server) buildSingleVariantServer(
 	srv := s.newMCPInstance()
 	deps.Mode = spec.mode
 	spec.register(srv, deps)
-	if err := s.registerResources(srv, client, reg); err != nil {
+	if err := s.registerResources(srv, client, deps.Registry); err != nil {
 		return nil, err
 	}
 	s.registerPrompts(srv)
@@ -175,16 +182,9 @@ func registerAllTools(srv *mcp.Server, d tools.Deps) {
 // is converted to an error so server startup stays non-fatal.
 func (s *Server) buildVariantsServer(
 	client *gcpclient.Client,
-	reg *metrics.Registry,
 	deps tools.Deps,
 ) (result *variants.Server, retErr error) {
-	defer func() {
-		if r := recover(); r != nil {
-			stack := debug.Stack()
-			s.logger.Error("tool registration panic", "panic", r, "stack", string(stack))
-			retErr = fmt.Errorf("tool registration panic: %v", r)
-		}
-	}()
+	defer s.recoverRegistrationPanic("", &retErr)
 
 	impl := &mcp.Implementation{Name: "mcp-gcp-observability", Version: s.version}
 	vs := variants.NewServer(impl)
@@ -193,7 +193,7 @@ func (s *Server) buildVariantsServer(
 		srv := s.newMCPInstance()
 		deps.Mode = spec.mode
 		spec.register(srv, deps)
-		if err := s.registerResources(srv, client, reg); err != nil {
+		if err := s.registerResources(srv, client, deps.Registry); err != nil {
 			return nil, err
 		}
 		s.registerPrompts(srv)

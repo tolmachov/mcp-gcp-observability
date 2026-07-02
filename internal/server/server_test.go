@@ -285,7 +285,7 @@ func TestBuildSingleVariantServerUnknownVariant(t *testing.T) {
 		version:   "test",
 		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	_, err := s.buildSingleVariantServer("bogus", nil, nil, tools.Deps{})
+	_, err := s.buildSingleVariantServer(VariantID("bogus"), nil, tools.Deps{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "bogus")
 	assert.Contains(t, err.Error(), "must be one of")
@@ -369,6 +369,26 @@ func TestVariantDescriptionsInterpolateCounts(t *testing.T) {
 		"monitoring variant description must interpolate tools.CoreToolsCount")
 }
 
+// TestVariantSpecsIntegrity guards the "table is the single source of truth"
+// invariant: every VariantID constant must have exactly one spec, and no two
+// specs may share an ID. A copy-paste duplicate would make findVariantSpec
+// return the first and register the second as an unreachable variant; a missing
+// entry would make a declared constant unusable.
+func TestVariantSpecsIntegrity(t *testing.T) {
+	seen := make(map[VariantID]int, len(variantSpecs))
+	for _, v := range variantSpecs {
+		seen[v.id]++
+	}
+	for id, n := range seen {
+		assert.Equalf(t, 1, n, "variant %q appears %d times in variantSpecs; IDs must be unique", id, n)
+	}
+	for _, want := range []VariantID{VariantFull, VariantCompact, VariantMonitoring} {
+		_, ok := findVariantSpec(string(want))
+		assert.Truef(t, ok, "VariantID %q has no entry in variantSpecs", want)
+	}
+	assert.Len(t, variantSpecs, 3, "unexpected variant count; update this test and the constants together")
+}
+
 // TestBuildVariantsServerHappyPath verifies the core feature of the variants
 // PR: buildVariantsServer must construct a non-nil *variants.Server when given
 // valid dependencies. Without this, the only buildVariantsServer coverage was
@@ -385,7 +405,7 @@ func TestBuildVariantsServerHappyPath(t *testing.T) {
 		Registry:       metrics.NewRegistry(),
 		DefaultProject: "test",
 	}
-	vs, err := s.buildVariantsServer(client, metrics.NewRegistry(), deps)
+	vs, err := s.buildVariantsServer(client, deps)
 	require.NoError(t, err)
 	require.NotNil(t, vs)
 	t.Cleanup(func() {

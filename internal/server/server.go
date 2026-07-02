@@ -175,7 +175,7 @@ func (s *Server) Run(ctx context.Context, transport Transport, httpAddr string, 
 	}
 
 	if variantID != "" {
-		srv, buildErr := s.buildSingleVariantServer(variantID, client, reg, deps)
+		srv, buildErr := s.buildSingleVariantServer(VariantID(variantID), client, deps)
 		if buildErr != nil {
 			return fmt.Errorf("building variant server: %w", buildErr)
 		}
@@ -190,7 +190,7 @@ func (s *Server) Run(ctx context.Context, transport Transport, httpAddr string, 
 		}
 	}
 
-	vs, err := s.buildVariantsServer(client, reg, deps)
+	vs, err := s.buildVariantsServer(client, deps)
 	if err != nil {
 		return fmt.Errorf("building variants server: %w", err)
 	}
