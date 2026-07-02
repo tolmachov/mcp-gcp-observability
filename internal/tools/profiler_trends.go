@@ -52,9 +52,15 @@ func RegisterProfilerTrends(s *mcp.Server, d Deps) {
 			sendProgress(ctx, req, float64(current), float64(total), msg)
 		}
 
-		result, err := d.Profiler.ComputeTrends(ctx, project,
-			in.ProfileType, in.Target, in.FunctionFilter,
-			in.ValueIndex, maxProfiles, maxFunctions, progressFn)
+		result, err := d.Profiler.ComputeTrends(ctx, gcpdata.ComputeTrendsParams{
+			Project:        project,
+			ProfileType:    in.ProfileType,
+			Target:         in.Target,
+			FunctionFilter: in.FunctionFilter,
+			ValueIndex:     in.ValueIndex,
+			MaxProfiles:    maxProfiles,
+			MaxFunctions:   maxFunctions,
+		}, progressFn)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "profiler_trends", fmt.Sprintf("compute trends failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to compute trends: %v", err)), nil, nil

@@ -20,7 +20,7 @@ type fakeLogs struct {
 	queryLogs          func(ctx context.Context, project, filter string, limit int, order, pageToken string) (*gcpdata.LogQueryResult, error)
 	queryLogsByTrace   func(ctx context.Context, project, traceID, timeFilter string, limit int, pageToken string) (*gcpdata.LogQueryResult, error)
 	queryLogsByReqID   func(ctx context.Context, project, requestID, timeFilter string, limit int, pageToken string) (*gcpdata.LogQueryResult, error)
-	findRequests       func(ctx context.Context, project, urlPattern, method string, statusCode int, tracedOnly bool, timeFilter string, limit int) (*gcpdata.RequestList, error)
+	findRequests       func(ctx context.Context, params gcpdata.FindRequestsParams) (*gcpdata.RequestList, error)
 	listServices       func(ctx context.Context, project, timeFilter string) (*gcpdata.ServiceList, error)
 	summarizeLogs      func(ctx context.Context, project, filter string, onProgress gcpdata.ProgressFunc) (*gcpdata.LogsSummary, error)
 	findTracesFromLogs func(ctx context.Context, project, filter, timeFilter string, scanLimit, resultLimit int) (*gcpdata.TraceFromLogsList, error)
@@ -47,11 +47,11 @@ func (f fakeLogs) QueryLogsByRequestID(ctx context.Context, project, requestID, 
 	return f.queryLogsByReqID(ctx, project, requestID, timeFilter, limit, pageToken)
 }
 
-func (f fakeLogs) FindRequests(ctx context.Context, project, urlPattern, method string, statusCode int, tracedOnly bool, timeFilter string, limit int) (*gcpdata.RequestList, error) {
+func (f fakeLogs) FindRequests(ctx context.Context, params gcpdata.FindRequestsParams) (*gcpdata.RequestList, error) {
 	if f.findRequests == nil {
 		return nil, nil
 	}
-	return f.findRequests(ctx, project, urlPattern, method, statusCode, tracedOnly, timeFilter, limit)
+	return f.findRequests(ctx, params)
 }
 
 func (f fakeLogs) ListServices(ctx context.Context, project, timeFilter string) (*gcpdata.ServiceList, error) {
@@ -122,18 +122,18 @@ func (f fakeTraces) ListTraces(ctx context.Context, project, filter, view, order
 }
 
 type fakeProfiler struct {
-	listProfiles func(ctx context.Context, project, profileType, target, startTime, endTime string, pageSize int, pageToken string) (*gcpdata.ProfileListResult, error)
+	listProfiles func(ctx context.Context, params gcpdata.ListProfilesParams) (*gcpdata.ProfileListResult, error)
 	getOrFetch   func(ctx context.Context, project, profileName string) (*profile.Profile, gcpdata.ProfileMeta, error)
 	compare      func(ctx context.Context, project, currentID, baseID string, valueIndex, topN int) (*gcpdata.ProfileCompareResult, *profile.Profile, error)
-	computeTrend func(ctx context.Context, project, profileType, target, functionFilter string, valueIndex, maxProfiles, maxFunctions int, progressFn func(current, total int, msg string)) (*gcpdata.ProfileTrendsResult, error)
+	computeTrend func(ctx context.Context, params gcpdata.ComputeTrendsParams, progressFn func(current, total int, msg string)) (*gcpdata.ProfileTrendsResult, error)
 	cached       map[string]*profile.Profile
 }
 
-func (f fakeProfiler) ListProfiles(ctx context.Context, project, profileType, target, startTime, endTime string, pageSize int, pageToken string) (*gcpdata.ProfileListResult, error) {
+func (f fakeProfiler) ListProfiles(ctx context.Context, params gcpdata.ListProfilesParams) (*gcpdata.ProfileListResult, error) {
 	if f.listProfiles == nil {
 		return nil, nil
 	}
-	return f.listProfiles(ctx, project, profileType, target, startTime, endTime, pageSize, pageToken)
+	return f.listProfiles(ctx, params)
 }
 
 func (f fakeProfiler) GetOrFetchProfile(ctx context.Context, project, profileName string) (*profile.Profile, gcpdata.ProfileMeta, error) {
@@ -150,11 +150,11 @@ func (f fakeProfiler) CompareProfiles(ctx context.Context, project, currentID, b
 	return f.compare(ctx, project, currentID, baseID, valueIndex, topN)
 }
 
-func (f fakeProfiler) ComputeTrends(ctx context.Context, project, profileType, target, functionFilter string, valueIndex, maxProfiles, maxFunctions int, progressFn func(current, total int, msg string)) (*gcpdata.ProfileTrendsResult, error) {
+func (f fakeProfiler) ComputeTrends(ctx context.Context, params gcpdata.ComputeTrendsParams, progressFn func(current, total int, msg string)) (*gcpdata.ProfileTrendsResult, error) {
 	if f.computeTrend == nil {
 		return nil, nil
 	}
-	return f.computeTrend(ctx, project, profileType, target, functionFilter, valueIndex, maxProfiles, maxFunctions, progressFn)
+	return f.computeTrend(ctx, params, progressFn)
 }
 
 func (f fakeProfiler) CacheProfile(project, profileName string, p *profile.Profile, _ gcpdata.ProfileMeta) {

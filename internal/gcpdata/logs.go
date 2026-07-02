@@ -92,24 +92,39 @@ func QueryLogsByRequestID(ctx context.Context, client *logging.Client, project, 
 }
 
 // FindRequests finds HTTP requests matching the given URL pattern.
-func FindRequests(ctx context.Context, client *logging.Client, project, urlPattern, method string, statusCode int, tracedOnly bool, timeFilter string, limit int) (*RequestList, error) {
+// FindRequestsParams bundles the filter/paging arguments for FindRequests,
+// replacing a run of same-typed positional args (three strings, an int, a bool)
+// that were easy to transpose at the call site.
+type FindRequestsParams struct {
+	Project    string
+	URLPattern string
+	Method     string
+	StatusCode int
+	TracedOnly bool
+	TimeFilter string
+	Limit      int
+}
+
+func FindRequests(ctx context.Context, client *logging.Client, params FindRequestsParams) (*RequestList, error) {
 	ctx, cancel := context.WithTimeout(ctx, logQueryTimeout)
 	defer cancel()
 
+	project, limit := params.Project, params.Limit
+
 	parts := []string{
-		fmt.Sprintf(`httpRequest.requestUrl:"%s"`, EscapeFilterValue(urlPattern)),
+		fmt.Sprintf(`httpRequest.requestUrl:"%s"`, EscapeFilterValue(params.URLPattern)),
 	}
-	if method != "" {
-		parts = append(parts, fmt.Sprintf(`httpRequest.requestMethod="%s"`, EscapeFilterValue(method)))
+	if params.Method != "" {
+		parts = append(parts, fmt.Sprintf(`httpRequest.requestMethod="%s"`, EscapeFilterValue(params.Method)))
 	}
-	if statusCode > 0 {
-		parts = append(parts, fmt.Sprintf(`httpRequest.status=%d`, statusCode))
+	if params.StatusCode > 0 {
+		parts = append(parts, fmt.Sprintf(`httpRequest.status=%d`, params.StatusCode))
 	}
-	if tracedOnly {
+	if params.TracedOnly {
 		parts = append(parts, `trace!=""`)
 	}
 
-	filter := AppendFilter(strings.Join(parts, " AND "), timeFilter)
+	filter := AppendFilter(strings.Join(parts, " AND "), params.TimeFilter)
 
 	// Request more entries than limit to account for entries without httpRequest
 	pageSize := limit * 3

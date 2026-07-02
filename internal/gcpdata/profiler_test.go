@@ -259,28 +259,28 @@ func TestScanFunctionCosts_InvalidValueIndex(t *testing.T) {
 
 func TestValidateTimeFilters(t *testing.T) {
 	// Both empty.
-	s, e, err := validateTimeFilters("", "")
+	s, e, err := ParseTimeFilters("", "")
 	require.NoError(t, err)
 	assert.True(t, s.IsZero())
 	assert.True(t, e.IsZero())
 
 	// Valid start, empty end.
-	s, _, err = validateTimeFilters("2024-01-15T00:00:00Z", "")
+	s, _, err = ParseTimeFilters("2024-01-15T00:00:00Z", "")
 	require.NoError(t, err)
 	assert.Equal(t, 2024, s.Year())
 
 	// Empty start, valid end.
-	_, e, err = validateTimeFilters("", "2024-12-31T23:59:59Z")
+	_, e, err = ParseTimeFilters("", "2024-12-31T23:59:59Z")
 	require.NoError(t, err)
 	assert.Equal(t, 12, int(e.Month()))
 
 	// Invalid start.
-	_, _, err = validateTimeFilters("not-a-date", "")
+	_, _, err = ParseTimeFilters("not-a-date", "")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid start_time")
 
 	// Invalid end.
-	_, _, err = validateTimeFilters("", "also-bad")
+	_, _, err = ParseTimeFilters("", "also-bad")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid end_time")
 }

@@ -22,7 +22,7 @@ type LogsQuerier interface {
 	QueryLogs(ctx context.Context, project, filter string, limit int, order, pageToken string) (*LogQueryResult, error)
 	QueryLogsByTrace(ctx context.Context, project, traceID, timeFilter string, limit int, pageToken string) (*LogQueryResult, error)
 	QueryLogsByRequestID(ctx context.Context, project, requestID, timeFilter string, limit int, pageToken string) (*LogQueryResult, error)
-	FindRequests(ctx context.Context, project, urlPattern, method string, statusCode int, tracedOnly bool, timeFilter string, limit int) (*RequestList, error)
+	FindRequests(ctx context.Context, params FindRequestsParams) (*RequestList, error)
 	ListServices(ctx context.Context, project, timeFilter string) (*ServiceList, error)
 	SummarizeLogs(ctx context.Context, project, filter string, onProgress ProgressFunc) (*LogsSummary, error)
 	// FindTracesFromLogs scans logs to correlate trace IDs; it runs on the
@@ -47,10 +47,10 @@ type TraceQuerier interface {
 // The profile cache is an implementation detail owned by the concrete querier,
 // so handlers no longer thread a *ProfileCache through every call.
 type ProfilerQuerier interface {
-	ListProfiles(ctx context.Context, project, profileType, target, startTime, endTime string, pageSize int, pageToken string) (*ProfileListResult, error)
+	ListProfiles(ctx context.Context, params ListProfilesParams) (*ProfileListResult, error)
 	GetOrFetchProfile(ctx context.Context, project, profileName string) (*profile.Profile, ProfileMeta, error)
 	CompareProfiles(ctx context.Context, project, currentID, baseID string, valueIndex, topN int) (*ProfileCompareResult, *profile.Profile, error)
-	ComputeTrends(ctx context.Context, project, profileType, target, functionFilter string, valueIndex, maxProfiles, maxFunctions int, progressFn func(current, total int, msg string)) (*ProfileTrendsResult, error)
+	ComputeTrends(ctx context.Context, params ComputeTrendsParams, progressFn func(current, total int, msg string)) (*ProfileTrendsResult, error)
 	// CacheProfile stores a profile (e.g. a computed diff) under (project,
 	// profileName) so a later GetOrFetchProfile for the same pair serves it
 	// without a download. Taking the pair rather than a pre-assembled key means
@@ -82,8 +82,8 @@ func (q *LoggingQuerier) QueryLogsByRequestID(ctx context.Context, project, requ
 	return QueryLogsByRequestID(ctx, q.client, project, requestID, timeFilter, limit, pageToken)
 }
 
-func (q *LoggingQuerier) FindRequests(ctx context.Context, project, urlPattern, method string, statusCode int, tracedOnly bool, timeFilter string, limit int) (*RequestList, error) {
-	return FindRequests(ctx, q.client, project, urlPattern, method, statusCode, tracedOnly, timeFilter, limit)
+func (q *LoggingQuerier) FindRequests(ctx context.Context, params FindRequestsParams) (*RequestList, error) {
+	return FindRequests(ctx, q.client, params)
 }
 
 func (q *LoggingQuerier) ListServices(ctx context.Context, project, timeFilter string) (*ServiceList, error) {
@@ -161,8 +161,8 @@ func NewCloudProfilerQuerier(svc *cloudprofiler.ExportClient, cacheSize int) *Cl
 	return &CloudProfilerQuerier{svc: svc, cache: NewProfileCache(cacheSize)}
 }
 
-func (q *CloudProfilerQuerier) ListProfiles(ctx context.Context, project, profileType, target, startTime, endTime string, pageSize int, pageToken string) (*ProfileListResult, error) {
-	return ListProfiles(ctx, q.svc, project, profileType, target, startTime, endTime, pageSize, pageToken)
+func (q *CloudProfilerQuerier) ListProfiles(ctx context.Context, params ListProfilesParams) (*ProfileListResult, error) {
+	return ListProfiles(ctx, q.svc, params)
 }
 
 func (q *CloudProfilerQuerier) GetOrFetchProfile(ctx context.Context, project, profileName string) (*profile.Profile, ProfileMeta, error) {
@@ -173,8 +173,8 @@ func (q *CloudProfilerQuerier) CompareProfiles(ctx context.Context, project, cur
 	return CompareProfiles(ctx, q.svc, q.cache, project, currentID, baseID, valueIndex, topN)
 }
 
-func (q *CloudProfilerQuerier) ComputeTrends(ctx context.Context, project, profileType, target, functionFilter string, valueIndex, maxProfiles, maxFunctions int, progressFn func(current, total int, msg string)) (*ProfileTrendsResult, error) {
-	return ComputeTrends(ctx, q.svc, q.cache, project, profileType, target, functionFilter, valueIndex, maxProfiles, maxFunctions, progressFn)
+func (q *CloudProfilerQuerier) ComputeTrends(ctx context.Context, params ComputeTrendsParams, progressFn func(current, total int, msg string)) (*ProfileTrendsResult, error) {
+	return ComputeTrends(ctx, q.svc, q.cache, params, progressFn)
 }
 
 func (q *CloudProfilerQuerier) CacheProfile(project, profileName string, p *profile.Profile, meta ProfileMeta) {

@@ -132,8 +132,7 @@ func (s *Server) buildSingleVariantServer(
 	}
 
 	srv := s.newMCPInstance()
-	deps.Mode = spec.mode
-	spec.register(srv, deps)
+	spec.register(srv, deps.WithMode(spec.mode))
 	if err := s.registerResources(srv, client, deps.Registry); err != nil {
 		return nil, err
 	}
@@ -191,8 +190,7 @@ func (s *Server) buildVariantsServer(
 
 	for i, spec := range variantSpecs {
 		srv := s.newMCPInstance()
-		deps.Mode = spec.mode
-		spec.register(srv, deps)
+		spec.register(srv, deps.WithMode(spec.mode))
 		if err := s.registerResources(srv, client, deps.Registry); err != nil {
 			return nil, err
 		}

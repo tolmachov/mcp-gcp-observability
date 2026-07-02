@@ -155,7 +155,7 @@ func TestErrorPathsSurviveOutputSchema(t *testing.T) {
 			tool:     "profiler_list",
 			register: RegisterProfilerList,
 			deps: Deps{
-				Profiler: fakeProfiler{listProfiles: func(context.Context, string, string, string, string, string, int, string) (*gcpdata.ProfileListResult, error) {
+				Profiler: fakeProfiler{listProfiles: func(context.Context, gcpdata.ListProfilesParams) (*gcpdata.ProfileListResult, error) {
 					return nil, errors.New("boom")
 				}},
 				DefaultProject: "p",
@@ -324,7 +324,7 @@ func TestProfilerListHandler(t *testing.T) {
 
 	t.Run("happy path returns profiles", func(t *testing.T) {
 		deps := Deps{
-			Profiler: fakeProfiler{listProfiles: func(context.Context, string, string, string, string, string, int, string) (*gcpdata.ProfileListResult, error) {
+			Profiler: fakeProfiler{listProfiles: func(context.Context, gcpdata.ListProfilesParams) (*gcpdata.ProfileListResult, error) {
 				return &gcpdata.ProfileListResult{
 					Count:    1,
 					Profiles: []gcpdata.ProfileMeta{{ProfileType: "CPU"}},

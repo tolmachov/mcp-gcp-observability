@@ -92,6 +92,14 @@ type Deps struct {
 	Mode           RegistrationMode
 }
 
+// WithMode returns a copy of d with Mode set to m. Variant builders use it to
+// derive a per-variant Deps from the shared base, expressing "clone then set
+// Mode" in code rather than leaving it to rely on Deps being passed by value.
+func (d Deps) WithMode(m RegistrationMode) Deps {
+	d.Mode = m
+	return d
+}
+
 // CoreToolsCount is the number of tools RegisterCore registers. Single
 // source of truth for the "monitoring" variant's tool-count claim; pinned
 // by TestRegisterCoreToolCount.

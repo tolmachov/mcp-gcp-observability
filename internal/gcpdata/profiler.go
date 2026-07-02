@@ -41,23 +41,28 @@ func ValidateProfileType(profileType string) error {
 // target, or time range, so filtering is applied client-side. To ensure the
 // caller receives up to pageSize matching results, this function paginates
 // internally until enough matches are found or the scan limit is reached.
-func ListProfiles(
-	ctx context.Context,
-	svc *cloudprofiler.ExportClient,
-	project string,
-	profileType, target, startTime, endTime string,
-	pageSize int,
-	pageToken string,
-) (*ProfileListResult, error) {
+// ListProfilesParams bundles the filter and paging arguments for ListProfiles.
+// StartTime/EndTime are time.Time (zero = no bound), matching TraceQuerier's
+// ListTraces and pushing RFC3339 parsing to the tool boundary where the error
+// message belongs, instead of stringly-typed timestamps buried mid-signature.
+type ListProfilesParams struct {
+	Project     string
+	ProfileType string
+	Target      string
+	StartTime   time.Time
+	EndTime     time.Time
+	PageSize    int
+	PageToken   string
+}
+
+func ListProfiles(ctx context.Context, svc *cloudprofiler.ExportClient, params ListProfilesParams) (*ProfileListResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, profilerQueryTimeout)
 	defer cancel()
 
-	startT, endT, err := validateTimeFilters(startTime, endTime)
-	if err != nil {
-		return nil, err
-	}
-
-	needsFilter := profileType != "" || target != "" || startTime != "" || endTime != ""
+	project := params.Project
+	pageSize := params.PageSize
+	startT, endT := params.StartTime, params.EndTime
+	needsFilter := params.ProfileType != "" || params.Target != "" || !startT.IsZero() || !endT.IsZero()
 
 	result := &ProfileListResult{
 		Summary: ProfileSummary{
@@ -79,7 +84,7 @@ func ListProfiles(
 	it := svc.ListProfiles(ctx, &cloudprofilerpb.ListProfilesRequest{
 		Parent:    "projects/" + project,
 		PageSize:  apiPageSize,
-		PageToken: pageToken,
+		PageToken: params.PageToken,
 	})
 
 	for scanned < maxScan {
@@ -96,7 +101,7 @@ func ListProfiles(
 		scanned++
 
 		meta := profileFromAPI(p)
-		ok, wasParseErr := matchesProfileFilter(meta, profileType, target, startT, endT)
+		ok, wasParseErr := matchesProfileFilter(meta, params.ProfileType, params.Target, startT, endT)
 		if !ok {
 			if wasParseErr {
 				result.ExcludedCount++
@@ -141,9 +146,11 @@ func ListProfiles(
 	return result, nil
 }
 
-// validateTimeFilters parses and validates time filter strings.
-// Returns zero-value times for empty strings.
-func validateTimeFilters(startTime, endTime string) (time.Time, time.Time, error) {
+// ParseTimeFilters parses optional RFC3339 start/end filter strings into times,
+// returning zero-value times for empty strings. It belongs at the tool
+// boundary: ListProfiles takes already-parsed time.Time, so handlers call this
+// to turn user input into ListProfilesParams and report a friendly error.
+func ParseTimeFilters(startTime, endTime string) (time.Time, time.Time, error) {
 	var startT, endT time.Time
 	if startTime != "" {
 		var err error
@@ -772,26 +779,46 @@ func ProfileValueTypes(p *profile.Profile) []ValueTypeInfo {
 	return types
 }
 
+// ComputeTrendsParams bundles the query arguments for ComputeTrends. The
+// progress callback stays a separate parameter because it is behavior, not
+// data.
+type ComputeTrendsParams struct {
+	Project        string
+	ProfileType    string
+	Target         string
+	FunctionFilter string
+	ValueIndex     int
+	MaxProfiles    int
+	MaxFunctions   int
+}
+
 // ComputeTrends tracks how specific functions' costs change over time across
 // multiple profiles — the same data shown in Cloud Profiler UI's "Profile history".
 //
-// functionFilter is a substring match on function name. When set, only matching
+// FunctionFilter is a substring match on function name. When set, only matching
 // functions are tracked (cheap: single pass over samples per profile). When empty,
-// the first successfully-downloaded profile is used to discover the top maxFunctions
+// the first successfully-downloaded profile is used to discover the top MaxFunctions
 // functions, which are then tracked across all profiles.
 func ComputeTrends(
 	ctx context.Context,
 	svc *cloudprofiler.ExportClient,
 	cache *ProfileCache,
-	project, profileType, target, functionFilter string,
-	valueIndex, maxProfiles, maxFunctions int,
+	params ComputeTrendsParams,
 	progressFn func(current, total int, msg string),
 ) (*ProfileTrendsResult, error) {
+	project, profileType, target, functionFilter := params.Project, params.ProfileType, params.Target, params.FunctionFilter
+	valueIndex, maxProfiles, maxFunctions := params.ValueIndex, params.MaxProfiles, params.MaxFunctions
+
 	// Overall timeout to bound the total wall time when downloading many profiles.
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	profiles, err := ListProfiles(ctx, svc, project, profileType, target, "", "", maxProfiles, "")
+	profiles, err := ListProfiles(ctx, svc, ListProfilesParams{
+		Project:     project,
+		ProfileType: profileType,
+		Target:      target,
+		PageSize:    maxProfiles,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("listing profiles: %w", err)
 	}

@@ -35,13 +35,24 @@ func RegisterProfilerList(s *mcp.Server, d Deps) {
 		if err := gcpdata.ValidateProfileType(in.ProfileType); err != nil {
 			return errResult(err.Error()), nil, nil
 		}
+		startTime, endTime, err := gcpdata.ParseTimeFilters(in.StartTime, in.EndTime)
+		if err != nil {
+			return errResult(err.Error()), nil, nil
+		}
 
 		pageSize := clampLimit(in.Limit, 20, 100)
 
 		sendProgress(ctx, req, 0, 1, "Listing profiles...")
 
-		result, err := d.Profiler.ListProfiles(ctx, project,
-			in.ProfileType, in.Target, in.StartTime, in.EndTime, pageSize, in.PageToken)
+		result, err := d.Profiler.ListProfiles(ctx, gcpdata.ListProfilesParams{
+			Project:     project,
+			ProfileType: in.ProfileType,
+			Target:      in.Target,
+			StartTime:   startTime,
+			EndTime:     endTime,
+			PageSize:    pageSize,
+			PageToken:   in.PageToken,
+		})
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "profiler_list", fmt.Sprintf("list profiles failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to list profiles: %v. Verify the project_id and that Cloud Profiler API is enabled.", err)), nil, nil
