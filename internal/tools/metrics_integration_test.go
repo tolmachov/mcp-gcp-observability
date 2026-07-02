@@ -811,9 +811,63 @@ func TestSnapshotIntegration_SameWeekdayHour_PartialFailure(t *testing.T) {
 	// The partial-tolerance path must surface a warning note explaining that
 	// some weekly samples could not be fetched. This distinguishes it from a
 	// clean baseline (no note) and from all-fail (a different note pattern).
-	if !strings.Contains(snap.Note, "Baseline partial failure") {
-		assert.Contains(t, snap.Note, "partial failure warning mentioning missing weekly samples")
+	assert.Contains(t, snap.Note, "Baseline partial failure")
+}
+
+// TestSnapshotIntegration_SameWeekdayHour_PanicRecovered verifies that a panic
+// in one baseline goroutine is recovered (the request still returns) and
+// reported as a code bug, not a transient fetch failure. This pins both the
+// recover contract of runWeeklyBaseline and the panic-classification wording
+// that operators rely on to tell "retry may help" from "this is a bug".
+func TestSnapshotIntegration_SameWeekdayHour_PanicRecovered(t *testing.T) {
+	reg := loadTestRegistry(t, testRegistryYAML)
+	fq := newFakeQuerier()
+	fq.metricKinds["compute.googleapis.com/instance/cpu/utilization"] = "GAUGE"
+	fq.valueTypes["compute.googleapis.com/instance/cpu/utilization"] = "DOUBLE"
+
+	now := time.Now().UTC()
+	currentWindowStart := now.Add(-time.Hour)
+	current := makeTimeSeries(currentWindowStart, stableValues(60, 0.50))
+	week1 := makeTimeSeries(currentWindowStart.AddDate(0, 0, -7), stableValues(60, 0.48))
+
+	// Current window and week -7 succeed; one of the later weeks panics rather
+	// than returning an error, exercising the recover path.
+	fq.queryFn = func(params gcpdata.QueryTimeSeriesParams) ([]gcpdata.MetricTimeSeries, error) {
+		daysBack := int(now.Sub(params.Start).Hours()/24 + 0.5)
+		switch daysBack {
+		case 0:
+			return []gcpdata.MetricTimeSeries{current}, nil
+		case 7:
+			return []gcpdata.MetricTimeSeries{week1}, nil
+		case 14:
+			panic("simulated bug in baseline processing")
+		default:
+			return nil, errors.New("simulated quota failure")
+		}
 	}
+
+	ctx := context.Background()
+	ts := newTestToolServer(t)
+	ts.registerMetricsSnapshot(fq, reg, "test-project")
+	ts.connect(ctx)
+	defer ts.close()
+
+	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
+		"metric_type":   "compute.googleapis.com/instance/cpu/utilization",
+		"baseline_mode": "same_weekday_hour",
+	})
+	require.NoError(t, err)
+	// The panic must not crash the request: a result still comes back.
+	require.False(t, result.IsError)
+
+	var snap MetricSnapshotResult
+	parseResult(t, result, &snap)
+	// The surviving week's data still produced a baseline.
+	assert.Greater(t, snap.Baseline, 0.0)
+	// A panic is a code bug, reported distinctly from a transient failure.
+	assert.Contains(t, snap.Note, "UNEXPECTED PANICS")
+	assert.NotContains(t, snap.Note, "could not be fetched",
+		"panic must not be worded as a transient fetch failure")
 }
 
 // TestSnapshotIntegration_SameWeekdayHour_AllFail verifies the non-fatal
@@ -1317,8 +1371,105 @@ func TestTopContributorsIntegration_SameWeekdayHour_PartialBaselineFail(t *testi
 	if len(top.Contributors) == 0 {
 		t.Fatal("expected at least one contributor")
 	}
-	if !strings.Contains(top.Note, "Baseline partial failure") {
-		assert.NotEmpty(t, top.Note)
+	assert.Contains(t, top.Note, "Baseline partial failure")
+}
+
+// TestTopContributorsIntegration_SameWeekdayHour_PanicRecovered verifies that
+// metrics_top_contributors gives a baseline-goroutine panic the same treatment
+// as metrics_snapshot: the request survives and the note flags a code bug
+// rather than inviting a pointless retry.
+func TestTopContributorsIntegration_SameWeekdayHour_PanicRecovered(t *testing.T) {
+	reg := loadTestRegistry(t, testRegistryYAML)
+	fq := newFakeQuerier()
+	fq.metricKinds["custom.googleapis.com/api/latency"] = "GAUGE"
+	fq.valueTypes["custom.googleapis.com/api/latency"] = "DOUBLE"
+
+	now := time.Now().UTC()
+	current := makeTimeSeriesWithLabels(now.Add(-time.Hour), stableValues(60, 0.8), map[string]string{"response_code": "200"})
+
+	fq.queryFn = func(params gcpdata.QueryTimeSeriesParams) ([]gcpdata.MetricTimeSeries, error) {
+		daysBack := int(now.Sub(params.Start).Hours()/24 + 0.5)
+		switch daysBack {
+		case 0:
+			return []gcpdata.MetricTimeSeries{current}, nil
+		case 7:
+			return []gcpdata.MetricTimeSeries{makeTimeSeriesWithLabels(
+				now.Add(-time.Hour).AddDate(0, 0, -7), stableValues(60, 0.75),
+				map[string]string{"response_code": "200"})}, nil
+		case 14:
+			panic("simulated bug in baseline processing")
+		default:
+			return nil, errors.New("simulated quota failure")
+		}
+	}
+
+	ctx := context.Background()
+	ts := newTestToolServer(t)
+	ts.registerMetricsTop(fq, reg, "test-project")
+	ts.connect(ctx)
+	defer ts.close()
+
+	result, err := ts.callTool(ctx, "metrics_top_contributors", map[string]any{
+		"metric_type":   "custom.googleapis.com/api/latency",
+		"dimension":     "metric.labels.response_code",
+		"baseline_mode": "same_weekday_hour",
+	})
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+
+	var top TopContributorsResult
+	parseResult(t, result, &top)
+	if len(top.Contributors) == 0 {
+		t.Fatal("expected at least one contributor")
+	}
+	assert.Contains(t, top.Note, "UNEXPECTED PANICS")
+}
+
+// TestTopContributorsIntegration_SameWeekdayHour_EmptyBaseline verifies that
+// when every weekly query succeeds but returns no data (e.g. a label value
+// younger than the baseline window), the tool says so instead of silently
+// emitting delta_pct 0 that looks like "nothing changed".
+func TestTopContributorsIntegration_SameWeekdayHour_EmptyBaseline(t *testing.T) {
+	reg := loadTestRegistry(t, testRegistryYAML)
+	fq := newFakeQuerier()
+	fq.metricKinds["custom.googleapis.com/api/latency"] = "GAUGE"
+	fq.valueTypes["custom.googleapis.com/api/latency"] = "DOUBLE"
+
+	now := time.Now().UTC()
+	current := makeTimeSeriesWithLabels(now.Add(-time.Hour), stableValues(60, 0.8), map[string]string{"response_code": "200"})
+
+	// Current window returns data; every baseline week succeeds but is empty.
+	fq.queryFn = func(params gcpdata.QueryTimeSeriesParams) ([]gcpdata.MetricTimeSeries, error) {
+		daysBack := int(now.Sub(params.Start).Hours()/24 + 0.5)
+		if daysBack == 0 {
+			return []gcpdata.MetricTimeSeries{current}, nil
+		}
+		return nil, nil
+	}
+
+	ctx := context.Background()
+	ts := newTestToolServer(t)
+	ts.registerMetricsTop(fq, reg, "test-project")
+	ts.connect(ctx)
+	defer ts.close()
+
+	result, err := ts.callTool(ctx, "metrics_top_contributors", map[string]any{
+		"metric_type":   "custom.googleapis.com/api/latency",
+		"dimension":     "metric.labels.response_code",
+		"baseline_mode": "same_weekday_hour",
+	})
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+
+	var top TopContributorsResult
+	parseResult(t, result, &top)
+	if len(top.Contributors) == 0 {
+		t.Fatal("expected at least one contributor")
+	}
+	assert.Contains(t, top.Note, "had no data")
+	for _, c := range top.Contributors {
+		assert.Equal(t, 0.0, c.DeltaPct, "empty baseline must yield zero delta")
+		assert.False(t, c.BaselineReliable, "empty baseline must be flagged unreliable")
 	}
 }
 

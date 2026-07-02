@@ -211,6 +211,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 					SLOBreach:                f.SLOBreach,
 					Classification:           safeClassification(f.Classification),
 					ClassificationConfidence: string(f.Confidence),
+					BaselineReliable:         f.BaselineReliable,
 				},
 				absDelta: ad,
 			})
@@ -226,6 +227,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 				c.Baseline = 0
 				c.DeltaPct = 0
 				c.ShareOfAnomaly = 0
+				c.BaselineReliable = false
 			} else if totalAbsDelta > 0 {
 				c.ShareOfAnomaly = pc.absDelta / totalAbsDelta
 			}
@@ -298,6 +300,11 @@ type Contributor struct {
 	SLOBreach                bool    `json:"slo_breach"`
 	Classification           string  `json:"classification"`
 	ClassificationConfidence string  `json:"classification_confidence"`
+	// BaselineReliable is false when this contributor's baseline had too few
+	// points to trust delta_pct — e.g. a label value absent from most baseline
+	// weeks. Mirrors MetricSnapshotResult.BaselineReliable so a zero delta on
+	// one contributor can be told apart from a genuine no-change.
+	BaselineReliable bool `json:"baseline_reliable"`
 }
 
 type contributorBaseline struct {
@@ -382,13 +389,17 @@ func queryContributorBaselines(
 		if nonEmpty == 0 && len(errs) > 0 {
 			return nil, "", fmt.Errorf("all %d baseline queries failed; first error: %w", len(errs), errors.Join(errs...))
 		}
-		if len(errs) > 0 && nonEmpty > 0 {
-			mcpLog(ctx, req, logLevelWarning, "metrics_top_contributors",
-				fmt.Sprintf("baseline partial failure: %d of %d weeks failed (%v); using %d weeks of data",
-					len(errs), weeklyBaselineWeeks, errors.Join(errs...), nonEmpty))
-			partialNote = fmt.Sprintf("Baseline partial failure (%s): %d of %d weekly samples could not be fetched; baseline computed from %d weeks. Results may be less reliable.",
-				string(BaselineModeSameWeekdayHour), len(errs), weeklyBaselineWeeks, nonEmpty)
+		if nonEmpty == 0 {
+			// Every weekly query succeeded but returned no data (e.g. a service
+			// or label value younger than the baseline window). Without this
+			// note every contributor gets delta_pct 0 and the ranking falls back
+			// to current value, which is indistinguishable from "nothing
+			// changed" — so say so explicitly.
+			partialNote = fmt.Sprintf("Baseline (%s) had no data in any of the %d prior weeks; delta_pct and share_of_anomaly are 0 and contributors are ranked by current value.",
+				string(BaselineModeSameWeekdayHour), weeklyBaselineWeeks)
+			return result, partialNote, nil
 		}
+		partialNote = weeklyBaselinePartialNote(ctx, req, "metrics_top_contributors", errs, nonEmpty)
 		return result, partialNote, nil
 
 	case BaselineModePreEvent:

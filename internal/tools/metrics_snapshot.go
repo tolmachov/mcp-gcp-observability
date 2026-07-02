@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -486,30 +485,7 @@ func buildRobustWeeklyBaseline(
 	if nonEmpty == 0 && len(errs) > 0 {
 		return metrics.BaselineStats{}, "", fmt.Errorf("all %d baseline queries failed; first error: %w", len(errs), errors.Join(errs...))
 	}
-	var partialNote string
-	if len(errs) > 0 && nonEmpty > 0 {
-		// Check if any errors were panics (which indicate code bugs, not transient failures)
-		hasPanic := false
-		for _, e := range errs {
-			if strings.Contains(e.Error(), "panic") {
-				hasPanic = true
-				break
-			}
-		}
-		if hasPanic {
-			mcpLog(ctx, req, logLevelError, "metrics_snapshot",
-				fmt.Sprintf("baseline partial failure: UNEXPECTED PANICS in %d of %d weeks; %v",
-					len(errs), weeklyBaselineWeeks, errors.Join(errs...)))
-			partialNote = fmt.Sprintf("Baseline partial failure (%s): UNEXPECTED PANICS occurred in %d of %d weekly queries. This is a bug in the code, not a transient failure. Baseline computed from %d weeks, but results may be unreliable. Please report this issue.",
-				string(BaselineModeSameWeekdayHour), len(errs), weeklyBaselineWeeks, nonEmpty)
-		} else {
-			mcpLog(ctx, req, logLevelWarning, "metrics_snapshot",
-				fmt.Sprintf("baseline partial failure: %d of %d weeks failed (%v); using %d weeks of data",
-					len(errs), weeklyBaselineWeeks, errors.Join(errs...), nonEmpty))
-			partialNote = fmt.Sprintf("Baseline partial failure (%s): %d of %d weekly samples could not be fetched; baseline computed from %d weeks. Results may be less reliable.",
-				string(BaselineModeSameWeekdayHour), len(errs), weeklyBaselineWeeks, nonEmpty)
-		}
-	}
+	partialNote := weeklyBaselinePartialNote(ctx, req, "metrics_snapshot", errs, nonEmpty)
 
 	return metrics.ComputeRobustBaselineStats(weekly, expectedPerWeek),
 		joinNote(partialNote, joinNote(warningNotes...)), nil

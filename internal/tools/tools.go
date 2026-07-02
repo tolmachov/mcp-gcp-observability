@@ -376,15 +376,42 @@ func clampLimit(limit, fallback, maxLimit int) int {
 // the same_weekday_hour baseline mode.
 const weeklyBaselineWeeks = 4
 
+// panicError wraps a value recovered from a panic in a weekly-baseline
+// goroutine. It exists so callers can distinguish a code bug (which no retry
+// will fix) from a transient fetch failure via errors.As, rather than
+// substring-matching the error text.
+type panicError struct {
+	weeksBack int
+	value     any
+}
+
+func (e *panicError) Error() string {
+	return fmt.Sprintf("week -%d: panic: %v", e.weeksBack, e.value)
+}
+
+// containsPanic reports whether any error in errs wraps a recovered panic.
+func containsPanic(errs []error) bool {
+	for _, e := range errs {
+		var pe *panicError
+		if errors.As(e, &pe) {
+			return true
+		}
+	}
+	return false
+}
+
 // runWeeklyBaseline runs work for each of the last weeklyBaselineWeeks weeks
 // (1..N weeks back) concurrently and returns the collected errors. Each work
 // call gets the 1-based weeksBack and should write only its own result slot —
 // indices are disjoint, so those writes need no locking; any other shared
 // state it touches must do its own synchronization. A work error is wrapped
-// with the week offset; a panic is recovered, logged (labeled with tool), and
-// recorded as an error rather than crashing the request. Shared by
-// metrics_snapshot and metrics_top_contributors, whose same_weekday_hour
-// baselines differ only in the per-week body.
+// with the week offset; a panic is recovered, logged (labeled with tool) to the
+// server-side notifyErrLog, and recorded as a *panicError (detectable via
+// containsPanic) rather than crashing the request. ctx is only consulted once
+// before each work call — a pre-canceled ctx yields one error per week — and
+// is not passed to work, so work must observe cancellation itself by closing
+// over the same ctx. Shared by metrics_snapshot and metrics_top_contributors,
+// whose same_weekday_hour baselines differ only in the per-week body.
 func runWeeklyBaseline(ctx context.Context, tool string, work func(weeksBack int) error) []error {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -402,7 +429,7 @@ func runWeeklyBaseline(ctx context.Context, tool string, work func(weeksBack int
 				if r := recover(); r != nil {
 					stack := debug.Stack()
 					notifyErrLog.Load().Error(tool+": panic in baseline goroutine", "weeks_back", weeksBack, "panic", r, "stack", string(stack))
-					addErr(fmt.Errorf("week -%d: panic: %v", weeksBack, r))
+					addErr(&panicError{weeksBack: weeksBack, value: r})
 				}
 			}()
 			if ctx.Err() != nil {
@@ -416,6 +443,32 @@ func runWeeklyBaseline(ctx context.Context, tool string, work func(weeksBack int
 	}
 	wg.Wait()
 	return errs
+}
+
+// weeklyBaselinePartialNote builds the user-facing note and emits the matching
+// MCP log for a partial same_weekday_hour baseline failure — some weeks failed
+// but at least one produced data (nonEmpty > 0). Recovered panics are reported
+// distinctly from transient fetch failures (error-level log, "report this
+// issue" wording) because they signal a code bug a retry will not fix. Returns
+// "" when errs is empty. Shared by metrics_snapshot and metrics_top_contributors
+// so both surface panics identically.
+func weeklyBaselinePartialNote(ctx context.Context, req *mcp.CallToolRequest, tool string, errs []error, nonEmpty int) string {
+	if len(errs) == 0 {
+		return ""
+	}
+	joined := errors.Join(errs...)
+	if containsPanic(errs) {
+		mcpLog(ctx, req, logLevelError, tool,
+			fmt.Sprintf("baseline partial failure: UNEXPECTED PANICS in %d of %d weeks; %v",
+				len(errs), weeklyBaselineWeeks, joined))
+		return fmt.Sprintf("Baseline partial failure (%s): UNEXPECTED PANICS occurred in %d of %d weekly queries. This is a bug in the code, not a transient failure. Baseline computed from %d weeks, but results may be unreliable. Please report this issue.",
+			string(BaselineModeSameWeekdayHour), len(errs), weeklyBaselineWeeks, nonEmpty)
+	}
+	mcpLog(ctx, req, logLevelWarning, tool,
+		fmt.Sprintf("baseline partial failure: %d of %d weeks failed (%v); using %d weeks of data",
+			len(errs), weeklyBaselineWeeks, joined, nonEmpty))
+	return fmt.Sprintf("Baseline partial failure (%s): %d of %d weekly samples could not be fetched; baseline computed from %d weeks. Results may be less reliable.",
+		string(BaselineModeSameWeekdayHour), len(errs), weeklyBaselineWeeks, nonEmpty)
 }
 
 // safeClassification converts a Classification to string for JSON output,
