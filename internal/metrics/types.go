@@ -361,14 +361,23 @@ type Point struct {
 // distinct from the span of the points actually returned: when a metric stops
 // reporting mid-window, the observed span shrinks while the requested Window
 // does not. Data-quality reliability is judged against the Window so a dead
-// trailing region is not mistaken for a complete series. A zero Window (both
-// bounds zero) means "unknown" and falls back to span-based accounting.
+// trailing region is not mistaken for a complete series.
+//
+// Two non-usable shapes both fall back to span-based accounting, but they mean
+// different things:
+//   - The zero Window (both bounds zero) is a legitimate "range unknown"
+//     request — the caller has no window to offer.
+//   - A malformed Window (one bound zero, or End not after Start, e.g. swapped
+//     Start/End) is a caller bug. It cannot be judged, so it also degrades to
+//     span accounting, but computeDataQuality reports WindowChecked=false so the
+//     silent degradation is at least observable rather than invisible.
 type Window struct {
 	Start time.Time
 	End   time.Time
 }
 
-// known reports whether the window has usable bounds.
+// known reports whether the window has usable bounds (both set, End after
+// Start) and can therefore drive window-based data-quality accounting.
 func (w Window) known() bool {
 	return !w.Start.IsZero() && !w.End.IsZero() && w.End.After(w.Start)
 }
@@ -428,4 +437,10 @@ type DataQuality struct {
 	GapCount       int  `json:"gap_count"`
 	MaxGapSeconds  int  `json:"max_gap_seconds"`
 	Reliable       bool `json:"reliable"`
+	// WindowChecked is true when reliability was judged against the requested
+	// window (leading/trailing dead regions detectable) and false when it fell
+	// back to the observed point span — either because the window was unknown
+	// or because it was malformed. A false here on a call the caller believed
+	// supplied a valid window signals a swapped/half-set Window bug.
+	WindowChecked bool `json:"window_checked"`
 }

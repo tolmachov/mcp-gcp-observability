@@ -415,4 +415,133 @@ func TestDataQualityDeadMetricWindowAware(t *testing.T) {
 	assert.False(t, winDQ.Reliable, "dead trailing region must make the window unreliable")
 	assert.Greater(t, winDQ.ExpectedPoints, winDQ.ActualPoints)
 	assert.GreaterOrEqual(t, winDQ.GapCount, 1, "trailing silence should count as a gap")
+	assert.True(t, winDQ.WindowChecked, "a valid window must drive window-based accounting")
+}
+
+// A metric that starts reporting late must be flagged too — the leading gap is
+// independent of the trailing one, and a sign-flipped subtraction would leave
+// it silently uncounted.
+func TestDataQualityLeadingGapWindowAware(t *testing.T) {
+	windowStart := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	windowEnd := windowStart.Add(60 * time.Minute)
+
+	// Silence for the first ~40 min, then 20 contiguous 1-minute points.
+	var points []Point
+	for i := range 20 {
+		points = append(points, Point{Timestamp: windowStart.Add(40*time.Minute + time.Duration(i)*time.Minute), Value: 1})
+	}
+
+	winDQ := computeDataQuality(points, 60, Window{Start: windowStart, End: windowEnd})
+	assert.False(t, winDQ.Reliable, "late-starting metric must be unreliable")
+	assert.GreaterOrEqual(t, winDQ.GapCount, 1, "leading silence should count as a gap")
+	assert.True(t, winDQ.WindowChecked)
+}
+
+// Unusable windows — zero, half-set, or inverted — must all fall back to
+// span-based accounting and report WindowChecked=false, so a swapped/half-set
+// Window (a caller bug) degrades visibly rather than silently.
+func TestDataQualityWindowBoundarySemantics(t *testing.T) {
+	windowStart := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	windowEnd := windowStart.Add(60 * time.Minute)
+
+	// 20 contiguous points spanning only the first 20 min; span-based
+	// accounting sees them as a complete, reliable series.
+	var points []Point
+	for i := range 20 {
+		points = append(points, Point{Timestamp: windowStart.Add(time.Duration(i) * time.Minute), Value: 1})
+	}
+
+	cases := []struct {
+		name string
+		w    Window
+	}{
+		{"zero", Window{}},
+		{"start only", Window{Start: windowStart}},
+		{"end only", Window{End: windowEnd}},
+		{"end equals start", Window{Start: windowStart, End: windowStart}},
+		{"end before start", Window{Start: windowEnd, End: windowStart}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dq := computeDataQuality(points, 60, tc.w)
+			assert.False(t, dq.WindowChecked, "unusable window must fall back to span accounting")
+			assert.True(t, dq.Reliable, "span accounting sees 20 contiguous points as reliable")
+		})
+	}
+
+	// Contrast: a valid window sees the dead trailing region and flags it.
+	dq := computeDataQuality(points, 60, Window{Start: windowStart, End: windowEnd})
+	assert.True(t, dq.WindowChecked)
+	assert.False(t, dq.Reliable)
+}
+
+// A now-anchored window's trailing edge routinely lags the last emitted point
+// by Cloud Monitoring's ingestion delay. That normal lag must not register as
+// a gap, or every healthy recent metric would look degraded.
+func TestDataQualityToleratesTrailingIngestionLag(t *testing.T) {
+	windowStart := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	// Full 1-minute coverage from minute 0..57; window ends 2.5 min after the
+	// last point (150s), within windowEdgeGapSteps*step=180s. The old 2-step
+	// (120s) threshold would have counted this healthy lag as a gap.
+	var points []Point
+	for i := range 58 {
+		points = append(points, Point{Timestamp: windowStart.Add(time.Duration(i) * time.Minute), Value: 1})
+	}
+	windowEnd := windowStart.Add(57*time.Minute + 150*time.Second)
+
+	dq := computeDataQuality(points, 60, Window{Start: windowStart, End: windowEnd})
+	assert.Equal(t, 0, dq.GapCount, "normal trailing ingestion lag must not count as a gap")
+	assert.Equal(t, 0, dq.MaxGapSeconds)
+	assert.True(t, dq.Reliable)
+	assert.True(t, dq.WindowChecked)
+}
+
+// A tiny-but-nonzero baseline must not silently zero out TrendScore: the
+// denominator floors to the current mean instead of dividing by ~1e-9.
+func TestTrendScoreFallsBackForTinyBaseline(t *testing.T) {
+	// Current drifts 0→100 across the window (a clear upward trend).
+	values := make([]float64, 60)
+	for i := range values {
+		values[i] = 100 * float64(i) / float64(len(values)-1)
+	}
+	// Baseline is 1e-9: non-zero, but below nearZeroEpsilon.
+	baseline := make([]float64, 60)
+	for i := range baseline {
+		baseline[i] = 1e-9
+	}
+	meta := MetricMeta{Kind: KindLatency, BetterDirection: DirectionDown}
+	f := Process(makePoints(values, 60), makePoints(baseline, 60), meta, 60, 60, Window{})
+
+	assert.NotZero(t, f.TrendScore, "tiny baseline must fall back to mean, not leave TrendScore 0")
+	assert.Equal(t, TrendUp, f.Trend)
+}
+
+// computeStepChange must floor its denominator, not test == 0: a service that
+// steps up from ~0 to a real level should be detected with a sane percentage,
+// and a series that is negligible throughout should report no step at all.
+func TestStepChangeDenominatorFallback(t *testing.T) {
+	meta := MetricMeta{Kind: KindErrorRate, BetterDirection: DirectionDown}
+
+	t.Run("near-zero first third falls back to last third", func(t *testing.T) {
+		// First half ~0, second half 100 — meanFirst≈0 would blow up changePct
+		// without the meanLast fallback.
+		values := make([]float64, 60)
+		for i := 30; i < 60; i++ {
+			values[i] = 100
+		}
+		f := Process(makePoints(values, 60), nil, meta, 60, 0, Window{})
+		assert.True(t, f.StepChangeDetected)
+		assert.False(t, math.IsInf(f.StepChangePct, 0), "step pct must be finite")
+		assert.False(t, math.IsNaN(f.StepChangePct))
+	})
+
+	t.Run("both thirds negligible: no step detected", func(t *testing.T) {
+		values := make([]float64, 60)
+		for i := range values {
+			values[i] = 1e-9
+		}
+		f := Process(makePoints(values, 60), nil, meta, 60, 0, Window{})
+		assert.Zero(t, f.StepChangePct)
+		assert.False(t, f.StepChangeDetected)
+	})
 }

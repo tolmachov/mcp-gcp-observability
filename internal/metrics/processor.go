@@ -19,6 +19,14 @@ const minBaselinePoints = 7
 // "reliable" and enabling false regression classifications.
 const minCurrentWindowPoints = 3
 
+// windowEdgeGapSteps is the gap tolerance, in step multiples, applied to the
+// leading/trailing gaps between the requested window bounds and the first/last
+// observed points. It is more lenient than the 2-step inter-point tolerance
+// because the window boundary rarely aligns with emission times and — on a
+// now-anchored trailing edge — absorbs Cloud Monitoring's ingestion lag. A
+// genuinely dead region (many steps of silence) still exceeds it.
+const windowEdgeGapSteps = 3
+
 // nearZeroEpsilon: floors |Mean| in CV to avoid false noisy classification
 // for metrics oscillating near zero (e.g., error_rate when healthy).
 const nearZeroEpsilon = 1e-6
@@ -361,18 +369,19 @@ func computeDataQuality(points []Point, stepSeconds int, window Window) DataQual
 
 	// Expected point count: prefer the requested window bounds so a metric that
 	// stopped reporting mid-window is not judged "complete" just because the
-	// points it did emit are contiguous. Fall back to the observed span when
-	// bounds are unknown (zero Window).
+	// points it did emit are contiguous. Fall back to the observed span when the
+	// window is unknown (zero) or malformed (see Window doc).
+	windowChecked := window.known()
 	spanStart, spanEnd := first, last
-	if window.known() {
+	if windowChecked {
 		spanStart, spanEnd = window.Start, window.End
 	}
 	expected := int(spanEnd.Sub(spanStart)/step) + 1
 
 	var gapCount int
 	var maxGap time.Duration
-	consider := func(gap time.Duration) {
-		if gap > 2*step {
+	consider := func(gap, threshold time.Duration) {
+		if gap > threshold {
 			gapCount++
 			if gap > maxGap {
 				maxGap = gap
@@ -380,13 +389,18 @@ func computeDataQuality(points []Point, stepSeconds int, window Window) DataQual
 		}
 	}
 	// Leading/trailing gaps against the window edges catch a metric that
-	// started late or died before the window ended. Skipped for a zero Window.
-	if window.known() {
-		consider(first.Sub(window.Start))
-		consider(window.End.Sub(last))
+	// started late or died before the window ended. Skipped for an unusable
+	// window. They use a more lenient threshold than inter-point gaps because
+	// the window boundary rarely aligns with emission times, and the trailing
+	// edge additionally absorbs Cloud Monitoring's ingestion lag (commonly
+	// 1–4 minutes for a now-anchored window) — without the extra slack every
+	// healthy recent metric would report a spurious trailing gap.
+	if windowChecked {
+		consider(first.Sub(window.Start), windowEdgeGapSteps*step)
+		consider(window.End.Sub(last), windowEdgeGapSteps*step)
 	}
 	for i := 1; i < len(points); i++ {
-		consider(points[i].Timestamp.Sub(points[i-1].Timestamp))
+		consider(points[i].Timestamp.Sub(points[i-1].Timestamp), 2*step)
 	}
 
 	actual := len(points)
@@ -398,6 +412,7 @@ func computeDataQuality(points []Point, stepSeconds int, window Window) DataQual
 		GapCount:       gapCount,
 		MaxGapSeconds:  int(maxGap.Seconds()),
 		Reliable:       reliable,
+		WindowChecked:  windowChecked,
 	}
 }
 
