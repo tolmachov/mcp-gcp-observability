@@ -152,6 +152,9 @@ func NewCloudProfilerQuerier(svc *cloudprofiler.ExportClient, cacheSize int) *Cl
 	if svc == nil {
 		panic("NewCloudProfilerQuerier: svc must not be nil")
 	}
+	if cacheSize < 1 {
+		panic("NewCloudProfilerQuerier: cacheSize must be >= 1")
+	}
 	return &CloudProfilerQuerier{svc: svc, cache: NewProfileCache(cacheSize)}
 }
 

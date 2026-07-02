@@ -7,6 +7,7 @@ import (
 	"github.com/google/pprof/profile"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
+	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
 
 // This file provides programmable fakes for the four backend interfaces so
@@ -162,13 +163,17 @@ func (f fakeProfiler) CacheProfile(key string, p *profile.Profile, _ gcpdata.Pro
 	}
 }
 
-// allFakeBackends returns a Deps with every backend set to an empty (non-nil)
-// fake, suitable for registration-only tests where handlers are not invoked.
+// allFakeBackends returns a Deps with every dependency set to a non-nil fake,
+// suitable for registration-only tests where handlers are not invoked. It
+// includes Querier and Registry so the metrics tools' require* guards are
+// satisfied at registration time.
 func allFakeBackends() Deps {
 	return Deps{
 		Logs:     fakeLogs{},
 		Errors:   fakeErrors{},
 		Traces:   fakeTraces{},
 		Profiler: fakeProfiler{},
+		Querier:  newFakeQuerier(),
+		Registry: metrics.NewRegistry(),
 	}
 }

@@ -43,6 +43,8 @@ func compareCallResult(result *CompareResult) *mcp.CallToolResult {
 }
 
 func RegisterMetricsCompare(s *mcp.Server, d Deps) {
+	requireQuerier(d.Querier)
+	requireRegistry(d.Registry)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "metrics_compare",
 		Description: applyMode(d.Mode, "Compare two arbitrary time windows for the same metric. "+

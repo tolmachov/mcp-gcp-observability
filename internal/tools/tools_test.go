@@ -112,6 +112,8 @@ func TestRequireBackendGuards(t *testing.T) {
 		"errors":   func() { requireErrors(nil) },
 		"traces":   func() { requireTraces(nil) },
 		"profiler": func() { requireProfiler(nil) },
+		"querier":  func() { requireQuerier(nil) },
+		"registry": func() { requireRegistry(nil) },
 	}
 	for name, fn := range cases {
 		t.Run(name+" nil panics", func(t *testing.T) {

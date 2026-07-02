@@ -334,6 +334,7 @@ func TestRegisterAllToolsCount(t *testing.T) {
 		Errors:         stubBackends{},
 		Traces:         stubBackends{},
 		Profiler:       stubBackends{},
+		Querier:        stubBackends{},
 		Registry:       metrics.NewRegistry(),
 		DefaultProject: "test",
 		Mode:           tools.ModeStandard,
@@ -380,6 +381,7 @@ func TestBuildVariantsServerHappyPath(t *testing.T) {
 		Errors:         stubBackends{},
 		Traces:         stubBackends{},
 		Profiler:       stubBackends{},
+		Querier:        stubBackends{},
 		Registry:       metrics.NewRegistry(),
 		DefaultProject: "test",
 	}
@@ -407,6 +409,7 @@ func TestCompactModeRealDescriptionsSane(t *testing.T) {
 		Errors:         stubBackends{},
 		Traces:         stubBackends{},
 		Profiler:       stubBackends{},
+		Querier:        stubBackends{},
 		Registry:       metrics.NewRegistry(),
 		DefaultProject: "test",
 		Mode:           tools.ModeCompact,

@@ -331,6 +331,24 @@ func requireProfiler(q gcpdata.ProfilerQuerier) {
 	}
 }
 
+// requireQuerier/requireRegistry guard the two dependencies every metrics tool
+// dereferences (d.Querier for the Cloud Monitoring API, d.Registry for metric
+// metadata). Like the backend guards above, they turn a missing wiring into a
+// loud registration-time panic — converted to a clean startup error by the
+// variant builders' recover — instead of a nil-dereference on the first
+// metrics_* request mid-session.
+func requireQuerier(q gcpdata.MetricsQuerier) {
+	if q == nil {
+		panic("nil MetricsQuerier")
+	}
+}
+
+func requireRegistry(r *metrics.Registry) {
+	if r == nil {
+		panic("nil metrics Registry")
+	}
+}
+
 // resolveProject returns the project ID, falling back to defaultProject.
 func resolveProject(projectID, defaultProject string) (string, error) {
 	if projectID != "" {

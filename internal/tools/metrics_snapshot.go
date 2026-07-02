@@ -77,6 +77,8 @@ func snapshotCallResult(result *MetricSnapshotResult) *mcp.CallToolResult {
 }
 
 func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
+	requireQuerier(d.Querier)
+	requireRegistry(d.Registry)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "metrics_snapshot",
 		Description: applyMode(d.Mode, "Get a semantic snapshot of a metric with baseline comparison, trend detection, and classification. "+

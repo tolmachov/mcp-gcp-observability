@@ -16,6 +16,8 @@ import (
 )
 
 func RegisterMetricsTop(s *mcp.Server, d Deps) {
+	requireQuerier(d.Querier)
+	requireRegistry(d.Registry)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "metrics_top_contributors",
 		Description: applyMode(d.Mode, "Break down a metric by a label dimension to find which label values contribute most to an anomaly. "+

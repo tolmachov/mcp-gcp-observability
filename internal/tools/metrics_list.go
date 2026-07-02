@@ -12,6 +12,8 @@ import (
 )
 
 func RegisterMetricsList(s *mcp.Server, d Deps) {
+	requireQuerier(d.Querier)
+	requireRegistry(d.Registry)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "metrics_list",
 		Description: applyMode(d.Mode, "Discover available metrics from Cloud Monitoring and the semantic registry. "+

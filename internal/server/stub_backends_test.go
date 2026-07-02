@@ -7,12 +7,14 @@ import (
 	"github.com/google/pprof/profile"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
+	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
 
 // stubBackends implements every gcpdata backend interface with panicking
 // method bodies. Variant-build tests only register tools and list them; the
 // handlers are never invoked, so a non-nil-but-unusable backend is exactly
-// what requireLogs/requireErrors/requireTraces/requireProfiler need to pass.
+// what requireLogs/requireErrors/requireTraces/requireProfiler/requireQuerier
+// need to pass.
 type stubBackends struct{}
 
 var (
@@ -20,6 +22,7 @@ var (
 	_ gcpdata.ErrorsQuerier   = stubBackends{}
 	_ gcpdata.TraceQuerier    = stubBackends{}
 	_ gcpdata.ProfilerQuerier = stubBackends{}
+	_ gcpdata.MetricsQuerier  = stubBackends{}
 )
 
 func (stubBackends) QueryLogs(context.Context, string, string, int, string, string) (*gcpdata.LogQueryResult, error) {
@@ -87,5 +90,25 @@ func (stubBackends) ComputeTrends(context.Context, string, string, string, strin
 }
 
 func (stubBackends) CacheProfile(string, *profile.Profile, gcpdata.ProfileMeta) {
+	panic("stubBackends: handler not invoked in this test")
+}
+
+func (stubBackends) GetMetricDescriptor(context.Context, string, string) (gcpdata.MetricDescriptorBasic, error) {
+	panic("stubBackends: handler not invoked in this test")
+}
+
+func (stubBackends) ListMetricDescriptors(context.Context, string, string, int) ([]gcpdata.MetricDescriptorInfo, error) {
+	panic("stubBackends: handler not invoked in this test")
+}
+
+func (stubBackends) QueryTimeSeries(context.Context, gcpdata.QueryTimeSeriesParams) ([]gcpdata.MetricTimeSeries, error) {
+	panic("stubBackends: handler not invoked in this test")
+}
+
+func (stubBackends) QueryTimeSeriesAggregated(context.Context, gcpdata.QueryTimeSeriesParams, metrics.AggregationSpec) ([]gcpdata.MetricTimeSeries, gcpdata.AggregationWarnings, error) {
+	panic("stubBackends: handler not invoked in this test")
+}
+
+func (stubBackends) GetResourceLabels(context.Context, string, string) ([]string, error) {
 	panic("stubBackends: handler not invoked in this test")
 }

@@ -48,6 +48,8 @@ func classifyErr(err error) (reason string, benign bool) {
 }
 
 func RegisterMetricsRelated(s *mcp.Server, d Deps) {
+	requireQuerier(d.Querier)
+	requireRegistry(d.Registry)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "metrics_related",
 		Description: applyMode(d.Mode, "Check all related metrics (configured in the semantic registry) for the given metric and return which are anomalous. "+
