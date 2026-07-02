@@ -134,11 +134,13 @@ type ErrorTrend struct {
 
 // ErrorTrendList is the response for errors_trends. Trends are sorted with the
 // most worsened groups (largest positive delta) first; Summary holds the group
-// count per trend category.
+// count per trend category. Summary carries omitempty because a nil map
+// serializes to null, which strict MCP clients reject against the output
+// schema (see ProfileSummary in profiler_types.go).
 type ErrorTrendList struct {
 	Count          int            `json:"count"`
 	WindowHours    int            `json:"window_hours"`
-	Summary        map[string]int `json:"summary"`
+	Summary        map[string]int `json:"summary,omitempty"`
 	Trends         []ErrorTrend   `json:"trends"`
 	Truncated      bool           `json:"truncated,omitempty"`
 	TruncationHint string         `json:"truncation_hint,omitempty"`
@@ -207,9 +209,12 @@ type ServiceList struct {
 
 // LogsSummary is the response for logs_summary.
 // TruncationHint is non-empty only when Truncated is true.
+// SeverityDistribution carries omitempty because a nil map serializes to null,
+// which strict MCP clients reject against the output schema (see
+// ProfileSummary in profiler_types.go).
 type LogsSummary struct {
 	TotalEntries         int            `json:"total_entries"`
-	SeverityDistribution map[string]int `json:"severity_distribution"`
+	SeverityDistribution map[string]int `json:"severity_distribution,omitempty"`
 	TopServices          []ServiceCount `json:"top_services"`
 	TopErrors            []ErrorSample  `json:"top_errors"`
 	SampleEntries        []LogEntry     `json:"sample_entries"`

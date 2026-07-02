@@ -16,9 +16,13 @@ type ProfileMeta struct {
 }
 
 // ProfileSummary provides aggregate stats about listed profiles.
+// The maps carry omitempty so a zero-value result (e.g. serialized alongside a
+// tool error) omits them instead of emitting null, which strict MCP clients
+// reject against the generated output schema (maps are not nullable there,
+// unlike slices).
 type ProfileSummary struct {
-	CountByType   map[string]int `json:"count_by_type"`
-	CountByTarget map[string]int `json:"count_by_target"`
+	CountByType   map[string]int `json:"count_by_type,omitempty"`
+	CountByTarget map[string]int `json:"count_by_target,omitempty"`
 }
 
 // ProfileListResult is the response for profiler_list.

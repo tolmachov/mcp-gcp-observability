@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -132,6 +133,71 @@ func TestTraceGetHandler(t *testing.T) {
 		assert.False(t, res.IsError)
 		assert.Equal(t, "abc123", gotTraceID)
 	})
+}
+
+// TestErrorPathsSurviveOutputSchema pins the omitempty contract on map-typed
+// output fields: the SDK serializes the zero value of the output struct when a
+// handler returns errResult, and the generated schema rejects null for maps
+// (unlike slices). Without omitempty these calls fail with a protocol-level
+// validation error instead of an IsError tool result.
+func TestErrorPathsSurviveOutputSchema(t *testing.T) {
+	ctx := context.Background()
+
+	cases := []struct {
+		tool     string
+		register func(s *mcp.Server, d Deps)
+		deps     Deps
+		args     map[string]any
+	}{
+		{
+			tool:     "profiler_list",
+			register: RegisterProfilerList,
+			deps: Deps{
+				Profiler: fakeProfiler{listProfiles: func(context.Context, string, string, string, string, string, int, string) (*gcpdata.ProfileListResult, error) {
+					return nil, errors.New("boom")
+				}},
+				DefaultProject: "p",
+			},
+			args: map[string]any{},
+		},
+		{
+			tool:     "errors_trends",
+			register: RegisterErrorsTrends,
+			deps: Deps{
+				Errors: fakeErrors{analyzeTrends: func(context.Context, string, int, int, string, string) (*gcpdata.ErrorTrendList, error) {
+					return nil, errors.New("boom")
+				}},
+				DefaultProject: "p",
+				ErrorsMaxLimit: 30,
+			},
+			args: map[string]any{},
+		},
+		{
+			tool:     "logs_summary",
+			register: RegisterLogsSummary,
+			deps: Deps{
+				Logs: fakeLogs{summarizeLogs: func(context.Context, string, string, gcpdata.ProgressFunc) (*gcpdata.LogsSummary, error) {
+					return nil, errors.New("boom")
+				}},
+				DefaultProject: "p",
+				LogsMaxLimit:   1000,
+			},
+			args: map[string]any{"filter": "severity>=ERROR"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.tool+" backend error becomes a tool error result", func(t *testing.T) {
+			ts := newTestToolServer(t)
+			tc.register(ts.server, tc.deps)
+			ts.connect(ctx)
+			defer ts.close()
+
+			res, err := ts.callTool(ctx, tc.tool, tc.args)
+			require.NoError(t, err, "error path must not trip output-schema validation")
+			assert.True(t, res.IsError)
+		})
+	}
 }
 
 func TestProfilerListHandler(t *testing.T) {
