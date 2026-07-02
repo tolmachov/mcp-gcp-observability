@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/pprof/profile"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -233,6 +234,89 @@ func TestTraceListHandler(t *testing.T) {
 		assert.NotContains(t, got.TruncationHint, "next_page_token",
 			"error-stop hint must not invite pagination")
 	})
+}
+
+func TestProfilerCompareHandler(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("forwards current/base ID order and caches diff under project/diff_id", func(t *testing.T) {
+		var gotCurrent, gotBase string
+		cached := map[string]*profile.Profile{}
+		deps := Deps{
+			Profiler: fakeProfiler{
+				compare: func(_ context.Context, _, currentID, baseID string, _, _ int) (*gcpdata.ProfileCompareResult, *profile.Profile, error) {
+					gotCurrent, gotBase = currentID, baseID
+					return &gcpdata.ProfileCompareResult{
+						DiffID:      "diffXYZ",
+						CurrentMeta: gcpdata.ProfileMeta{ProfileType: "CPU", Target: "svc"},
+					}, &profile.Profile{}, nil
+				},
+				cached: cached,
+			},
+			DefaultProject: "proj",
+		}
+		ts := newTestToolServer(t)
+		RegisterProfilerCompare(ts.server, deps)
+		ts.connect(ctx)
+		defer ts.close()
+
+		res, err := ts.callTool(ctx, "profiler_compare", map[string]any{
+			"profile_id":      "current-1",
+			"base_profile_id": "base-2",
+		})
+		require.NoError(t, err)
+		assert.False(t, res.IsError)
+		// A swap here would silently invert every regression/improvement.
+		assert.Equal(t, "current-1", gotCurrent, "current profile_id must not be swapped with base")
+		assert.Equal(t, "base-2", gotBase)
+		// top/peek/flamegraph resolve the diff via GetOrFetchProfile, which
+		// derives its key as project+"/"+id — the cache key must match.
+		_, ok := cached["proj/diffXYZ"]
+		assert.True(t, ok, "diff must be cached under project+\"/\"+DiffID")
+	})
+}
+
+// TestProfilerNavigationHandlersValidateBeforeFetch pins that the diff-navigation
+// handlers reject bad input before spending a profile fetch. The internal
+// max_depth/limit clamps are exercised indirectly (they need a real parsed
+// profile), but the required-field and non-negative guards are the meaningful
+// user-facing contract.
+func TestProfilerNavigationHandlersValidateBeforeFetch(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name     string
+		tool     string
+		register func(*mcp.Server, Deps)
+		args     map[string]any
+	}{
+		{"flamegraph missing profile_id", "profiler_flamegraph", RegisterProfilerFlamegraph, map[string]any{}},
+		{"flamegraph negative value_index", "profiler_flamegraph", RegisterProfilerFlamegraph, map[string]any{"profile_id": "p", "value_index": -1}},
+		{"top missing profile_id", "profiler_top", RegisterProfilerTop, map[string]any{}},
+		{"top negative value_index", "profiler_top", RegisterProfilerTop, map[string]any{"profile_id": "p", "value_index": -1}},
+		{"peek missing profile_id", "profiler_peek", RegisterProfilerPeek, map[string]any{"function_name": "f"}},
+		{"peek missing function_name", "profiler_peek", RegisterProfilerPeek, map[string]any{"profile_id": "p"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fetched := false
+			deps := Deps{
+				Profiler: fakeProfiler{getOrFetch: func(context.Context, string, string) (*profile.Profile, gcpdata.ProfileMeta, error) {
+					fetched = true
+					return nil, gcpdata.ProfileMeta{}, nil
+				}},
+				DefaultProject: "p",
+			}
+			ts := newTestToolServer(t)
+			tc.register(ts.server, deps)
+			ts.connect(ctx)
+			defer ts.close()
+
+			res, err := ts.callTool(ctx, tc.tool, tc.args)
+			require.NoError(t, err)
+			assert.True(t, res.IsError)
+			assert.False(t, fetched, "validation must reject before fetching the profile")
+		})
+	}
 }
 
 func TestProfilerListHandler(t *testing.T) {
