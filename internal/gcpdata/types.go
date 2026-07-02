@@ -262,11 +262,17 @@ type TraceSummary struct {
 
 // TraceListResult is the response for trace_list.
 type TraceListResult struct {
-	Count          int            `json:"count"`
-	Traces         []TraceSummary `json:"traces"`
-	NextPageToken  string         `json:"next_page_token,omitempty"`
-	Truncated      bool           `json:"truncated,omitempty"`
-	TruncationHint string         `json:"truncation_hint,omitempty"`
+	Count         int            `json:"count"`
+	Traces        []TraceSummary `json:"traces"`
+	NextPageToken string         `json:"next_page_token,omitempty"`
+	Truncated     bool           `json:"truncated,omitempty"`
+	// StoppedOnError is true when the listing returned a partial page because
+	// the API failed mid-iteration (as opposed to hitting the page limit). In
+	// that case there is no NextPageToken to resume from — the machine-readable
+	// signal distinguishing this from a normal limit-reached truncation, whose
+	// hint invites pagination. TruncationHint carries the human-readable reason.
+	StoppedOnError bool   `json:"stopped_on_error,omitempty"`
+	TruncationHint string `json:"truncation_hint,omitempty"`
 }
 
 // TraceDetail is the response for trace_get.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
@@ -198,6 +199,40 @@ func TestErrorPathsSurviveOutputSchema(t *testing.T) {
 			assert.True(t, res.IsError)
 		})
 	}
+}
+
+func TestTraceListHandler(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("stopped-on-error partial result round-trips without a resume token", func(t *testing.T) {
+		deps := Deps{
+			Traces: fakeTraces{listTrace: func(context.Context, string, string, string, string, time.Time, time.Time, int, string) (*gcpdata.TraceListResult, error) {
+				return &gcpdata.TraceListResult{
+					Count:          2,
+					Traces:         []gcpdata.TraceSummary{{TraceID: "a"}, {TraceID: "b"}},
+					Truncated:      true,
+					StoppedOnError: true,
+					TruncationHint: "Listing stopped after 2 traces due to an error and cannot be resumed: rpc deadline",
+				}, nil
+			}},
+			DefaultProject: "p",
+		}
+		ts := newTestToolServer(t)
+		RegisterTraceList(ts.server, deps)
+		ts.connect(ctx)
+		defer ts.close()
+
+		res, err := ts.callTool(ctx, "trace_list", map[string]any{})
+		require.NoError(t, err)
+		assert.False(t, res.IsError)
+
+		var got gcpdata.TraceListResult
+		parseResult(t, res, &got)
+		assert.True(t, got.StoppedOnError, "error-stop must be machine-distinguishable")
+		assert.Empty(t, got.NextPageToken, "an error-stop cannot be resumed")
+		assert.NotContains(t, got.TruncationHint, "next_page_token",
+			"error-stop hint must not invite pagination")
+	})
 }
 
 func TestProfilerListHandler(t *testing.T) {

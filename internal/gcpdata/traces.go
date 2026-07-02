@@ -87,11 +87,15 @@ func ListTraces(
 		}
 		if err != nil {
 			if len(traces) > 0 {
+				// Partial success: return what we have, but flag it as an
+				// error-stop (no resume token) so callers don't treat it like
+				// a normal limit-reached page and try to paginate past it.
 				return &TraceListResult{
 					Count:          len(traces),
 					Traces:         traces,
 					Truncated:      true,
-					TruncationHint: fmt.Sprintf("Listing stopped after %d traces due to error: %v", len(traces), err),
+					StoppedOnError: true,
+					TruncationHint: fmt.Sprintf("Listing stopped after %d traces due to an error and cannot be resumed: %v", len(traces), err),
 				}, nil
 			}
 			return nil, fmt.Errorf("listing traces: %w", err)
