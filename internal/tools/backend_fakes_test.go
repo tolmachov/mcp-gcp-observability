@@ -157,9 +157,9 @@ func (f fakeProfiler) ComputeTrends(ctx context.Context, project, profileType, t
 	return f.computeTrend(ctx, project, profileType, target, functionFilter, valueIndex, maxProfiles, maxFunctions, progressFn)
 }
 
-func (f fakeProfiler) CacheProfile(key string, p *profile.Profile, _ gcpdata.ProfileMeta) {
+func (f fakeProfiler) CacheProfile(project, profileName string, p *profile.Profile, _ gcpdata.ProfileMeta) {
 	if f.cached != nil {
-		f.cached[key] = p
+		f.cached[project+"/"+profileName] = p
 	}
 }
 

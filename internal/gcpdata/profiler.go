@@ -203,7 +203,7 @@ func GetOrFetchProfile(
 	cache *ProfileCache,
 	project, profileName string,
 ) (*profile.Profile, ProfileMeta, error) {
-	key := project + "/" + profileName
+	key := profileCacheKey(project, profileName)
 	if p, meta, ok := cache.Get(key); ok {
 		return p, meta, nil
 	}
@@ -738,7 +738,7 @@ func prefetchProfiles(
 		if !wanted[p.Name] {
 			continue
 		}
-		key := project + "/" + p.Name
+		key := profileCacheKey(project, p.Name)
 		if _, _, ok := cache.Get(key); ok {
 			remaining--
 			res.Cached++

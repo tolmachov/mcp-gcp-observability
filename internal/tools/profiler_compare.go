@@ -66,7 +66,7 @@ func RegisterProfilerCompare(s *mcp.Server, d Deps) {
 				Target:      result.CurrentMeta.Target,
 				IsDiff:      true,
 			}
-			d.Profiler.CacheProfile(project+"/"+result.DiffID, diffProfile, diffMeta)
+			d.Profiler.CacheProfile(project, result.DiffID, diffProfile, diffMeta)
 		}
 
 		return nil, result, nil

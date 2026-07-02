@@ -8,6 +8,14 @@ import (
 
 const defaultProfileCacheSize = 10
 
+// profileCacheKey derives the cache key for a profile from its project and
+// name (or synthetic diff ID). It is the single source of the key scheme, so
+// the store side (GetOrFetchProfile, CompareProfiles, CacheProfile) and the
+// lookup side can never drift and silently miss.
+func profileCacheKey(project, profileName string) string {
+	return project + "/" + profileName
+}
+
 type profileCacheEntry struct {
 	key     string
 	profile *profile.Profile

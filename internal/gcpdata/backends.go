@@ -51,9 +51,12 @@ type ProfilerQuerier interface {
 	GetOrFetchProfile(ctx context.Context, project, profileName string) (*profile.Profile, ProfileMeta, error)
 	CompareProfiles(ctx context.Context, project, currentID, baseID string, valueIndex, topN int) (*ProfileCompareResult, *profile.Profile, error)
 	ComputeTrends(ctx context.Context, project, profileType, target, functionFilter string, valueIndex, maxProfiles, maxFunctions int, progressFn func(current, total int, msg string)) (*ProfileTrendsResult, error)
-	// CacheProfile stores a profile (e.g. a computed diff) so a later
-	// GetOrFetchProfile for the same key can serve it without a download.
-	CacheProfile(key string, p *profile.Profile, meta ProfileMeta)
+	// CacheProfile stores a profile (e.g. a computed diff) under (project,
+	// profileName) so a later GetOrFetchProfile for the same pair serves it
+	// without a download. Taking the pair rather than a pre-assembled key means
+	// the caller cannot derive the key differently from GetOrFetchProfile and
+	// silently miss.
+	CacheProfile(project, profileName string, p *profile.Profile, meta ProfileMeta)
 }
 
 // LoggingQuerier implements LogsQuerier against a real Cloud Logging client.
@@ -174,6 +177,6 @@ func (q *CloudProfilerQuerier) ComputeTrends(ctx context.Context, project, profi
 	return ComputeTrends(ctx, q.svc, q.cache, project, profileType, target, functionFilter, valueIndex, maxProfiles, maxFunctions, progressFn)
 }
 
-func (q *CloudProfilerQuerier) CacheProfile(key string, p *profile.Profile, meta ProfileMeta) {
-	q.cache.Put(key, p, meta)
+func (q *CloudProfilerQuerier) CacheProfile(project, profileName string, p *profile.Profile, meta ProfileMeta) {
+	q.cache.Put(profileCacheKey(project, profileName), p, meta)
 }

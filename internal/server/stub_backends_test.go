@@ -89,7 +89,7 @@ func (stubBackends) ComputeTrends(context.Context, string, string, string, strin
 	panic("stubBackends: handler not invoked in this test")
 }
 
-func (stubBackends) CacheProfile(string, *profile.Profile, gcpdata.ProfileMeta) {
+func (stubBackends) CacheProfile(string, string, *profile.Profile, gcpdata.ProfileMeta) {
 	panic("stubBackends: handler not invoked in this test")
 }
 
