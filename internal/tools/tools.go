@@ -242,6 +242,37 @@ func formatRegistryMisconfigError(metricType string, err error) string {
 	return fmt.Sprintf("Registry misconfiguration for metric %q: %v. Fix the metric's aggregation block in the registry YAML — retrying will not help.", metricType, err)
 }
 
+// lookupMetricDescriptor fetches the Cloud Monitoring descriptor for metricType,
+// logging and returning a ready-to-send errResult on failure. Shared by the
+// snapshot/top/compare handlers, which all need the descriptor's Kind and
+// ValueType to build a query. On success the returned *mcp.CallToolResult is
+// nil; callers forward a non-nil one as (errRes, nil, nil). tool names the
+// caller for the log message.
+func lookupMetricDescriptor(ctx context.Context, req *mcp.CallToolRequest, q gcpdata.MetricsQuerier, tool, project, metricType string) (gcpdata.MetricDescriptorBasic, *mcp.CallToolResult) {
+	descriptor, err := q.GetMetricDescriptor(ctx, project, metricType)
+	if err != nil {
+		mcpLog(ctx, req, logLevelError, tool, fmt.Sprintf("metric descriptor lookup failed: %v", err))
+		return descriptor, errResult(fmt.Sprintf("Failed to look up metric descriptor: %v. Verify the metric_type.", err))
+	}
+	return descriptor, nil
+}
+
+// resolveValidAggSpec resolves meta's aggregation strategy and validates it,
+// logging and returning a ready-to-send errResult on registry
+// misconfiguration. Shared by the snapshot/top/compare handlers; on success the
+// returned *mcp.CallToolResult is nil. metrics_related is intentionally not a
+// caller — it skips a misconfigured related metric rather than failing the
+// whole request.
+func resolveValidAggSpec(ctx context.Context, req *mcp.CallToolRequest, tool, metricType string, meta metrics.MetricMeta) (metrics.AggregationSpec, *mcp.CallToolResult) {
+	aggSpec := meta.ResolveAggregation()
+	if err := aggSpec.Validate(); err != nil {
+		mcpLog(ctx, req, logLevelError, tool,
+			fmt.Sprintf("registry misconfiguration for %s: %v", metricType, err))
+		return aggSpec, errResult(formatRegistryMisconfigError(metricType, err))
+	}
+	return aggSpec, nil
+}
+
 // reportUnsupportedPoints sums and logs dropped points across series.
 // Returns total so callers can surface drops on results.
 func reportUnsupportedPoints(ctx context.Context, req *mcp.CallToolRequest, tool, metricType string, series []gcpdata.MetricTimeSeries) int {

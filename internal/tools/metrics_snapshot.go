@@ -142,19 +142,16 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 
 		sendProgress(ctx, req, 1, 4, "Looking up metric descriptor")
 
-		descriptor, err := d.Querier.GetMetricDescriptor(ctx, project, in.MetricType)
-		if err != nil {
-			mcpLog(ctx, req, logLevelError, "metrics_snapshot", fmt.Sprintf("metric descriptor lookup failed: %v", err))
-			return errResult(fmt.Sprintf("Failed to look up metric descriptor: %v. Verify the metric_type.", err)), nil, nil
+		descriptor, errRes := lookupMetricDescriptor(ctx, req, d.Querier, "metrics_snapshot", project, in.MetricType)
+		if errRes != nil {
+			return errRes, nil, nil
 		}
 
 		sendProgress(ctx, req, 2, 4, "Querying current window")
 
-		aggSpec := meta.ResolveAggregation()
-		if err := aggSpec.Validate(); err != nil {
-			mcpLog(ctx, req, logLevelError, "metrics_snapshot",
-				fmt.Sprintf("registry misconfiguration for %s: %v", in.MetricType, err))
-			return errResult(formatRegistryMisconfigError(in.MetricType, err)), nil, nil
+		aggSpec, errRes := resolveValidAggSpec(ctx, req, "metrics_snapshot", in.MetricType, meta)
+		if errRes != nil {
+			return errRes, nil, nil
 		}
 
 		// Query current window.
@@ -271,30 +268,18 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 			result.StepChangeAt = f.StepChangeAt.Format(time.RFC3339)
 		}
 
-		appendNote := func(msg string) {
-			if msg == "" {
-				return
-			}
-			if result.Note == "" {
-				result.Note = msg
-			} else {
-				result.Note += " " + msg
-			}
-		}
-
 		if baselineErrNote != "" {
 			// Zero out baseline-derived fields: they are computed relative to a
 			// zero baseline and would appear as a >100% regression even though
 			// no real data is available for comparison.
 			result.Baseline = 0
 			result.DeltaPct = 0
-			appendNote(baselineErrNote)
 		}
-		appendNote(currentWarningsNote)
-		appendNote(baselinePartialNote)
+		var unsupportedNote string
 		if unsupportedCount > 0 {
-			appendNote(fmt.Sprintf("Dropped %d points with unsupported or malformed value types during decode (see server log).", unsupportedCount))
+			unsupportedNote = fmt.Sprintf("Dropped %d points with unsupported or malformed value types during decode (see server log).", unsupportedCount)
 		}
+		result.Note = joinNote(baselineErrNote, currentWarningsNote, baselinePartialNote, unsupportedNote)
 
 		if meta.Kind == metrics.KindLatency {
 			result.Percentiles = &PercentileInfo{

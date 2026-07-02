@@ -109,19 +109,16 @@ func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 
 		sendProgress(ctx, req, 1, 4, "Looking up metric descriptor")
 
-		descriptor, err := d.Querier.GetMetricDescriptor(ctx, project, in.MetricType)
-		if err != nil {
-			mcpLog(ctx, req, logLevelError, "metrics_compare", fmt.Sprintf("metric descriptor lookup failed: %v", err))
-			return errResult(fmt.Sprintf("Failed to look up metric descriptor: %v. Verify the metric_type.", err)), nil, nil
+		descriptor, errRes := lookupMetricDescriptor(ctx, req, d.Querier, "metrics_compare", project, in.MetricType)
+		if errRes != nil {
+			return errRes, nil, nil
 		}
 
 		sendProgress(ctx, req, 2, 4, "Querying both windows")
 
-		aggSpec := meta.ResolveAggregation()
-		if err := aggSpec.Validate(); err != nil {
-			mcpLog(ctx, req, logLevelError, "metrics_compare",
-				fmt.Sprintf("registry misconfiguration for %s: %v", in.MetricType, err))
-			return errResult(formatRegistryMisconfigError(in.MetricType, err)), nil, nil
+		aggSpec, errRes := resolveValidAggSpec(ctx, req, "metrics_compare", in.MetricType, meta)
+		if errRes != nil {
+			return errRes, nil, nil
 		}
 
 		baseParams := gcpdata.QueryTimeSeriesParams{

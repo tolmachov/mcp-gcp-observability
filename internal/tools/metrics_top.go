@@ -76,18 +76,15 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 
 		sendProgress(ctx, req, 1, 4, "Looking up metric descriptor")
 
-		descriptor, err := d.Querier.GetMetricDescriptor(ctx, project, in.MetricType)
-		if err != nil {
-			mcpLog(ctx, req, logLevelError, "metrics_top_contributors", fmt.Sprintf("metric descriptor lookup failed: %v", err))
-			return errResult(fmt.Sprintf("Failed to look up metric descriptor: %v. Verify the metric_type.", err)), nil, nil
+		descriptor, errRes := lookupMetricDescriptor(ctx, req, d.Querier, "metrics_top_contributors", project, in.MetricType)
+		if errRes != nil {
+			return errRes, nil, nil
 		}
 		availableLabels := availableLabelsFromDescriptor(ctx, req, d.Querier, project, in.MetricType, descriptor)
 
-		aggSpec := meta.ResolveAggregation()
-		if err := aggSpec.Validate(); err != nil {
-			mcpLog(ctx, req, logLevelError, "metrics_top_contributors",
-				fmt.Sprintf("registry misconfiguration for %s: %v", in.MetricType, err))
-			return errResult(formatRegistryMisconfigError(in.MetricType, err)), nil, nil
+		aggSpec, errRes := resolveValidAggSpec(ctx, req, "metrics_top_contributors", in.MetricType, meta)
+		if errRes != nil {
+			return errRes, nil, nil
 		}
 		if aggSpec.IsTwoStage() {
 			mcpLog(ctx, req, logLevelWarning, "metrics_top_contributors",
@@ -248,29 +245,18 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 			results = results[:limit]
 		}
 
-		note := baselineErrNote
-		appendNote := func(s string) {
-			if s == "" {
-				return
-			}
-			if note == "" {
-				note = s
-			} else {
-				note = note + " " + s
-			}
-		}
-		appendNote(baselinePartialNote)
-		appendNote(partialCoverageNote)
+		var twoStageNote, truncatedNote, unsupportedNote string
 		if aggSpec.IsTwoStage() {
-			appendNote(fmt.Sprintf("This metric uses two-stage aggregation in the registry (group_by=%v, within_group=%s, across_groups=%s). `metrics_top_contributors` applies only %s across the requested dimension %q and does not run the within_group dedup stage, so contributor totals may differ from `metrics_snapshot` and `metrics_compare`.",
-				aggSpec.GroupBy, aggSpec.WithinGroup, aggSpec.AcrossGroups, aggSpec.AcrossGroups, in.Dimension))
+			twoStageNote = fmt.Sprintf("This metric uses two-stage aggregation in the registry (group_by=%v, within_group=%s, across_groups=%s). `metrics_top_contributors` applies only %s across the requested dimension %q and does not run the within_group dedup stage, so contributor totals may differ from `metrics_snapshot` and `metrics_compare`.",
+				aggSpec.GroupBy, aggSpec.WithinGroup, aggSpec.AcrossGroups, aggSpec.AcrossGroups, in.Dimension)
 		}
 		if truncated {
-			appendNote(fmt.Sprintf("Query hit the server-side time-series cap (%d series). Contributors and share_of_anomaly are computed from a partial set of series only; narrow the filter or dimension cardinality before trusting the ranking.", gcpdata.MaxTimeSeries))
+			truncatedNote = fmt.Sprintf("Query hit the server-side time-series cap (%d series). Contributors and share_of_anomaly are computed from a partial set of series only; narrow the filter or dimension cardinality before trusting the ranking.", gcpdata.MaxTimeSeries)
 		}
 		if unsupportedCount > 0 {
-			appendNote(fmt.Sprintf("Dropped %d points with unsupported or malformed value types during decode (see server log).", unsupportedCount))
+			unsupportedNote = fmt.Sprintf("Dropped %d points with unsupported or malformed value types during decode (see server log).", unsupportedCount)
 		}
+		note := joinNote(baselineErrNote, baselinePartialNote, partialCoverageNote, twoStageNote, truncatedNote, unsupportedNote)
 
 		return nil, &TopContributorsResult{
 			Dimension:       in.Dimension,
