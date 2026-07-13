@@ -130,7 +130,9 @@ func (a *AuthServer) redirectToGoogle(w http.ResponseWriter, r *http.Request, st
 		// gmail.com would filter out the very accounts being allowed.
 		opts = append(opts, oauth2.SetAuthURLParam("hd", a.cfg.AllowedDomains[0]))
 	}
-	http.Redirect(w, r, a.idp.AuthCodeURL(stateBlob, opts...), http.StatusFound)
+	// The target is Google's authorize endpoint from server configuration;
+	// request input only rides along as the (sealed) state parameter.
+	http.Redirect(w, r, a.idp.AuthCodeURL(stateBlob, opts...), http.StatusFound) //nolint:gosec // G710: fixed upstream host
 }
 
 // redirectError returns a protocol error to an already-validated redirect URI.
@@ -147,7 +149,10 @@ func redirectError(w http.ResponseWriter, r *http.Request, redirectURI, state, c
 		q.Set("state", state)
 	}
 	u.RawQuery = q.Encode()
-	http.Redirect(w, r, u.String(), http.StatusFound)
+	// Callers pass only redirect URIs already validated against the
+	// client's registration and the redirect policy (see handleAuthorize)
+	// or recovered from the sealed state (see handleCallback).
+	http.Redirect(w, r, u.String(), http.StatusFound) //nolint:gosec // G710: pre-validated redirect target
 }
 
 var consentTemplate = sync.OnceValue(func() *template.Template {
