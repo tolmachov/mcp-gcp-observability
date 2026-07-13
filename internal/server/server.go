@@ -7,12 +7,16 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime/debug"
 
+	"github.com/modelcontextprotocol/experimental-ext-variants/go/sdk/variants"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"golang.org/x/oauth2"
 
+	"github.com/tolmachov/mcp-gcp-observability/internal/authsrv"
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
@@ -105,9 +109,10 @@ func panicRecoveryMiddleware(logger *slog.Logger) func(mcp.MethodHandler) mcp.Me
 }
 
 // newMCPInstance creates a fresh *mcp.Server configured with the standard
-// instructions, logger, completion handler, and panic-recovery middleware.
-// Used to create the full, compact, and monitoring variant servers.
-func (s *Server) newMCPInstance() *mcp.Server {
+// instructions, logger, the given completion handler, and panic-recovery
+// middleware. Used to create the full, compact, and monitoring variant
+// servers; per-user HTTP assemblies pass their own completer.
+func (s *Server) newMCPInstance(completer *promptCompleter) *mcp.Server {
 	srv := mcp.NewServer(
 		&mcp.Implementation{
 			Name:    "mcp-gcp-observability",
@@ -116,22 +121,57 @@ func (s *Server) newMCPInstance() *mcp.Server {
 		&mcp.ServerOptions{
 			Instructions:      serverInstructions,
 			Logger:            s.logger,
-			CompletionHandler: s.completer.Handle,
+			CompletionHandler: completer.Handle,
 		},
 	)
 	srv.AddReceivingMiddleware(panicRecoveryMiddleware(s.logger))
+	srv.AddReceivingMiddleware(authErrorHintMiddleware())
 	return srv
 }
 
-// Run starts the MCP server using the specified transport.
-// variantID, when non-empty, forces a specific capability set and bypasses the
-// variants negotiation protocol entirely (the client sees a plain MCP server).
-// Valid values are listed by KnownVariantIDs. Empty string uses variants.
-func (s *Server) Run(ctx context.Context, transport Transport, httpAddr string, variantID string) error {
-	if variantID != "" {
-		if _, ok := findVariantSpec(variantID); !ok {
-			return fmt.Errorf("unknown variant %q: must be one of %v", variantID, KnownVariantIDs())
+// RunOptions selects the transport and its settings for Server.Run.
+type RunOptions struct {
+	// Transport is stdio (default) or http.
+	Transport Transport
+	// HTTPAddr is the listen address for the http transport.
+	HTTPAddr string
+	// VariantID, when non-empty, forces a specific capability set and
+	// bypasses the variants negotiation protocol entirely (the client sees a
+	// plain MCP server). Valid values are listed by KnownVariantIDs.
+	VariantID string
+	// Auth, when non-nil, enables the embedded OAuth authorization server on
+	// the http transport: MCP requests require a bearer token, and GCP API
+	// calls run under each caller's own Google identity. nil serves
+	// unauthenticated HTTP (put an authenticating proxy in front) and uses
+	// Application Default Credentials, like stdio.
+	Auth *authsrv.Config
+}
+
+// Run starts the MCP server using the configured transport.
+func (s *Server) Run(ctx context.Context, opts RunOptions) error {
+	if opts.VariantID != "" {
+		if _, ok := findVariantSpec(opts.VariantID); !ok {
+			return fmt.Errorf("unknown variant %q: must be one of %v", opts.VariantID, KnownVariantIDs())
 		}
+	}
+	switch opts.Transport {
+	case TransportStdio, "", TransportHTTP:
+	default:
+		return fmt.Errorf("unsupported transport %q: must be %q or %q", opts.Transport, TransportStdio, TransportHTTP)
+	}
+	if opts.Auth != nil && opts.Transport != TransportHTTP {
+		return fmt.Errorf("auth requires --transport %s", TransportHTTP)
+	}
+
+	// LoadRegistry merges user overlay (if any) with embedded GCP defaults.
+	registryPath := s.resolveRegistryPath()
+	reg, regErr := metrics.LoadRegistry(registryPath)
+	if regErr != nil {
+		return fmt.Errorf("loading metrics registry: %w", regErr)
+	}
+
+	if opts.Auth != nil {
+		return s.runHTTPWithAuth(ctx, reg, opts)
 	}
 
 	client, err := gcpclient.New(ctx, s.cfg)
@@ -144,65 +184,95 @@ func (s *Server) Run(ctx context.Context, transport Transport, httpAddr string, 
 		}
 	}()
 
-	// LoadRegistry merges user overlay (if any) with embedded GCP defaults.
-	registryPath := s.resolveRegistryPath()
-	reg, regErr := metrics.LoadRegistry(registryPath)
-	if regErr != nil {
-		return fmt.Errorf("loading metrics registry: %w", regErr)
+	s.wireCompleter(s.completer, reg, client)
+	deps := s.buildDeps(client, reg)
+
+	if opts.VariantID != "" {
+		srv, buildErr := s.buildSingleVariantServer(VariantID(opts.VariantID), client, deps, s.completer)
+		if buildErr != nil {
+			return fmt.Errorf("building variant server: %w", buildErr)
+		}
+		s.logger.Info("Starting with forced variant", "variant", opts.VariantID)
+		if opts.Transport == TransportHTTP {
+			return s.runMCPHTTP(ctx, srv, opts.HTTPAddr)
+		}
+		return s.runStdio(ctx, srv)
 	}
 
-	s.completer.registry = reg
+	vs, err := s.buildVariantsServer(client, deps, s.completer)
+	if err != nil {
+		return fmt.Errorf("building variants server: %w", err)
+	}
+	if opts.Transport == TransportHTTP {
+		return s.runHTTP(ctx, vs, opts.HTTPAddr)
+	}
+	return s.runStdio(ctx, vs)
+}
 
-	defaultProject := client.Config().DefaultProject
-
-	s.completer.defaultProject = defaultProject
-	s.completer.loadServices = newCachedServiceLister(func(ctx context.Context) (*gcpdata.ServiceList, error) {
-		return gcpdata.ListServices(ctx, client.LoggingClient(), defaultProject, "")
-	}, s.logger)
-
-	// One base Deps carrying every backend as an interface; the variant
-	// builders clone it and set Mode per spec.
-	deps := tools.Deps{
+// buildDeps assembles the base tools.Deps for one GCP client set; the variant
+// builders clone it and set Mode per spec.
+func (s *Server) buildDeps(client *gcpclient.Client, reg *metrics.Registry) tools.Deps {
+	return tools.Deps{
 		Logs:           gcpdata.NewLoggingQuerier(client.LoggingClient()),
 		Errors:         gcpdata.NewErrorReportingQuerier(client.ErrorsClient()),
 		Traces:         gcpdata.NewCloudTraceQuerier(client.TraceClient()),
 		Profiler:       gcpdata.NewCloudProfilerQuerier(client.ProfilerService(), profileCacheSize),
 		Querier:        gcpdata.NewMonitoringQuerier(client.MonitoringClient()),
 		Registry:       reg,
-		DefaultProject: defaultProject,
+		DefaultProject: client.Config().DefaultProject,
 		LogsMaxLimit:   s.cfg.LogsMaxLimit,
 		ErrorsMaxLimit: s.cfg.ErrorsMaxLimit,
 	}
+}
 
-	if variantID != "" {
-		srv, buildErr := s.buildSingleVariantServer(VariantID(variantID), client, deps)
+// userAssemblyBuilder returns the builder the user pool uses to construct one
+// authenticated user's complete HTTP assembly: GCP clients running under the
+// user's token, a fresh completer and profile cache, and the negotiated (or
+// forced) variant server(s).
+func (s *Server) userAssemblyBuilder(reg *metrics.Registry, variantID string) userHandlerBuilder {
+	return func(ctx context.Context, user *authsrv.UserIdentity, ts oauth2.TokenSource) (http.Handler, io.Closer, error) {
+		// The grant may be bound to a user-chosen project (project-choice
+		// mode); it becomes this assembly's default project. With a pinned
+		// project the two values coincide.
+		cfg := *s.cfg
+		if user.Project != "" {
+			cfg.DefaultProject = user.Project
+		}
+		client, err := gcpclient.NewWithTokenSource(ctx, &cfg, ts)
+		if err != nil {
+			return nil, nil, fmt.Errorf("creating per-user GCP client: %w", err)
+		}
+		completer := &promptCompleter{}
+		s.wireCompleter(completer, reg, client)
+		deps := s.buildDeps(client, reg)
+
+		if variantID != "" {
+			srv, buildErr := s.buildSingleVariantServer(VariantID(variantID), client, deps, completer)
+			if buildErr != nil {
+				return nil, nil, errors.Join(fmt.Errorf("building variant server: %w", buildErr), client.Close())
+			}
+			handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil)
+			return handler, client, nil
+		}
+
+		vs, buildErr := s.buildVariantsServer(client, deps, completer)
 		if buildErr != nil {
-			return fmt.Errorf("building variant server: %w", buildErr)
+			return nil, nil, errors.Join(fmt.Errorf("building variants server: %w", buildErr), client.Close())
 		}
-		s.logger.Info("Starting with forced variant", "variant", variantID)
-		switch transport {
-		case TransportHTTP:
-			return s.runMCPHTTP(ctx, srv, httpAddr)
-		case TransportStdio, "":
-			return s.runStdio(ctx, srv)
-		default:
-			return fmt.Errorf("unsupported transport %q: must be %q or %q", transport, TransportStdio, TransportHTTP)
-		}
+		return variants.NewStreamableHTTPHandler(vs, nil), multiCloser{vs, client}, nil
 	}
+}
 
-	vs, err := s.buildVariantsServer(client, deps)
-	if err != nil {
-		return fmt.Errorf("building variants server: %w", err)
-	}
-
-	switch transport {
-	case TransportHTTP:
-		return s.runHTTP(ctx, vs, httpAddr)
-	case TransportStdio, "":
-		return s.runStdio(ctx, vs)
-	default:
-		return fmt.Errorf("unsupported transport %q: must be %q or %q", transport, TransportStdio, TransportHTTP)
-	}
+// wireCompleter binds a completer to a registry and a GCP client set. The
+// service-list cache lives inside the closure, so each completer (one per
+// user in HTTP auth mode) caches independently.
+func (s *Server) wireCompleter(c *promptCompleter, reg *metrics.Registry, client *gcpclient.Client) {
+	defaultProject := client.Config().DefaultProject
+	c.registry = reg
+	c.defaultProject = defaultProject
+	c.loadServices = newCachedServiceLister(func(ctx context.Context) (*gcpdata.ServiceList, error) {
+		return gcpdata.ListServices(ctx, client.LoggingClient(), defaultProject, "")
+	}, s.logger)
 }
 
 // resolveRegistryPath returns the metrics registry overlay path to load: the

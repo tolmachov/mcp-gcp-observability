@@ -292,7 +292,7 @@ func TestBuildSingleVariantServerUnknownVariant(t *testing.T) {
 		version:   "test",
 		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	_, err := s.buildSingleVariantServer(VariantID("bogus"), nil, tools.Deps{})
+	_, err := s.buildSingleVariantServer(VariantID("bogus"), nil, tools.Deps{}, s.completer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "bogus")
 	assert.Contains(t, err.Error(), "must be one of")
@@ -335,7 +335,7 @@ func listToolsViaInMemory(t *testing.T, srv *mcp.Server) []*mcp.Tool {
 // the constant honest.
 func TestRegisterAllToolsCount(t *testing.T) {
 	s := testServer(t)
-	srv := s.newMCPInstance()
+	srv := s.newMCPInstance(s.completer)
 	registerAllTools(srv, tools.Deps{
 		Logs:           stubBackends{},
 		Errors:         stubBackends{},
@@ -412,7 +412,7 @@ func TestBuildVariantsServerHappyPath(t *testing.T) {
 		Registry:       metrics.NewRegistry(),
 		DefaultProject: "test",
 	}
-	vs, err := s.buildVariantsServer(client, deps)
+	vs, err := s.buildVariantsServer(client, deps, s.completer)
 	require.NoError(t, err)
 	require.NotNil(t, vs)
 	t.Cleanup(func() {
@@ -430,7 +430,7 @@ func TestBuildVariantsServerHappyPath(t *testing.T) {
 // silently ship a mangled description without this guard.
 func TestCompactModeRealDescriptionsSane(t *testing.T) {
 	s := testServer(t)
-	srv := s.newMCPInstance()
+	srv := s.newMCPInstance(s.completer)
 	registerAllTools(srv, tools.Deps{
 		Logs:           stubBackends{},
 		Errors:         stubBackends{},

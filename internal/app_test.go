@@ -96,6 +96,35 @@ func TestRunCommand_VariantIsCaseSensitive(t *testing.T) {
 	assert.Contains(t, err.Error(), "must be one of")
 }
 
+// TestRunCommand_UnknownAuthMode verifies --auth with an invalid value is
+// rejected at the CLI layer before any server construction.
+func TestRunCommand_UnknownAuthMode(t *testing.T) {
+	var out, errOut bytes.Buffer
+	app := New(strings.NewReader(""), &out, &errOut)
+	err := app.Run(context.Background(), []string{
+		"mcp-gcp-observability", "run",
+		"--gcp-default-project=test-project",
+		"--auth=basic",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "basic")
+	assert.Contains(t, err.Error(), "unsupported auth mode")
+}
+
+// TestRunCommand_AuthRequiresHTTP pins the guard that --auth google cannot
+// run on the stdio transport.
+func TestRunCommand_AuthRequiresHTTP(t *testing.T) {
+	var out, errOut bytes.Buffer
+	app := New(strings.NewReader(""), &out, &errOut)
+	err := app.Run(context.Background(), []string{
+		"mcp-gcp-observability", "run",
+		"--gcp-default-project=test-project",
+		"--auth=google",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "requires --transport http")
+}
+
 func writeTempYAML(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()

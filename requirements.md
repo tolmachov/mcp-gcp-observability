@@ -18,7 +18,7 @@ The server must provide:
 
 Target project (initial scope):
 
-- `spring-monolith-431606-v7`
+- `your-observability-project`
 
 ---
 
@@ -344,7 +344,7 @@ Security
 
 7. Configuration
 
-GCP_DEFAULT_PROJECT=spring-monolith-431606-v7
+GCP_DEFAULT_PROJECT=your-observability-project
 LOGS_MAX_LIMIT=1000
 ERRORS_MAX_LIMIT=100
 
@@ -358,7 +358,7 @@ ERRORS_MAX_LIMIT=100
     "gcp-observability": {
       "command": "/usr/local/bin/gcp-mcp",
       "env": {
-        "GCP_DEFAULT_PROJECT": "spring-monolith-431606-v7"
+        "GCP_DEFAULT_PROJECT": "your-observability-project"
       }
     }
   }

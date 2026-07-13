@@ -7,6 +7,7 @@ import (
 
 	"github.com/urfave/cli/v3"
 
+	"github.com/tolmachov/mcp-gcp-observability/internal/authsrv"
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 	"github.com/tolmachov/mcp-gcp-observability/internal/server"
@@ -16,6 +17,31 @@ import (
 var Version = "dev"
 
 const serviceName = "mcp-gcp-observability"
+
+// authConfigFromFlags builds the auth configuration from CLI flags, or nil
+// when --auth is 'none'. Validation of the individual fields happens in
+// authsrv.Config.Validate at server startup.
+func authConfigFromFlags(cmd *cli.Command) (*authsrv.Config, error) {
+	switch authsrv.Mode(cmd.String(flagAuth)) {
+	case authsrv.ModeNone, "":
+		return nil, nil
+	case authsrv.ModeGoogle:
+		return &authsrv.Config{
+			IssuerURL:            cmd.String(flagAuthIssuerURL),
+			GoogleClientID:       cmd.String(flagAuthGoogleClientID),
+			GoogleClientSecret:   cmd.String(flagAuthGoogleClientSecret),
+			AllowedDomains:       cmd.StringSlice(flagAuthAllowedDomains),
+			RequireProjectAccess: cmd.String(flagAuthRequireProject),
+			TokenKeys:            cmd.StringSlice(flagAuthTokenKey),
+			ExtraRedirects:       cmd.StringSlice(flagAuthAllowedRedirects),
+			Scopes:               cmd.StringSlice(flagAuthGoogleScopes),
+			SkipConsent:          cmd.Bool(flagAuthSkipConsent),
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported auth mode %q: must be %q or %q",
+			cmd.String(flagAuth), authsrv.ModeNone, authsrv.ModeGoogle)
+	}
+}
 
 // New creates a new CLI application.
 func New(in io.Reader, out, errOut io.Writer) *cli.Command {
@@ -39,6 +65,16 @@ func New(in io.Reader, out, errOut io.Writer) *cli.Command {
 					transportFlag(),
 					httpAddrFlag(),
 					variantFlag(),
+					authFlag(),
+					authIssuerURLFlag(),
+					authGoogleClientIDFlag(),
+					authGoogleClientSecretFlag(),
+					authAllowedDomainsFlag(),
+					authRequireProjectFlag(),
+					authTokenKeyFlag(),
+					authAllowedRedirectsFlag(),
+					authGoogleScopesFlag(),
+					authSkipConsentFlag(),
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					cfg := &gcpclient.Config{
@@ -48,14 +84,32 @@ func New(in io.Reader, out, errOut io.Writer) *cli.Command {
 						DNSServer:           cmd.String(flagDNSServer),
 						MetricsRegistryFile: cmd.String(flagMetricsRegistry),
 					}
+					authCfg, err := authConfigFromFlags(cmd)
+					if err != nil {
+						return err
+					}
+					switch {
+					case authCfg == nil && cfg.DefaultProject == "":
+						return fmt.Errorf("GCP_DEFAULT_PROJECT is required (it is optional only with --auth google, where each user chooses a project at login)")
+					case authCfg != nil && cfg.DefaultProject == "":
+						// No pinned project: users pick one on the consent
+						// page; access to the choice is verified at login.
+						authCfg.AllowProjectChoice = true
+					case authCfg != nil && authCfg.RequireProjectAccess == "":
+						// Pinned project: the server works only with it, so
+						// logging in requires IAM access to it.
+						authCfg.RequireProjectAccess = cfg.DefaultProject
+					}
 					srv, err := server.New(cfg, Version, cmd.Root().Reader, cmd.Root().Writer, cmd.Root().ErrWriter)
 					if err != nil {
 						return err
 					}
-					transport := server.Transport(cmd.String(flagTransport))
-					httpAddr := cmd.String(flagHTTPAddr)
-					variantID := cmd.String(flagVariant)
-					return srv.Run(ctx, transport, httpAddr, variantID)
+					return srv.Run(ctx, server.RunOptions{
+						Transport: server.Transport(cmd.String(flagTransport)),
+						HTTPAddr:  cmd.String(flagHTTPAddr),
+						VariantID: cmd.String(flagVariant),
+						Auth:      authCfg,
+					})
 				},
 			},
 			{

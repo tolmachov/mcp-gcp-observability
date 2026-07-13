@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/oauth2"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
 
@@ -58,8 +59,27 @@ func NewForTesting(cfg Config) *Client {
 }
 
 // New creates a new GCP client with Logging, Error Reporting, Cloud Trace, Cloud Monitoring,
-// and Cloud Profiler API clients. Optionally configures a custom DNS resolver from Config.DNSServer.
+// and Cloud Profiler API clients, authenticated via Application Default Credentials.
+// Optionally configures a custom DNS resolver from Config.DNSServer.
 func New(ctx context.Context, cfg *Config) (*Client, error) {
+	return newWithOpts(ctx, cfg, nil)
+}
+
+// NewWithTokenSource creates the same client set as New, but authenticated as
+// the user behind ts instead of Application Default Credentials. Used by the
+// HTTP transport to call GCP APIs with the caller's own identity, so IAM is
+// enforced per user. ts is consulted on every RPC, so a source that refreshes
+// (or is swapped) keeps long-lived clients working across token renewals.
+func NewWithTokenSource(ctx context.Context, cfg *Config, ts oauth2.TokenSource) (*Client, error) {
+	if ts == nil {
+		return nil, fmt.Errorf("token source must not be nil")
+	}
+	return newWithOpts(ctx, cfg, []option.ClientOption{option.WithTokenSource(ts)})
+}
+
+// newWithOpts creates the client set with extra client options appended to
+// the config-derived ones.
+func newWithOpts(ctx context.Context, cfg *Config, extra []option.ClientOption) (*Client, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config must not be nil")
 	}
@@ -67,7 +87,7 @@ func New(ctx context.Context, cfg *Config) (*Client, error) {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
-	opts := clientOptions(cfg)
+	opts := append(clientOptions(cfg), extra...)
 
 	loggingClient, err := logging.NewClient(ctx, opts...)
 	if err != nil {

@@ -201,6 +201,16 @@ The server provides pre-built investigation workflows:
 | `--metrics-registry` | `METRICS_REGISTRY_FILE` | (none) | Path to metrics semantic registry YAML file |
 | `--transport` | `MCP_TRANSPORT` | `stdio` | Transport mode: `stdio` (default) or `http` |
 | `--http-addr` | `MCP_HTTP_ADDR` | `:8080` | HTTP listen address (only used with `--transport http`) |
+| `--auth` | `MCP_AUTH` | `none` | HTTP authentication: `none` or `google` (embedded OAuth, see below) |
+| `--auth-issuer-url` | `AUTH_ISSUER_URL` | (none) | Public base URL of this service — https, or http on localhost for dev (required for `--auth google`) |
+| `--auth-google-client-id` | `AUTH_GOOGLE_CLIENT_ID` | (none) | Google OAuth web client ID (required for `--auth google`) |
+| `--auth-google-client-secret` | `AUTH_GOOGLE_CLIENT_SECRET` | (none) | Google OAuth web client secret (required for `--auth google`) |
+| `--auth-allowed-domains` | `AUTH_ALLOWED_DOMAINS` | (none) | Workspace domains allowed to log in, comma-separated (this or `--auth-require-project-access` is required for `--auth google`) |
+| `--auth-require-project-access` | `AUTH_REQUIRE_PROJECT_ACCESS` | (none) | GCP project ID: only accounts with IAM access to it may log in — for teams without a Workspace domain |
+| `--auth-token-key` | `AUTH_TOKEN_KEY` | (none) | Base64 32-byte token encryption keys, comma-separated; first encrypts, all decrypt (required for `--auth google`) |
+| `--auth-allowed-redirects` | `AUTH_ALLOWED_REDIRECTS` | (none) | Extra exact-match OAuth redirect URIs (loopback and claude.ai/claude.com are built in) |
+| `--auth-google-scopes` | `AUTH_GOOGLE_SCOPES` | openid, email, cloud-platform | Google OAuth scopes requested at login (Error Reporting/Profiler accept no narrower scope) |
+| `--auth-skip-consent` | `AUTH_SKIP_CONSENT` | `false` | Skip the consent page (development only) |
 
 ### HTTP Transport
 
@@ -210,7 +220,60 @@ For remote deployments or shared access, use the streamable HTTP transport:
 mcp-gcp-observability run --transport http --http-addr :8080
 ```
 
-**Security:** The HTTP transport does not include built-in authentication. When exposing over a network, place it behind a reverse proxy with authentication or use network-level access controls.
+**Security:** With `--auth none` (the default) the HTTP transport has no authentication — place it behind an authenticating reverse proxy or network-level access controls. For a shared multi-user deployment use `--auth google` (next section).
+
+## Shared server on Cloud Run (`--auth google`)
+
+Instead of everyone running a local copy, deploy one shared instance. The server embeds a full OAuth 2.1 authorization server (RFC 8414 metadata, RFC 7591 Dynamic Client Registration, PKCE, refresh tokens) with Google Workspace as the identity provider:
+
+- Employees add the URL to their MCP client; the browser opens a Google login.
+- Every GCP API call runs under **the user's own Google token** (scope `cloud-platform` — Error Reporting and Profiler accept no narrower one), so personal IAM permissions apply — no shared service-account identity for data access.
+- **Project selection**: with `GCP_DEFAULT_PROJECT` set, the server is pinned to that project and logging in requires IAM access to it. With it omitted, each user types a GCP project ID on the consent page; the server verifies their access to it (`testIamPermissions` with their own token) and binds the session — and its tools — to that project.
+- All issued tokens are stateless encrypted blobs (AES-256-GCM); no database.
+
+### Connecting (for users)
+
+```bash
+# Claude Code
+claude mcp add --transport http gcp-obs https://<service-url>/
+```
+
+For claude.ai / Claude Desktop: **Settings → Connectors → Add custom connector** with the same URL. Cursor and other MCP clients: add a remote MCP server with the URL; the OAuth flow starts automatically.
+
+Each user needs read-only IAM roles on the observability project: `roles/logging.viewer`, `roles/monitoring.viewer`, `roles/cloudtrace.user`, `roles/errorreporting.viewer`, `roles/cloudprofiler.user`.
+
+### One-time GCP setup (for operators)
+
+1. **Enable APIs**: `run.googleapis.com`, `artifactregistry.googleapis.com`, `secretmanager.googleapis.com` (plus the observability APIs from Prerequisites).
+2. **Artifact Registry**: `gcloud artifacts repositories create mcp --repository-format=docker --location=<region>`.
+3. **Runtime service account** (minimal — it never reads observability data):
+   ```bash
+   gcloud iam service-accounts create mcp-gcp-observability
+   ```
+4. **Secrets**:
+   ```bash
+   openssl rand -base64 32 | gcloud secrets create mcp-obs-token-key --data-file=-
+   printf '%s' "<client-secret>" | gcloud secrets create mcp-obs-google-client-secret --data-file=-
+   # grant the runtime SA access:
+   for s in mcp-obs-token-key mcp-obs-google-client-secret; do
+     gcloud secrets add-iam-policy-binding $s \
+       --member serviceAccount:mcp-gcp-observability@<project>.iam.gserviceaccount.com \
+       --role roles/secretmanager.secretAccessor
+   done
+   ```
+5. **First deploy** (to learn the service URL): `cp deploy/cloudrun.env.example deploy/cloudrun.env`, fill in everything except `AUTH_ISSUER_URL`, temporarily set `MCP_AUTH: none`, then `make deploy GCP_PROJECT=<project> GCP_REGION=<region>`.
+6. **OAuth client**: in the same GCP project, configure the OAuth consent screen as **Internal** (this alone restricts login to your Workspace), then create an **OAuth client ID → Web application** with authorized redirect URI `https://<service-url>/callback`.
+7. **Final deploy**: set `AUTH_ISSUER_URL` to the service URL, `MCP_AUTH: google`, and `make deploy` again.
+
+`--allow-unauthenticated` at the Cloud Run level is intentional: the OAuth layer inside the app is the authentication boundary (the `/.well-known` metadata and the OAuth endpoints must be publicly reachable).
+
+### Operations runbook
+
+- **Key rotation**: generate a new key (`openssl rand -base64 32`), set the `mcp-obs-token-key` secret to `newKey,oldKey` (new key encrypts, old tokens stay valid), deploy; later drop the old key.
+- **Kill switch**: replacing the token key with a single fresh key invalidates every outstanding token instantly (all users re-login).
+- **Revoking one user**: disable the app for the user in the Workspace admin console (or the user revokes it at myaccount.google.com → Security); refresh grants stop working immediately, and outstanding access tokens expire within the hour (they never outlive the embedded Google token).
+- **Restricting domains**: `AUTH_ALLOWED_DOMAINS` is checked at login, at token refresh, *and* on every MCP request — after redeploying with a domain removed, that domain's existing tokens are rejected on their next use.
+- **No Workspace domain?** Set `AUTH_REQUIRE_PROJECT_ACCESS` to a GCP project ID instead: at login and on every token refresh the server probes `testIamPermissions` with the user's own token, so only Google accounts that hold at least one IAM role on that project (`resourcemanager.projects.get`) can log in. Revoking a user's IAM role cuts off token renewal and, natively, every GCP call. Both gates may be combined.
 
 ## GCP API Limits
 

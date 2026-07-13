@@ -123,6 +123,7 @@ func (s *Server) buildSingleVariantServer(
 	variantID VariantID,
 	client *gcpclient.Client,
 	deps tools.Deps,
+	completer *promptCompleter,
 ) (result *mcp.Server, retErr error) {
 	defer s.recoverRegistrationPanic(string(variantID), &retErr)
 
@@ -131,7 +132,7 @@ func (s *Server) buildSingleVariantServer(
 		return nil, fmt.Errorf("unknown variant %q: must be one of %v", variantID, KnownVariantIDs())
 	}
 
-	srv := s.newMCPInstance()
+	srv := s.newMCPInstance(completer)
 	spec.register(srv, deps.WithMode(spec.mode))
 	if err := s.registerResources(srv, client, deps.Registry); err != nil {
 		return nil, err
@@ -182,6 +183,7 @@ func registerAllTools(srv *mcp.Server, d tools.Deps) {
 func (s *Server) buildVariantsServer(
 	client *gcpclient.Client,
 	deps tools.Deps,
+	completer *promptCompleter,
 ) (result *variants.Server, retErr error) {
 	defer s.recoverRegistrationPanic("", &retErr)
 
@@ -189,7 +191,7 @@ func (s *Server) buildVariantsServer(
 	vs := variants.NewServer(impl)
 
 	for i, spec := range variantSpecs {
-		srv := s.newMCPInstance()
+		srv := s.newMCPInstance(completer)
 		spec.register(srv, deps.WithMode(spec.mode))
 		if err := s.registerResources(srv, client, deps.Registry); err != nil {
 			return nil, err
