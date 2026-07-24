@@ -62,5 +62,5 @@ deploy: docker-push
 		--max-instances 3 \
 		--memory 512Mi \
 		--args run \
-		--set-env-vars "^\#\#^$$(grep -v '^\s*\#' deploy/cloudrun.env | grep -v '^\s*$$' | sed 's/: /=/' | paste -sd'\#\#' -)" \
+		--set-env-vars "^@^$$(grep -v '^\s*\#' deploy/cloudrun.env | grep -v '^\s*$$' | sed 's/: /=/' | paste -sd'@' -)" \
 		--set-secrets AUTH_GOOGLE_CLIENT_SECRET=mcp-obs-google-client-secret:latest,AUTH_TOKEN_KEY=mcp-obs-token-key:latest
