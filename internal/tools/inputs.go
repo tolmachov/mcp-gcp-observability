@@ -166,11 +166,17 @@ type MetricsRelatedInput struct {
 }
 
 // ProfilerListInput is the input for profiler_list.
+//
+// It carries its own start_time/end_time rather than embedding TimeFilterInput:
+// the Cloud Profiler Export API has no server-side time filter, so these bounds
+// are applied client-side with NO default window (unlike the logging tools,
+// whose shared TimeFilterInput defaults to the last 24h).
 type ProfilerListInput struct {
 	ProjectInput
-	TimeFilterInput
+	StartTime   string `json:"start_time,omitempty"   jsonschema:"Optional lower time bound in RFC3339 format (e.g. '2025-01-15T00:00:00Z'), compared against each profile's start time. If omitted, no lower bound is applied (all available history is eligible)."`
+	EndTime     string `json:"end_time,omitempty"     jsonschema:"Optional upper time bound in RFC3339 format (e.g. '2025-01-15T23:59:59Z'). If omitted, no upper bound is applied."`
 	ProfileType string `json:"profile_type,omitempty" jsonschema:"Profile type filter, case-insensitive (one of: CPU, WALL, HEAP, THREADS, CONTENTION, PEAK_HEAP, HEAP_ALLOC)"`
-	Target      string `json:"target,omitempty"       jsonschema:"Deployment target (service name) filter"`
+	Target      string `json:"target,omitempty"       jsonschema:"Deployment target (service name) filter, matched case- and separator-insensitively (e.g. 'crypto-steam' matches 'cryptosteam')"`
 	Limit       int    `json:"limit,omitempty"        jsonschema:"Number of profiles to return (default 20, max 100)"`
 	PageToken   string `json:"page_token,omitempty"   jsonschema:"Page token for pagination"`
 }

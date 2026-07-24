@@ -16,7 +16,9 @@ func RegisterProfilerList(s *mcp.Server, d Deps) {
 		Description: applyMode(d.Mode, "List available Cloud Profiler profiles with metadata. "+
 			"Returns profile IDs, types, deployment targets, and timestamps — no profile data. "+
 			"Use the returned profile_id with profiler_top to start analyzing a profile. "+
-			"Supports filtering by profile_type (CPU, WALL, HEAP, THREADS, CONTENTION, PEAK_HEAP, HEAP_ALLOC) and target (service name). "+
+			"Supports filtering by profile_type (CPU, WALL, HEAP, THREADS, CONTENTION, PEAK_HEAP, HEAP_ALLOC) and target (service name, "+
+			"matched case- and separator-insensitively, so 'crypto-steam' finds 'cryptosteam'). "+
+			"If a target matches nothing, the warning lists the available targets. "+
 			"Requires Cloud Profiler API to be enabled."),
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
