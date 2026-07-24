@@ -3,6 +3,7 @@ package gcpdata
 import (
 	"bytes"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -310,8 +311,11 @@ func TestMatchesProfileFilter(t *testing.T) {
 	check(true, false, "CPU", "", zero, zero, meta)
 	check(false, false, "HEAP", "", zero, zero, meta)
 
-	// Target filter (exact match).
+	// Target filter — case- and separator-insensitive substring match.
 	check(true, false, "", "my-service", zero, zero, meta)
+	check(true, false, "", "myservice", zero, zero, meta)  // separators ignored
+	check(true, false, "", "My-Service", zero, zero, meta) // case ignored
+	check(true, false, "", "service", zero, zero, meta)    // substring
 	check(false, false, "", "other-service", zero, zero, meta)
 
 	// Time range filter — within range.
@@ -777,5 +781,66 @@ func TestProfileFromAPI(t *testing.T) {
 		meta := profileFromAPI(p)
 		assert.Empty(t, meta.Target)
 		assert.Nil(t, meta.DeploymentLabels)
+	})
+
+	t.Run("empty name gets a synthetic profile ID", func(t *testing.T) {
+		// The Export API returns empty Name for some deployments; profileFromAPI
+		// must still produce a usable, addressable ID.
+		ts := timestamppb.New(time.Date(2026, 7, 23, 23, 22, 56, 0, time.UTC))
+		p := &cloudprofilerpb.Profile{
+			Name:        "",
+			ProfileType: cloudprofilerpb.ProfileType_CPU,
+			Duration:    durationpb.New(10 * time.Second),
+			StartTime:   ts,
+			Deployment:  &cloudprofilerpb.Deployment{Target: "cryptosteam"},
+			Labels:      map[string]string{"instance": "pod-a"},
+		}
+		meta := profileFromAPI(p)
+		assert.NotEmpty(t, meta.ProfileID)
+		assert.True(t, strings.HasPrefix(meta.ProfileID, "syn:"), "synthetic ID should carry the syn: prefix, got %q", meta.ProfileID)
+
+		// Deterministic: the same profile hashes to the same ID.
+		assert.Equal(t, meta.ProfileID, profileFromAPI(p).ProfileID)
+
+		// A profile from a different instance is a different, addressable ID.
+		p2 := &cloudprofilerpb.Profile{
+			Name:        "",
+			ProfileType: cloudprofilerpb.ProfileType_CPU,
+			Duration:    durationpb.New(10 * time.Second),
+			StartTime:   ts,
+			Deployment:  &cloudprofilerpb.Deployment{Target: "cryptosteam"},
+			Labels:      map[string]string{"instance": "pod-b"},
+		}
+		assert.NotEqual(t, meta.ProfileID, profileFromAPI(p2).ProfileID)
+	})
+}
+
+func TestTargetMatches(t *testing.T) {
+	// The real-world case that motivated fuzzy matching: user types the
+	// hyphenated name, the deployment target has no hyphen.
+	assert.True(t, targetMatches("cryptosteam", "crypto-steam"))
+	assert.True(t, targetMatches("crypto-steam", "cryptosteam"))
+	assert.True(t, targetMatches("CryptoSteam", "crypto_steam"))
+	assert.True(t, targetMatches("cryptosteam", "steam")) // substring
+	assert.True(t, targetMatches("anything", ""))         // empty filter matches all
+	assert.False(t, targetMatches("cryptosteam", "bitcoin"))
+	assert.False(t, targetMatches("", "cryptosteam"))
+}
+
+func TestAvailableTargetsHint(t *testing.T) {
+	t.Run("empty when nothing seen", func(t *testing.T) {
+		assert.Empty(t, availableTargetsHint(map[string]int{}))
+	})
+	t.Run("orders by frequency then name", func(t *testing.T) {
+		hint := availableTargetsHint(map[string]int{"rare": 1, "common": 9, "mid": 5})
+		assert.Equal(t, ", available targets: common, mid, rare", hint)
+	})
+	t.Run("caps the list and reports the remainder", func(t *testing.T) {
+		seen := make(map[string]int)
+		for i := 0; i < 25; i++ {
+			seen[fmt.Sprintf("svc-%02d", i)] = 1
+		}
+		hint := availableTargetsHint(seen)
+		assert.Contains(t, hint, "(+5 more)")
 	})
 }

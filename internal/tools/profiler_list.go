@@ -16,7 +16,9 @@ func RegisterProfilerList(s *mcp.Server, d Deps) {
 		Description: applyMode(d.Mode, "List available Cloud Profiler profiles with metadata. "+
 			"Returns profile IDs, types, deployment targets, and timestamps — no profile data. "+
 			"Use the returned profile_id with profiler_top to start analyzing a profile. "+
-			"Supports filtering by profile_type (CPU, WALL, HEAP, THREADS, CONTENTION, PEAK_HEAP, HEAP_ALLOC) and target (service name). "+
+			"Supports filtering by profile_type (CPU, WALL, HEAP, THREADS, CONTENTION, PEAK_HEAP, HEAP_ALLOC) and target (service name, "+
+			"matched case- and separator-insensitively, so 'crypto-steam' finds 'cryptosteam'). "+
+			"If a target matches nothing, the warning lists the available targets. "+
 			"Requires Cloud Profiler API to be enabled."),
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
@@ -42,7 +44,11 @@ func RegisterProfilerList(s *mcp.Server, d Deps) {
 
 		pageSize := clampLimit(in.Limit, 20, 100)
 
-		sendProgress(ctx, req, 0, 1, "Listing profiles...")
+		// The Export API has no server-side filter, so a filtered list scans and
+		// downloads profiles page by page and can run long on large projects.
+		// Heartbeat progress keeps the client's request alive across the scan.
+		stop := startProgressHeartbeat(ctx, req, "Scanning Cloud Profiler profiles…")
+		defer stop()
 
 		result, err := d.Profiler.ListProfiles(ctx, gcpdata.ListProfilesParams{
 			Project:     project,

@@ -3,6 +3,8 @@ package gcpdata
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -16,7 +18,14 @@ import (
 	"google.golang.org/api/iterator"
 )
 
-const profilerQueryTimeout = 60 * time.Second
+// profilerScanTimeout bounds a single paginated scan of the Cloud Profiler
+// Export API. Because that API returns profile bytes inline and offers no
+// server-side filter (see ListProfiles), scans must page through and download
+// many profiles client-side and can legitimately run well past a few seconds on
+// large projects. The old 60s cap cut those scans short; the tool layer keeps
+// the MCP client's request alive across this window with progress heartbeats,
+// and maxScan still bounds the total work examined.
+const profilerScanTimeout = 5 * time.Minute
 
 // validProfileTypes is the set of profile types supported by Cloud Profiler.
 var validProfileTypes = map[string]bool{
@@ -56,7 +65,7 @@ type ListProfilesParams struct {
 }
 
 func ListProfiles(ctx context.Context, svc *cloudprofiler.ExportClient, params ListProfilesParams) (*ProfileListResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, profilerQueryTimeout)
+	ctx, cancel := context.WithTimeout(ctx, profilerScanTimeout)
 	defer cancel()
 
 	project := params.Project
@@ -81,6 +90,11 @@ func ListProfiles(ctx context.Context, svc *cloudprofiler.ExportClient, params L
 	const maxScan = 20_000
 	scanned := 0
 
+	// Track every distinct deployment target encountered so a target filter that
+	// matches nothing can report what was actually available — the common cause
+	// is a slightly-off service name (e.g. "crypto-steam" vs "cryptosteam").
+	targetsSeen := make(map[string]int)
+
 	it := svc.ListProfiles(ctx, &cloudprofilerpb.ListProfilesRequest{
 		Parent:    "projects/" + project,
 		PageSize:  apiPageSize,
@@ -94,13 +108,16 @@ func ListProfiles(ctx context.Context, svc *cloudprofiler.ExportClient, params L
 		}
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil, fmt.Errorf("listing profiles: timed out after %d profiles (%d matches so far); try narrowing filters: %w", scanned, len(result.Profiles), err)
+				return nil, fmt.Errorf("listing profiles: timed out after %d profiles (%d matches so far); try narrowing filters%s: %w", scanned, len(result.Profiles), availableTargetsHint(targetsSeen), err)
 			}
 			return nil, fmt.Errorf("listing profiles: %w", err)
 		}
 		scanned++
 
 		meta := profileFromAPI(p)
+		if meta.Target != "" {
+			targetsSeen[meta.Target]++
+		}
 		ok, wasParseErr := matchesProfileFilter(meta, params.ProfileType, params.Target, startT, endT)
 		if !ok {
 			if wasParseErr {
@@ -138,12 +155,55 @@ func ListProfiles(ctx context.Context, svc *cloudprofiler.ExportClient, params L
 		}
 	}
 
-	if needsFilter && scanned >= maxScan && len(result.Profiles) < pageSize {
+	switch {
+	case params.Target != "" && len(result.Profiles) == 0:
+		// A target filter matched nothing; surface what was available so the
+		// caller can correct a mistyped service name instead of guessing.
+		result.Warning = fmt.Sprintf("No profiles matched target %q%s.", params.Target, availableTargetsHint(targetsSeen))
+	case needsFilter && scanned >= maxScan && len(result.Profiles) < pageSize:
 		result.Warning = fmt.Sprintf("Scanned %d profiles without finding %d matching results (found %d). Try narrowing your filters or increasing limit.", maxScan, pageSize, len(result.Profiles))
 	}
 
 	result.Count = len(result.Profiles)
 	return result, nil
+}
+
+// availableTargetsHint renders a short ", available targets: a, b, c" clause
+// from the distinct targets seen during a scan, ordered by frequency then name
+// and capped so the message stays readable. It returns "" when no targets were
+// seen (nothing useful to suggest). The leading comma lets callers splice it
+// directly into a sentence.
+func availableTargetsHint(seen map[string]int) string {
+	if len(seen) == 0 {
+		return ""
+	}
+	type tc struct {
+		name  string
+		count int
+	}
+	targets := make([]tc, 0, len(seen))
+	for name, count := range seen {
+		targets = append(targets, tc{name, count})
+	}
+	sort.Slice(targets, func(i, j int) bool {
+		if targets[i].count != targets[j].count {
+			return targets[i].count > targets[j].count
+		}
+		return targets[i].name < targets[j].name
+	})
+	const maxList = 20
+	names := make([]string, 0, maxList)
+	for _, t := range targets {
+		if len(names) >= maxList {
+			break
+		}
+		names = append(names, t.name)
+	}
+	hint := ", available targets: " + strings.Join(names, ", ")
+	if len(targets) > maxList {
+		hint += fmt.Sprintf(" (+%d more)", len(targets)-maxList)
+	}
+	return hint
 }
 
 // ParseTimeFilters parses optional RFC3339 start/end filter strings into times,
@@ -169,6 +229,34 @@ func ParseTimeFilters(startTime, endTime string) (time.Time, time.Time, error) {
 	return startT, endT, nil
 }
 
+// normalizeIdent lowercases s and strips every non-alphanumeric rune. Service
+// names that differ only in separators or case then compare equal — e.g.
+// "crypto-steam", "Crypto_Steam" and "cryptosteam" all normalize to
+// "cryptosteam". Used for fuzzy target matching, since the Cloud Profiler Export
+// API exposes no server-side target filter (ListProfilesRequest has only
+// parent/page_size/page_token), so filtering is client-side and users rarely
+// type the deployment target string with the exact separators.
+func normalizeIdent(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// targetMatches reports whether metaTarget satisfies the user's target filter,
+// comparing case- and separator-insensitively and treating the filter as a
+// substring so partial service names ("steam") still discover profiles.
+func targetMatches(metaTarget, filter string) bool {
+	if filter == "" {
+		return true
+	}
+	return strings.Contains(normalizeIdent(metaTarget), normalizeIdent(filter))
+}
+
 // matchesProfileFilter returns whether the profile matches all filters.
 // parseErr is true when the profile was excluded due to an unparseable timestamp
 // (so the caller can track how many were excluded for user feedback).
@@ -176,7 +264,7 @@ func matchesProfileFilter(meta ProfileMeta, profileType, target string, startT, 
 	if profileType != "" && !strings.EqualFold(meta.ProfileType, profileType) {
 		return false, false
 	}
-	if target != "" && meta.Target != target {
+	if !targetMatches(meta.Target, target) {
 		return false, false
 	}
 	hasTimeFilter := !startT.IsZero() || !endT.IsZero()
@@ -221,7 +309,7 @@ func GetOrFetchProfile(
 		return nil, ProfileMeta{}, fmt.Errorf("diff profile %q not in cache (expired or evicted). Re-run profiler_compare to regenerate it", profileName)
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, profilerQueryTimeout)
+	ctx, cancel := context.WithTimeout(ctx, profilerScanTimeout)
 	defer cancel()
 
 	// The profile name from the API is "projects/{project}/profiles/{id}".
@@ -234,6 +322,7 @@ func GetOrFetchProfile(
 	// Scan up to maxScan profiles to find the one matching by name.
 	const maxScan = 10_000
 	var found *cloudprofilerpb.Profile
+	var foundMeta ProfileMeta
 	scanned := 0
 	exhausted := false
 
@@ -254,8 +343,14 @@ func GetOrFetchProfile(
 			return nil, ProfileMeta{}, fmt.Errorf("fetching profile: %w", err)
 		}
 		scanned++
-		if p.Name == resourceName || p.Name == profileName {
+		// Match by resource name (when the API populates it) or by the ID we
+		// surface in profiler_list — which is p.Name when non-empty, otherwise
+		// the synthetic ID from profileFromAPI. Computing the meta here lets
+		// synthetic IDs round-trip and avoids recomputing it once found.
+		meta := profileFromAPI(p)
+		if p.Name == resourceName || p.Name == profileName || meta.ProfileID == profileName {
 			found = p
+			foundMeta = meta
 			break
 		}
 	}
@@ -277,9 +372,8 @@ func GetOrFetchProfile(
 		return nil, ProfileMeta{}, fmt.Errorf("parsing pprof data: %w", err)
 	}
 
-	meta := profileFromAPI(found)
-	cache.Put(key, p, meta)
-	return p, meta, nil
+	cache.Put(key, p, foundMeta)
+	return p, foundMeta, nil
 }
 
 // TopFunctions computes a flat ranking of functions by self or cumulative cost.
@@ -742,10 +836,15 @@ func prefetchProfiles(
 			res.Last = fmt.Errorf("list API call failed: %w", err)
 			return res
 		}
-		if !wanted[p.Name] {
+		// Key on the ID surfaced by profiler_list (p.Name when non-empty,
+		// otherwise the synthetic ID) so the cache entry matches what
+		// GetOrFetchProfile later looks up. Keying on the raw p.Name would
+		// collide every empty-named profile onto a single entry.
+		meta := profileFromAPI(p)
+		if !wanted[meta.ProfileID] {
 			continue
 		}
-		key := profileCacheKey(project, p.Name)
+		key := profileCacheKey(project, meta.ProfileID)
 		if _, _, ok := cache.Get(key); ok {
 			remaining--
 			res.Cached++
@@ -753,17 +852,17 @@ func prefetchProfiles(
 		}
 		if len(p.ProfileBytes) == 0 {
 			res.Errors++
-			res.Last = fmt.Errorf("profile %s: empty profile bytes", p.Name)
+			res.Last = fmt.Errorf("profile %s: empty profile bytes", meta.ProfileID)
 			remaining-- // can't satisfy this entry; stop waiting for it
 			continue
 		}
 		parsed, err := profile.Parse(bytes.NewReader(p.ProfileBytes))
 		if err != nil {
 			res.Errors++
-			res.Last = fmt.Errorf("profile %s: pprof parse: %w", p.Name, err)
+			res.Last = fmt.Errorf("profile %s: pprof parse: %w", meta.ProfileID, err)
 			continue
 		}
-		cache.Put(key, parsed, profileFromAPI(p))
+		cache.Put(key, parsed, meta)
 		remaining--
 		res.Cached++
 	}
@@ -1086,7 +1185,38 @@ func profileFromAPI(p *cloudprofilerpb.Profile) ProfileMeta {
 	if len(p.Labels) > 0 {
 		meta.Labels = p.Labels
 	}
+	// The Cloud Profiler Export API leaves Profile.name empty for some
+	// deployments, so there is no server-assigned ID to address a specific
+	// profile with. Fall back to a stable ID derived from the profile's
+	// identifying metadata so profiler_top/peek/flamegraph can round-trip the
+	// value shown by profiler_list. Computed last, since it depends on the
+	// fields populated above.
+	if meta.ProfileID == "" {
+		meta.ProfileID = syntheticProfileID(meta)
+	}
 	return meta
+}
+
+// syntheticProfileID derives a compact, deterministic ID from the fields that
+// together identify a single profile: type, target, exact start time (nanosecond
+// precision), duration, and the collecting instance. Two profiles from the same
+// service can only share all of these if they are the same profile, so the hash
+// is unique enough to address one while staying stable across processes (a user
+// can copy it from one call and pass it to the next). The "syn:" prefix keeps it
+// distinct from real resource names and from the "diff:" namespace.
+func syntheticProfileID(m ProfileMeta) string {
+	h := sha256.New()
+	for _, field := range []string{
+		m.ProfileType,
+		m.Target,
+		m.StartTime,
+		m.Duration,
+		m.Labels["instance"],
+	} {
+		h.Write([]byte(field))
+		h.Write([]byte{0}) // separator so field boundaries can't be forged
+	}
+	return "syn:" + hex.EncodeToString(h.Sum(nil))[:16]
 }
 
 func validateValueIndex(p *profile.Profile, index int) error {

@@ -41,9 +41,11 @@ func RegisterProfilerTop(s *mcp.Server, d Deps) {
 
 		limit := clampLimit(in.Limit, 20, 50)
 
-		sendProgress(ctx, req, 0, 2, "Downloading profile...")
-
+		// Fetching an uncached profile scans the Export API and can run long on
+		// large projects; heartbeat progress keeps the client request alive.
+		stopHeartbeat := startProgressHeartbeat(ctx, req, "Downloading profile…")
 		p, meta, err := d.Profiler.GetOrFetchProfile(ctx, project, in.ProfileID)
+		stopHeartbeat()
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "profiler_top", fmt.Sprintf("fetch profile failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to fetch profile: %v", err)), nil, nil
