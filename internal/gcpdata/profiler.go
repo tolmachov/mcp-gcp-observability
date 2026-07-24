@@ -108,7 +108,7 @@ func ListProfiles(ctx context.Context, svc *cloudprofiler.ExportClient, params L
 		}
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil, fmt.Errorf("listing profiles: timed out after %d profiles (%d matches so far); try narrowing filters%s: %w", scanned, len(result.Profiles), availableTargetsHint(params.Target, targetsSeen), err)
+				return nil, fmt.Errorf("listing profiles: timed out after %d profiles (%d matches so far); try narrowing filters%s: %w", scanned, len(result.Profiles), availableTargetsHint(targetsSeen), err)
 			}
 			return nil, fmt.Errorf("listing profiles: %w", err)
 		}
@@ -159,7 +159,7 @@ func ListProfiles(ctx context.Context, svc *cloudprofiler.ExportClient, params L
 	case params.Target != "" && len(result.Profiles) == 0:
 		// A target filter matched nothing; surface what was available so the
 		// caller can correct a mistyped service name instead of guessing.
-		result.Warning = fmt.Sprintf("No profiles matched target %q%s.", params.Target, availableTargetsHint(params.Target, targetsSeen))
+		result.Warning = fmt.Sprintf("No profiles matched target %q%s.", params.Target, availableTargetsHint(targetsSeen))
 	case needsFilter && scanned >= maxScan && len(result.Profiles) < pageSize:
 		result.Warning = fmt.Sprintf("Scanned %d profiles without finding %d matching results (found %d). Try narrowing your filters or increasing limit.", maxScan, pageSize, len(result.Profiles))
 	}
@@ -173,7 +173,7 @@ func ListProfiles(ctx context.Context, svc *cloudprofiler.ExportClient, params L
 // and capped so the message stays readable. It returns "" when no targets were
 // seen (nothing useful to suggest). The leading comma lets callers splice it
 // directly into a sentence.
-func availableTargetsHint(filter string, seen map[string]int) string {
+func availableTargetsHint(seen map[string]int) string {
 	if len(seen) == 0 {
 		return ""
 	}

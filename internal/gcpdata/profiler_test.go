@@ -829,10 +829,10 @@ func TestTargetMatches(t *testing.T) {
 
 func TestAvailableTargetsHint(t *testing.T) {
 	t.Run("empty when nothing seen", func(t *testing.T) {
-		assert.Empty(t, availableTargetsHint("x", map[string]int{}))
+		assert.Empty(t, availableTargetsHint(map[string]int{}))
 	})
 	t.Run("orders by frequency then name", func(t *testing.T) {
-		hint := availableTargetsHint("x", map[string]int{"rare": 1, "common": 9, "mid": 5})
+		hint := availableTargetsHint(map[string]int{"rare": 1, "common": 9, "mid": 5})
 		assert.Equal(t, ", available targets: common, mid, rare", hint)
 	})
 	t.Run("caps the list and reports the remainder", func(t *testing.T) {
@@ -840,7 +840,7 @@ func TestAvailableTargetsHint(t *testing.T) {
 		for i := 0; i < 25; i++ {
 			seen[fmt.Sprintf("svc-%02d", i)] = 1
 		}
-		hint := availableTargetsHint("x", seen)
+		hint := availableTargetsHint(seen)
 		assert.Contains(t, hint, "(+5 more)")
 	})
 }
