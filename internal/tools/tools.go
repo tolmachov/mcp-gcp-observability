@@ -160,6 +160,45 @@ func sendProgress(ctx context.Context, req *mcp.CallToolRequest, progress, total
 	}
 }
 
+// startProgressHeartbeat emits a progress notification every interval until the
+// returned stop function is called, keeping the MCP client's request-timeout
+// timer from firing during a long-running operation (progress notifications
+// reset that timer). It is a no-op when the request carries no progress token.
+//
+// A single goroutine owns all sends, and stop() blocks until that goroutine has
+// exited, so no notification is ever sent after the handler returns. Handlers
+// that already stream real progress (e.g. profiler_trends) don't need this.
+func startProgressHeartbeat(ctx context.Context, req *mcp.CallToolRequest, message string) (stop func()) {
+	if req == nil || req.Params == nil || req.Params.GetProgressToken() == nil {
+		return func() {}
+	}
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		var ticks float64
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-done:
+				return
+			case <-ticker.C:
+				ticks++
+				// Total is unknown (0 = indeterminate); the incrementing
+				// Progress value is enough to reset the client's timer.
+				sendProgress(ctx, req, ticks, 0, message)
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-stopped
+	}
+}
+
 // mcpLog sends a structured log message via MCP logging notification.
 func mcpLog(ctx context.Context, req *mcp.CallToolRequest, level mcp.LoggingLevel, logger string, data any) {
 	if req == nil || req.Session == nil {

@@ -44,7 +44,11 @@ func RegisterProfilerList(s *mcp.Server, d Deps) {
 
 		pageSize := clampLimit(in.Limit, 20, 100)
 
-		sendProgress(ctx, req, 0, 1, "Listing profiles...")
+		// The Export API has no server-side filter, so a filtered list scans and
+		// downloads profiles page by page and can run long on large projects.
+		// Heartbeat progress keeps the client's request alive across the scan.
+		stop := startProgressHeartbeat(ctx, req, "Scanning Cloud Profiler profiles…")
+		defer stop()
 
 		result, err := d.Profiler.ListProfiles(ctx, gcpdata.ListProfilesParams{
 			Project:     project,

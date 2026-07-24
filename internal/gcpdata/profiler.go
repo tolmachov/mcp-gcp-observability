@@ -18,7 +18,14 @@ import (
 	"google.golang.org/api/iterator"
 )
 
-const profilerQueryTimeout = 60 * time.Second
+// profilerScanTimeout bounds a single paginated scan of the Cloud Profiler
+// Export API. Because that API returns profile bytes inline and offers no
+// server-side filter (see ListProfiles), scans must page through and download
+// many profiles client-side and can legitimately run well past a few seconds on
+// large projects. The old 60s cap cut those scans short; the tool layer keeps
+// the MCP client's request alive across this window with progress heartbeats,
+// and maxScan still bounds the total work examined.
+const profilerScanTimeout = 5 * time.Minute
 
 // validProfileTypes is the set of profile types supported by Cloud Profiler.
 var validProfileTypes = map[string]bool{
@@ -58,7 +65,7 @@ type ListProfilesParams struct {
 }
 
 func ListProfiles(ctx context.Context, svc *cloudprofiler.ExportClient, params ListProfilesParams) (*ProfileListResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, profilerQueryTimeout)
+	ctx, cancel := context.WithTimeout(ctx, profilerScanTimeout)
 	defer cancel()
 
 	project := params.Project
@@ -302,7 +309,7 @@ func GetOrFetchProfile(
 		return nil, ProfileMeta{}, fmt.Errorf("diff profile %q not in cache (expired or evicted). Re-run profiler_compare to regenerate it", profileName)
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, profilerQueryTimeout)
+	ctx, cancel := context.WithTimeout(ctx, profilerScanTimeout)
 	defer cancel()
 
 	// The profile name from the API is "projects/{project}/profiles/{id}".

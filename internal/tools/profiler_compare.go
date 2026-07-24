@@ -43,10 +43,13 @@ func RegisterProfilerCompare(s *mcp.Server, d Deps) {
 			return errResult(err.Error()), nil, nil
 		}
 
-		sendProgress(ctx, req, 0, 2, "Comparing profiles...")
-
+		// CompareProfiles fetches two profiles, each of which may scan the Export
+		// API and run long on large projects; heartbeat progress keeps the client
+		// request alive across both fetches.
+		stopHeartbeat := startProgressHeartbeat(ctx, req, "Comparing profiles…")
 		result, diffProfile, err := d.Profiler.CompareProfiles(ctx, project,
 			in.ProfileID, in.BaseProfileID, in.ValueIndex, 10)
+		stopHeartbeat()
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "profiler_compare", fmt.Sprintf("compare profiles failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to compare profiles: %v", err)), nil, nil

@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -376,4 +377,26 @@ func TestRegisterCoreToolCount(t *testing.T) {
 		gotNames = append(gotNames, tool.Name)
 	}
 	assert.ElementsMatch(t, wantTools, gotNames)
+}
+
+func TestStartProgressHeartbeat_NoToken(t *testing.T) {
+	// With no request (hence no progress token), the heartbeat must be an inert
+	// no-op: it spawns no goroutine and its stop function returns immediately
+	// without panicking or blocking.
+	stop := startProgressHeartbeat(context.Background(), nil, "scanning…")
+	require.NotNil(t, stop)
+
+	done := make(chan struct{})
+	go func() {
+		stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("stop() blocked for a no-token heartbeat")
+	}
+
+	// Calling stop again must stay safe.
+	assert.NotPanics(t, stop)
 }
