@@ -32,9 +32,9 @@ type LogsQuerier interface {
 
 // ErrorsQuerier abstracts Error Reporting operations used by tool handlers.
 type ErrorsQuerier interface {
-	ListErrors(ctx context.Context, project string, timeRangeHours, limit int, serviceFilter, versionFilter string) (*ErrorGroupList, error)
+	ListErrors(ctx context.Context, project string, window ErrorWindow, limit int, serviceFilter, versionFilter string) (*ErrorGroupList, error)
 	GetErrorGroup(ctx context.Context, project, groupID string, limit int, pageToken string) (*ErrorGroupDetail, error)
-	AnalyzeErrorTrends(ctx context.Context, project string, timeRangeHours, limit int, serviceFilter, versionFilter string) (*ErrorTrendList, error)
+	AnalyzeErrorTrends(ctx context.Context, project string, window ErrorWindow, limit int, serviceFilter, versionFilter string) (*ErrorTrendList, error)
 }
 
 // TraceQuerier abstracts Cloud Trace operations used by tool handlers.
@@ -49,14 +49,9 @@ type TraceQuerier interface {
 type ProfilerQuerier interface {
 	ListProfiles(ctx context.Context, params ListProfilesParams) (*ProfileListResult, error)
 	GetOrFetchProfile(ctx context.Context, project, profileName string) (*profile.Profile, ProfileMeta, error)
-	CompareProfiles(ctx context.Context, project, currentID, baseID string, valueIndex, topN int) (*ProfileCompareResult, *profile.Profile, error)
+	GetProfileOrDiff(ctx context.Context, project, profileName, baseProfileName string) (*profile.Profile, ProfileMeta, error)
+	CompareProfiles(ctx context.Context, project, currentID, baseID string, valueIndex, topN int) (*ProfileCompareResult, error)
 	ComputeTrends(ctx context.Context, params ComputeTrendsParams, progressFn func(current, total int, msg string)) (*ProfileTrendsResult, error)
-	// CacheProfile stores a profile (e.g. a computed diff) under (project,
-	// profileName) so a later GetOrFetchProfile for the same pair serves it
-	// without a download. Taking the pair rather than a pre-assembled key means
-	// the caller cannot derive the key differently from GetOrFetchProfile and
-	// silently miss.
-	CacheProfile(project, profileName string, p *profile.Profile, meta ProfileMeta)
 }
 
 // LoggingQuerier implements LogsQuerier against a real Cloud Logging client.
@@ -111,16 +106,16 @@ func NewErrorReportingQuerier(client *errorreporting.ErrorStatsClient) *ErrorRep
 	return &ErrorReportingQuerier{client: client}
 }
 
-func (q *ErrorReportingQuerier) ListErrors(ctx context.Context, project string, timeRangeHours, limit int, serviceFilter, versionFilter string) (*ErrorGroupList, error) {
-	return ListErrors(ctx, q.client, project, timeRangeHours, limit, serviceFilter, versionFilter)
+func (q *ErrorReportingQuerier) ListErrors(ctx context.Context, project string, window ErrorWindow, limit int, serviceFilter, versionFilter string) (*ErrorGroupList, error) {
+	return ListErrors(ctx, q.client, project, window, limit, serviceFilter, versionFilter)
 }
 
 func (q *ErrorReportingQuerier) GetErrorGroup(ctx context.Context, project, groupID string, limit int, pageToken string) (*ErrorGroupDetail, error) {
 	return GetErrorGroup(ctx, q.client, project, groupID, limit, pageToken)
 }
 
-func (q *ErrorReportingQuerier) AnalyzeErrorTrends(ctx context.Context, project string, timeRangeHours, limit int, serviceFilter, versionFilter string) (*ErrorTrendList, error) {
-	return AnalyzeErrorTrends(ctx, q.client, project, timeRangeHours, limit, serviceFilter, versionFilter)
+func (q *ErrorReportingQuerier) AnalyzeErrorTrends(ctx context.Context, project string, window ErrorWindow, limit int, serviceFilter, versionFilter string) (*ErrorTrendList, error) {
+	return AnalyzeErrorTrends(ctx, q.client, project, window, limit, serviceFilter, versionFilter)
 }
 
 // CloudTraceQuerier implements TraceQuerier against a real Cloud Trace client.
@@ -149,16 +144,18 @@ type CloudProfilerQuerier struct {
 	cache *ProfileCache
 }
 
-// NewCloudProfilerQuerier wraps a Cloud Profiler export client as a
-// ProfilerQuerier, creating an internal profile cache of the given size.
-func NewCloudProfilerQuerier(svc *cloudprofiler.ExportClient, cacheSize int) *CloudProfilerQuerier {
+// NewCloudProfilerQuerier wraps a Cloud Profiler export client and owns a
+// byte-bounded compressed-profile cache until Close.
+func NewCloudProfilerQuerier(svc *cloudprofiler.ExportClient) *CloudProfilerQuerier {
 	if svc == nil {
 		panic("NewCloudProfilerQuerier: svc must not be nil")
 	}
-	if cacheSize < 1 {
-		panic("NewCloudProfilerQuerier: cacheSize must be >= 1")
-	}
-	return &CloudProfilerQuerier{svc: svc, cache: NewProfileCache(cacheSize)}
+	return &CloudProfilerQuerier{svc: svc, cache: NewProfileCache()}
+}
+
+func (q *CloudProfilerQuerier) Close() error {
+	q.cache.Close()
+	return nil
 }
 
 func (q *CloudProfilerQuerier) ListProfiles(ctx context.Context, params ListProfilesParams) (*ProfileListResult, error) {
@@ -169,14 +166,14 @@ func (q *CloudProfilerQuerier) GetOrFetchProfile(ctx context.Context, project, p
 	return GetOrFetchProfile(ctx, q.svc, q.cache, project, profileName)
 }
 
-func (q *CloudProfilerQuerier) CompareProfiles(ctx context.Context, project, currentID, baseID string, valueIndex, topN int) (*ProfileCompareResult, *profile.Profile, error) {
+func (q *CloudProfilerQuerier) GetProfileOrDiff(ctx context.Context, project, profileName, baseProfileName string) (*profile.Profile, ProfileMeta, error) {
+	return GetProfileOrDiff(ctx, q.svc, q.cache, project, profileName, baseProfileName)
+}
+
+func (q *CloudProfilerQuerier) CompareProfiles(ctx context.Context, project, currentID, baseID string, valueIndex, topN int) (*ProfileCompareResult, error) {
 	return CompareProfiles(ctx, q.svc, q.cache, project, currentID, baseID, valueIndex, topN)
 }
 
 func (q *CloudProfilerQuerier) ComputeTrends(ctx context.Context, params ComputeTrendsParams, progressFn func(current, total int, msg string)) (*ProfileTrendsResult, error) {
 	return ComputeTrends(ctx, q.svc, q.cache, params, progressFn)
-}
-
-func (q *CloudProfilerQuerier) CacheProfile(project, profileName string, p *profile.Profile, meta ProfileMeta) {
-	q.cache.Put(profileCacheKey(project, profileName), p, meta)
 }

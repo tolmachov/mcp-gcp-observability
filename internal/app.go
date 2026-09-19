@@ -18,28 +18,20 @@ var Version = "dev"
 
 const serviceName = "mcp-gcp-observability"
 
-// authConfigFromFlags builds the auth configuration from CLI flags, or nil
-// when --auth is 'none'. Validation of the individual fields happens in
-// authsrv.Config.Validate at server startup.
-func authConfigFromFlags(cmd *cli.Command) (*authsrv.Config, error) {
-	switch authsrv.Mode(cmd.String(flagAuth)) {
-	case authsrv.ModeNone, "":
-		return nil, nil
-	case authsrv.ModeGoogle:
-		return &authsrv.Config{
-			IssuerURL:            cmd.String(flagAuthIssuerURL),
-			GoogleClientID:       cmd.String(flagAuthGoogleClientID),
-			GoogleClientSecret:   cmd.String(flagAuthGoogleClientSecret),
-			AllowedDomains:       cmd.StringSlice(flagAuthAllowedDomains),
-			RequireProjectAccess: cmd.String(flagAuthRequireProject),
-			TokenKeys:            cmd.StringSlice(flagAuthTokenKey),
-			ExtraRedirects:       cmd.StringSlice(flagAuthAllowedRedirects),
-			Scopes:               cmd.StringSlice(flagAuthGoogleScopes),
-			SkipConsent:          cmd.Bool(flagAuthSkipConsent),
-		}, nil
-	default:
-		return nil, fmt.Errorf("unsupported auth mode %q: must be %q or %q",
-			cmd.String(flagAuth), authsrv.ModeNone, authsrv.ModeGoogle)
+// authConfigFromFlags builds the mandatory HTTP OAuth configuration.
+func authConfigFromFlags(cmd *cli.Command, pinnedProject string) *authsrv.Config {
+	return &authsrv.Config{
+		IssuerURL:          cmd.String(flagAuthIssuerURL),
+		GoogleClientID:     cmd.String(flagAuthGoogleClientID),
+		GoogleClientSecret: cmd.String(flagAuthGoogleClientSecret),
+		AllowedDomains:     cmd.StringSlice(flagAuthAllowedDomains),
+		PinnedProject:      pinnedProject,
+		StateProject:       cmd.String(flagAuthStateProject),
+		StateDatabase:      cmd.String(flagAuthStateDatabase),
+		TokenKeys:          cmd.StringSlice(flagAuthTokenKey),
+		ExtraRedirects:     cmd.StringSlice(flagAuthAllowedRedirects),
+		Scopes:             cmd.StringSlice(flagAuthGoogleScopes),
+		SkipConsent:        cmd.Bool(flagAuthSkipConsent),
 	}
 }
 
@@ -58,19 +50,17 @@ func New(in io.Reader, out, errOut io.Writer) *cli.Command {
 				Usage: "Run the MCP server",
 				Flags: []cli.Flag{
 					gcpDefaultProjectFlag(),
-					logsMaxLimitFlag(),
-					errorsMaxLimitFlag(),
 					dnsServerFlag(),
 					metricsRegistryFlag(),
 					transportFlag(),
 					httpAddrFlag(),
 					variantFlag(),
-					authFlag(),
 					authIssuerURLFlag(),
 					authGoogleClientIDFlag(),
 					authGoogleClientSecretFlag(),
 					authAllowedDomainsFlag(),
-					authRequireProjectFlag(),
+					authStateProjectFlag(),
+					authStateDatabaseFlag(),
 					authTokenKeyFlag(),
 					authAllowedRedirectsFlag(),
 					authGoogleScopesFlag(),
@@ -79,26 +69,12 @@ func New(in io.Reader, out, errOut io.Writer) *cli.Command {
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					cfg := &gcpclient.Config{
 						DefaultProject:      cmd.String(flagGCPDefaultProject),
-						LogsMaxLimit:        cmd.Int(flagLogsMaxLimit),
-						ErrorsMaxLimit:      cmd.Int(flagErrorsMaxLimit),
 						DNSServer:           cmd.String(flagDNSServer),
 						MetricsRegistryFile: cmd.String(flagMetricsRegistry),
 					}
-					authCfg, err := authConfigFromFlags(cmd)
-					if err != nil {
-						return err
-					}
-					switch {
-					case authCfg == nil && cfg.DefaultProject == "":
-						return fmt.Errorf("GCP_DEFAULT_PROJECT is required (it is optional only with --auth google, where each user chooses a project at login)")
-					case authCfg != nil && cfg.DefaultProject == "":
-						// No pinned project: users pick one on the consent
-						// page; access to the choice is verified at login.
-						authCfg.AllowProjectChoice = true
-					case authCfg != nil && authCfg.RequireProjectAccess == "":
-						// Pinned project: the server works only with it, so
-						// logging in requires IAM access to it.
-						authCfg.RequireProjectAccess = cfg.DefaultProject
+					var authCfg *authsrv.Config
+					if server.Transport(cmd.String(flagTransport)) == server.TransportHTTP {
+						authCfg = authConfigFromFlags(cmd, cfg.DefaultProject)
 					}
 					srv, err := server.New(cfg, Version, cmd.Root().Reader, cmd.Root().Writer, cmd.Root().ErrWriter)
 					if err != nil {

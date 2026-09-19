@@ -1045,21 +1045,20 @@ func TestProfilerCompare(t *testing.T) {
 	t.Logf("profiler_compare result: %s", text[:min(len(text), 500)])
 
 	var parsed struct {
-		DiffID  string `json:"diff_id"`
 		Summary struct {
 			TotalDeltaPct float64 `json:"total_delta_pct"`
 		} `json:"summary"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(text), &parsed))
-	assert.NotEmpty(t, parsed.DiffID, "diff_id must not be empty")
-	t.Logf("diff_id=%s total_delta_pct=%.2f", parsed.DiffID, parsed.Summary.TotalDeltaPct)
+	t.Logf("total_delta_pct=%.2f", parsed.Summary.TotalDeltaPct)
 
-	// Verify diff_id is usable with profiler_top.
+	// Verify request-local diff recomputation is usable from the two immutable source IDs.
 	topResult := callTool(t, session, ctx, "profiler_top", map[string]any{
-		"profile_id": parsed.DiffID,
-		"limit":      3,
+		"profile_id":      profileID,
+		"base_profile_id": baseProfileID,
+		"limit":           3,
 	})
-	assert.False(t, topResult.IsError, "profiler_top with diff_id must not return an error")
+	assert.False(t, topResult.IsError, "profiler_top with source-profile diff must not return an error")
 }
 
 func TestProfilerTrends(t *testing.T) {

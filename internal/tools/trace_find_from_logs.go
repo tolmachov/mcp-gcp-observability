@@ -25,18 +25,19 @@ func RegisterTraceFindFromLogs(s *mcp.Server, d Deps) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
+		InputSchema:  projectInputSchema[TraceFindFromLogsInput](d.Project),
 		OutputSchema: outputSchemaFor[gcpdata.TraceFromLogsList](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in TraceFindFromLogsInput) (*mcp.CallToolResult, *gcpdata.TraceFromLogsList, error) {
 		if in.Filter == "" {
 			return errResult("filter is required"), nil, nil
 		}
 
-		project, err := resolveProject(in.ProjectID, d.DefaultProject)
+		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
 
-		scanLimit := clampLimit(in.ScanLimit, 500, d.LogsMaxLimit)
+		scanLimit := clampLimit(in.ScanLimit, LogsHardLimit, LogsHardLimit)
 		resultLimit := clampLimit(in.Limit, 20, maxTraceFindResults)
 
 		timeFilter, err := buildTimeFilter(in.TimeFilterInput)

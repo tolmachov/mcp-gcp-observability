@@ -16,7 +16,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26'
+          go-version-file: go.mod
           cache: true
 
       - name: Build
@@ -31,6 +31,48 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Deployment regression tests (mock GCP)
+        run: make test-deploy
+
+      - name: Race test
+        run: go test -race ./...
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - uses: google-github-actions/setup-gcloud@v3
+        with:
+          install_components: cloud-firestore-emulator
+
+      - name: Firestore transaction tests
+        shell: bash
+        run: |
+          java -version
+          gcloud emulators firestore start --host-port=127.0.0.1:8081 --quiet >"$RUNNER_TEMP/firestore.log" 2>&1 &
+          emulator_pid=$!
+          cleanup() {
+            status=$?
+            if (( status != 0 )); then
+              cat "$RUNNER_TEMP/firestore.log"
+            fi
+            kill "$emulator_pid" 2>/dev/null || true
+            wait "$emulator_pid" 2>/dev/null || true
+            exit "$status"
+          }
+          trap cleanup EXIT
+          for _ in {1..30}; do
+            nc -z 127.0.0.1 8081 && break
+            kill -0 "$emulator_pid" 2>/dev/null || exit 1
+            sleep 1
+          done
+          nc -z 127.0.0.1 8081
+          FIRESTORE_EMULATOR_HOST=127.0.0.1:8081 go test ./internal/authsrv -run TestFirestoreStoreEmulator -count=1
+
+      - name: Vulnerability scan
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -38,7 +80,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26'
+          go-version-file: go.mod
           cache: true
 
       # Pin golangci-lint to a v2 release built with Go 1.26. "latest" on the

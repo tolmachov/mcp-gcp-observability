@@ -174,7 +174,7 @@ Input
 
 {
   "project_id": "string",
-  "time_range_hours": 24,
+  "window": "24h",
   "limit": 50,
   "service_filter": "string",
   "version_filter": "string"
@@ -345,8 +345,7 @@ Security
 7. Configuration
 
 GCP_DEFAULT_PROJECT=your-observability-project
-LOGS_MAX_LIMIT=1000
-ERRORS_MAX_LIMIT=100
+# Hard limits are part of the public contract: 200 log entries and 100 errors.
 
 
 ⸻
@@ -427,4 +426,3 @@ gcp-mcp/
 	•	README
 	•	config examples
 	•	tests
-

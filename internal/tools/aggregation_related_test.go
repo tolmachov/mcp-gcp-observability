@@ -67,7 +67,6 @@ func testRelatedExplicitTwoStage(t *testing.T) {
 
 	_, err := ts.callTool(ctx, "metrics_related", map[string]any{
 		"metric_type": primary,
-		"project_id":  "test-project",
 		"window":      "15m",
 	})
 	require.NoError(t, err, "callTool")

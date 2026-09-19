@@ -62,7 +62,7 @@ func RegisterMetricsRelated(s *mcp.Server, d Deps) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
-		InputSchema: inputSchemaWithEnums[MetricsRelatedInput](
+		InputSchema: projectInputSchema[MetricsRelatedInput](d.Project,
 			enumPatch{"window", enumWindow},
 		),
 		OutputSchema: outputSchemaFor[RelatedSignalsResult](),
@@ -70,7 +70,7 @@ func RegisterMetricsRelated(s *mcp.Server, d Deps) {
 		if in.MetricType == "" {
 			return errResult("metric_type is required"), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, d.DefaultProject)
+		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -244,6 +244,7 @@ func RegisterMetricsRelated(s *mcp.Server, d Deps) {
 					Classification:           safeClassification(f.Classification),
 					ClassificationConfidence: string(f.Confidence),
 					Anomaly:                  anomaly,
+					NonFinitePoints:          currentWarnings.NonFinitePoints + baselineWarnings.NonFinitePoints,
 				})
 				completed++
 				progress := completed
@@ -302,6 +303,7 @@ type RelatedSignal struct {
 	Classification           string  `json:"classification"`
 	ClassificationConfidence string  `json:"classification_confidence"`
 	Anomaly                  bool    `json:"anomaly"`
+	NonFinitePoints          int     `json:"non_finite_points"`
 }
 
 type SkippedSignal struct {

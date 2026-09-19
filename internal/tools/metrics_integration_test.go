@@ -2201,7 +2201,7 @@ func TestSnapshotIntegration_UsesDefaultProject(t *testing.T) {
 	}
 }
 
-func TestSnapshotIntegration_OverridesProject(t *testing.T) {
+func TestSnapshotIntegration_PinnedProjectRejectsOverride(t *testing.T) {
 	reg := loadTestRegistry(t, testRegistryYAML)
 	fq := newFakeQuerier()
 	fq.metricKinds["compute.googleapis.com/instance/cpu/utilization"] = "GAUGE"
@@ -2221,15 +2221,8 @@ func TestSnapshotIntegration_OverridesProject(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	var snap MetricSnapshotResult
-	parseResult(t, result, &snap)
-
-	if len(fq.queryLog) == 0 {
-		t.Fatal("expected queries to be logged")
-	}
-	if fq.queryLog[0].Project != "override-proj" {
-		assert.Equal(t, "override-proj", fq.queryLog[0].Project)
-	}
+	expectError(t, result, "project_id")
+	assert.Empty(t, fq.queryLog, "a rejected project override must never reach GCP")
 }
 
 // --- error propagation tests ---

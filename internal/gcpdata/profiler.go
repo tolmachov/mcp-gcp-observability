@@ -2,11 +2,15 @@ package gcpdata
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"sort"
 	"strings"
@@ -25,7 +29,12 @@ import (
 // large projects. The old 60s cap cut those scans short; the tool layer keeps
 // the MCP client's request alive across this window with progress heartbeats,
 // and maxScan still bounds the total work examined.
-const profilerScanTimeout = 5 * time.Minute
+const profilerScanTimeout = 8 * time.Minute
+
+const (
+	maxCompressedProfileBytes   = 16 << 20
+	maxDecompressedProfileBytes = 64 << 20
+)
 
 // validProfileTypes is the set of profile types supported by Cloud Profiler.
 var validProfileTypes = map[string]bool{
@@ -64,107 +73,133 @@ type ListProfilesParams struct {
 	PageToken   string
 }
 
+type profileCursor struct {
+	Version     int    `json:"v"`
+	APIToken    string `json:"p,omitempty"`
+	Offset      int    `json:"o,omitempty"`
+	Fingerprint string `json:"f"`
+}
+
+const profileCursorPrefix = "mcp_pc_v2_"
+
+func profileFilterFingerprint(params ListProfilesParams) string {
+	payload := strings.Join([]string{params.Project, strings.ToUpper(params.ProfileType), normalizeIdent(params.Target), params.StartTime.UTC().Format(time.RFC3339Nano), params.EndTime.UTC().Format(time.RFC3339Nano)}, "\x00")
+	sum := sha256.Sum256([]byte(payload))
+	return hex.EncodeToString(sum[:16])
+}
+
+func encodeProfileCursor(c profileCursor) (string, error) {
+	b, err := json.Marshal(c) // #nosec G117 -- APIToken is an opaque pagination position, not a credential.
+	if err != nil {
+		return "", fmt.Errorf("encoding profiler cursor: %w", err)
+	}
+	return profileCursorPrefix + base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+func decodeProfileCursor(raw, fingerprint string) (profileCursor, error) {
+	if raw == "" {
+		return profileCursor{Version: 2, Fingerprint: fingerprint}, nil
+	}
+	raw, ok := strings.CutPrefix(raw, profileCursorPrefix)
+	if !ok {
+		return profileCursor{}, fmt.Errorf("invalid profiler cursor")
+	}
+	b, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return profileCursor{}, fmt.Errorf("invalid profiler cursor")
+	}
+	var c profileCursor
+	if err := json.Unmarshal(b, &c); err != nil || c.Version != 2 || c.Offset < 0 || c.Fingerprint != fingerprint {
+		return profileCursor{}, fmt.Errorf("invalid profiler cursor or cursor/filter mismatch")
+	}
+	return c, nil
+}
+
+// ListProfiles advances through the Export API page by page. Its opaque cursor
+// can resume inside an API page and is bound to the exact filter set.
 func ListProfiles(ctx context.Context, svc *cloudprofiler.ExportClient, params ListProfilesParams) (*ProfileListResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, profilerScanTimeout)
 	defer cancel()
-
-	project := params.Project
-	pageSize := params.PageSize
-	startT, endT := params.StartTime, params.EndTime
-	needsFilter := params.ProfileType != "" || params.Target != "" || !startT.IsZero() || !endT.IsZero()
-
-	result := &ProfileListResult{
-		Summary: ProfileSummary{
-			CountByType:   make(map[string]int),
-			CountByTarget: make(map[string]int),
-		},
+	fingerprint := profileFilterFingerprint(params)
+	cursor, err := decodeProfileCursor(params.PageToken, fingerprint)
+	if err != nil {
+		return nil, err
 	}
-
-	// When filtering client-side, request large pages to reduce round-trips.
-	apiPageSize := safeInt32(pageSize)
-	if needsFilter && apiPageSize < 1000 {
-		apiPageSize = 1000
-	}
-
-	// maxScan caps total profiles examined to bound latency.
+	result := &ProfileListResult{Summary: ProfileSummary{CountByType: map[string]int{}, CountByTarget: map[string]int{}}}
+	targetsSeen := map[string]int{}
 	const maxScan = 20_000
+	pageStart := cursor.APIToken
+	offset := cursor.Offset
+	resumeToken, resumeOffset := pageStart, offset
 	scanned := 0
-
-	// Track every distinct deployment target encountered so a target filter that
-	// matches nothing can report what was actually available — the common cause
-	// is a slightly-off service name (e.g. "crypto-steam" vs "cryptosteam").
-	targetsSeen := make(map[string]int)
-
-	it := svc.ListProfiles(ctx, &cloudprofilerpb.ListProfilesRequest{
-		Parent:    "projects/" + project,
-		PageSize:  apiPageSize,
-		PageToken: params.PageToken,
-	})
-
 	for scanned < maxScan {
-		p, err := it.Next()
-		if errors.Is(err, iterator.Done) {
-			break
+		it := svc.ListProfiles(ctx, &cloudprofilerpb.ListProfilesRequest{Parent: "projects/" + params.Project, PageSize: 1000, PageToken: pageStart})
+		pager := iterator.NewPager(it, 1000, pageStart)
+		var page []*cloudprofilerpb.Profile
+		nextToken, pageErr := pager.NextPage(&page)
+		if pageErr != nil {
+			return nil, fmt.Errorf("listing profiles: %w", pageErr)
 		}
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil, fmt.Errorf("listing profiles: timed out after %d profiles (%d matches so far); try narrowing filters%s: %w", scanned, len(result.Profiles), availableTargetsHint(targetsSeen), err)
+		if offset > len(page) {
+			return nil, fmt.Errorf("invalid profiler cursor offset")
+		}
+		for i := offset; i < len(page) && scanned < maxScan; i++ {
+			scanned++
+			if i+1 < len(page) {
+				resumeToken, resumeOffset = pageStart, i+1
+			} else {
+				resumeToken, resumeOffset = nextToken, 0
 			}
-			return nil, fmt.Errorf("listing profiles: %w", err)
-		}
-		scanned++
-
-		meta := profileFromAPI(p)
-		if meta.Target != "" {
-			targetsSeen[meta.Target]++
-		}
-		ok, wasParseErr := matchesProfileFilter(meta, params.ProfileType, params.Target, startT, endT)
-		if !ok {
-			if wasParseErr {
+			meta := profileFromAPI(page[i])
+			if meta.Target != "" {
+				targetsSeen[meta.Target]++
+			}
+			match, parseErr := matchesProfileFilter(meta, params.ProfileType, params.Target, params.StartTime, params.EndTime)
+			if parseErr {
 				result.ExcludedCount++
 			}
-			continue
-		}
-
-		result.Profiles = append(result.Profiles, meta)
-		result.Summary.CountByType[meta.ProfileType]++
-		result.Summary.CountByTarget[meta.Target]++
-
-		// Trim to exactly pageSize to honor the caller's contract.
-		if len(result.Profiles) >= pageSize {
-			result.Profiles = result.Profiles[:pageSize]
-			// Recompute summary for trimmed set.
-			result.Summary.CountByType = make(map[string]int)
-			result.Summary.CountByTarget = make(map[string]int)
-			for _, m := range result.Profiles {
-				result.Summary.CountByType[m.ProfileType]++
-				result.Summary.CountByTarget[m.Target]++
+			if !match {
+				continue
 			}
-			// Surface a resumption token only when no client-side filtering is
-			// active. In that case apiPageSize == pageSize, so the iterator page
-			// boundary aligns with the result set and the token is safe to use.
-			// With client-side filtering the iterator has already buffered more
-			// profiles past the returned set; it.PageInfo().Token points to the
-			// next API page boundary, not to the next item, so using it would
-			// silently skip the remaining items in the current buffer.
-			if !needsFilter {
-				result.NextPageToken = it.PageInfo().Token
+			result.Profiles = append(result.Profiles, meta)
+			result.Summary.CountByType[meta.ProfileType]++
+			result.Summary.CountByTarget[meta.Target]++
+			if len(result.Profiles) == params.PageSize {
+				next := profileCursor{Version: 2, Fingerprint: fingerprint}
+				if i+1 < len(page) {
+					next.APIToken, next.Offset = pageStart, i+1
+				} else if nextToken != "" {
+					next.APIToken = nextToken
+				} else {
+					result.Count = len(result.Profiles)
+					result.Truncated = false
+					return result, nil
+				}
+				result.NextPageToken, err = encodeProfileCursor(next)
+				if err != nil {
+					return nil, err
+				}
+				result.Count = len(result.Profiles)
+				result.Truncated = true
+				return result, nil
 			}
-			result.Count = len(result.Profiles)
-			return result, nil
 		}
+		if nextToken == "" {
+			break
+		}
+		pageStart, offset = nextToken, 0
 	}
-
-	switch {
-	case params.Target != "" && len(result.Profiles) == 0:
-		// A target filter matched nothing; surface what was available so the
-		// caller can correct a mistyped service name instead of guessing.
-		result.Warning = fmt.Sprintf("No profiles matched target %q%s.", params.Target, availableTargetsHint(targetsSeen))
-	case needsFilter && scanned >= maxScan && len(result.Profiles) < pageSize:
-		result.Warning = fmt.Sprintf("Scanned %d profiles without finding %d matching results (found %d). Try narrowing your filters or increasing limit.", maxScan, pageSize, len(result.Profiles))
-	}
-
 	result.Count = len(result.Profiles)
+	result.Truncated = scanned >= maxScan && (resumeToken != "" || resumeOffset != 0)
+	if result.Truncated {
+		result.NextPageToken, err = encodeProfileCursor(profileCursor{Version: 2, APIToken: resumeToken, Offset: resumeOffset, Fingerprint: fingerprint})
+		if err != nil {
+			return nil, err
+		}
+		result.Warning = fmt.Sprintf("Scan stopped at the %d-profile safety limit; continue with next_page_token.", maxScan)
+	} else if params.Target != "" && result.Count == 0 {
+		result.Warning = fmt.Sprintf("No profiles matched target %q%s.", params.Target, availableTargetsHint(targetsSeen))
+	}
 	return result, nil
 }
 
@@ -299,14 +334,12 @@ func GetOrFetchProfile(
 	project, profileName string,
 ) (*profile.Profile, ProfileMeta, error) {
 	key := profileCacheKey(project, profileName)
-	if p, meta, ok := cache.Get(key); ok {
+	if data, meta, ok := cache.Get(key); ok {
+		p, err := parseSourceProfile(data)
+		if err != nil {
+			return nil, ProfileMeta{}, fmt.Errorf("parsing cached pprof data: %w", err)
+		}
 		return p, meta, nil
-	}
-
-	// Diff profiles only exist in the in-memory cache. If we missed,
-	// the user needs to re-run profiler_compare to regenerate.
-	if strings.HasPrefix(profileName, "diff:") {
-		return nil, ProfileMeta{}, fmt.Errorf("diff profile %q not in cache (expired or evicted). Re-run profiler_compare to regenerate it", profileName)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, profilerScanTimeout)
@@ -365,15 +398,44 @@ func GetOrFetchProfile(
 	if len(found.ProfileBytes) == 0 {
 		return nil, ProfileMeta{}, fmt.Errorf("profile %q has no profile bytes", profileName)
 	}
+	if len(found.ProfileBytes) > maxCompressedProfileBytes {
+		return nil, ProfileMeta{}, fmt.Errorf("compressed profile is %d bytes; maximum is %d", len(found.ProfileBytes), maxCompressedProfileBytes)
+	}
 
-	// ProfileBytes is gzip-compressed pprof proto; profile.Parse handles decompression.
-	p, err := profile.Parse(bytes.NewReader(found.ProfileBytes))
+	p, err := parseSourceProfile(found.ProfileBytes)
 	if err != nil {
 		return nil, ProfileMeta{}, fmt.Errorf("parsing pprof data: %w", err)
 	}
 
-	cache.Put(key, p, foundMeta)
+	cache.Put(key, found.ProfileBytes, foundMeta)
 	return p, foundMeta, nil
+}
+
+func parseSourceProfile(data []byte) (*profile.Profile, error) {
+	if len(data) > maxCompressedProfileBytes {
+		return nil, fmt.Errorf("compressed profile is %d bytes; maximum is %d", len(data), maxCompressedProfileBytes)
+	}
+	var reader io.Reader = bytes.NewReader(data)
+	if len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b {
+		gz, err := gzip.NewReader(reader)
+		if err != nil {
+			return nil, fmt.Errorf("opening compressed profile: %w", err)
+		}
+		defer func() { _ = gz.Close() }()
+		reader = gz
+	}
+	raw, err := io.ReadAll(io.LimitReader(reader, maxDecompressedProfileBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading profile data: %w", err)
+	}
+	if len(raw) > maxDecompressedProfileBytes {
+		return nil, fmt.Errorf("decompressed profile exceeds %d bytes", maxDecompressedProfileBytes)
+	}
+	p, err := profile.ParseData(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parsing profile data: %w", err)
+	}
+	return p, nil
 }
 
 // TopFunctions computes a flat ranking of functions by self or cumulative cost.
@@ -664,38 +726,38 @@ func CompareProfiles(
 	cache *ProfileCache,
 	project, currentID, baseID string,
 	valueIndex, topN int,
-) (*ProfileCompareResult, *profile.Profile, error) {
+) (*ProfileCompareResult, error) {
 	currentProfile, currentMeta, err := GetOrFetchProfile(ctx, svc, cache, project, currentID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("fetching current profile: %w", err)
+		return nil, fmt.Errorf("fetching current profile: %w", err)
 	}
 	baseProfile, baseMeta, err := GetOrFetchProfile(ctx, svc, cache, project, baseID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("fetching base profile: %w", err)
+		return nil, fmt.Errorf("fetching base profile: %w", err)
 	}
 
 	if err := validateValueIndex(currentProfile, valueIndex); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if err := validateValueIndex(baseProfile, valueIndex); err != nil {
-		return nil, nil, fmt.Errorf("base profile: %w", err)
+		return nil, fmt.Errorf("base profile: %w", err)
 	}
 
 	// Validate that both profiles have compatible sample types at the given index.
 	curVT := currentProfile.SampleType[valueIndex]
 	baseVT := baseProfile.SampleType[valueIndex]
 	if curVT.Type != baseVT.Type || curVT.Unit != baseVT.Unit {
-		return nil, nil, fmt.Errorf("incompatible sample types at value_index %d: current has %s/%s but base has %s/%s",
+		return nil, fmt.Errorf("incompatible sample types at value_index %d: current has %s/%s but base has %s/%s",
 			valueIndex, curVT.Type, curVT.Unit, baseVT.Type, baseVT.Unit)
 	}
 
 	currentTop, currentTotal, _, err := TopFunctions(currentProfile, valueIndex, 0, "cumulative", "")
 	if err != nil {
-		return nil, nil, fmt.Errorf("analyzing current profile: %w", err)
+		return nil, fmt.Errorf("analyzing current profile: %w", err)
 	}
 	baseTop, baseTotal, _, err := TopFunctions(baseProfile, valueIndex, 0, "cumulative", "")
 	if err != nil {
-		return nil, nil, fmt.Errorf("analyzing base profile: %w", err)
+		return nil, fmt.Errorf("analyzing base profile: %w", err)
 	}
 
 	// Build delta map.
@@ -764,19 +826,27 @@ func CompareProfiles(
 		Truncated:       truncated,
 	}
 	if truncated {
-		result.TruncationHint = fmt.Sprintf("Showing top %d regressions and improvements. Use profiler_top with the diff_id for full function ranking.", topN)
+		result.TruncationHint = fmt.Sprintf("Showing top %d regressions and improvements. Pass both profile_id and base_profile_id to profiler_top for the complete diff ranking.", topN)
 	}
+	return result, nil
+}
 
-	// Build a diff profile for use with top/peek/flamegraph.
-	diffProfile, err := buildDiffProfile(currentProfile, baseProfile)
+// GetProfileOrDiff computes a request-local diff when baseID is present.
+func GetProfileOrDiff(ctx context.Context, svc *cloudprofiler.ExportClient, cache *ProfileCache, project, profileID, baseID string) (*profile.Profile, ProfileMeta, error) {
+	current, meta, err := GetOrFetchProfile(ctx, svc, cache, project, profileID)
+	if err != nil || baseID == "" {
+		return current, meta, err
+	}
+	base, _, err := GetOrFetchProfile(ctx, svc, cache, project, baseID)
 	if err != nil {
-		// Return comparison stats (still useful) but no diff profile.
-		result.Warning = fmt.Sprintf("Comparison stats are valid but diff profile could not be built: %v. Use profiler_top on each profile individually to drill down.", err)
-		return result, nil, nil
+		return nil, ProfileMeta{}, fmt.Errorf("fetching base profile: %w", err)
 	}
-
-	result.DiffID = fmt.Sprintf("diff:%s:%s", currentID, baseID)
-	return result, diffProfile, nil
+	diff, err := buildDiffProfile(current, base)
+	if err != nil {
+		return nil, ProfileMeta{}, fmt.Errorf("building diff profile: %w", err)
+	}
+	meta.IsDiff = true
+	return diff, meta, nil
 }
 
 // buildDiffProfile creates a diff profile by combining current and negated base samples.
@@ -856,13 +926,17 @@ func prefetchProfiles(
 			remaining-- // can't satisfy this entry; stop waiting for it
 			continue
 		}
-		parsed, err := profile.Parse(bytes.NewReader(p.ProfileBytes))
+		_, err = parseSourceProfile(p.ProfileBytes)
 		if err != nil {
 			res.Errors++
 			res.Last = fmt.Errorf("profile %s: pprof parse: %w", meta.ProfileID, err)
 			continue
 		}
-		cache.Put(key, parsed, meta)
+		if !cache.Put(key, p.ProfileBytes, meta) {
+			res.Errors++
+			res.Last = fmt.Errorf("profile %s: cache byte budget exhausted", meta.ProfileID)
+			continue
+		}
 		remaining--
 		res.Cached++
 	}
@@ -1203,7 +1277,7 @@ func profileFromAPI(p *cloudprofilerpb.Profile) ProfileMeta {
 // service can only share all of these if they are the same profile, so the hash
 // is unique enough to address one while staying stable across processes (a user
 // can copy it from one call and pass it to the next). The "syn:" prefix keeps it
-// distinct from real resource names and from the "diff:" namespace.
+// distinct from real resource names.
 func syntheticProfileID(m ProfileMeta) string {
 	h := sha256.New()
 	for _, field := range []string{

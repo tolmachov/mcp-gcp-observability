@@ -16,30 +16,32 @@ func RegisterErrorsList(s *mcp.Server, d Deps) {
 		Description: applyMode(d.Mode, "List error groups from Google Cloud Error Reporting, sorted by occurrence count. "+
 			"Returns aggregated errors with group IDs, not individual log entries. "+
 			"Use errors_get with a group_id from these results to see individual error events and stack traces. "+
-			"Time range is specified via time_range_hours only. "+
-			"Note: Error Reporting supports only lookback periods ending at now (1h, 6h, 1d, 1w, 30d), not arbitrary historical start/end timestamps."),
+			"The window is one exact Error Reporting period ending at now: 1h, 6h, 24h, 7d, or 30d."),
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
+		InputSchema: projectInputSchema[ErrorsListInput](d.Project,
+			enumPatch{"window", enumErrorWindow},
+		),
 		OutputSchema: outputSchemaFor[gcpdata.ErrorGroupList](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ErrorsListInput) (*mcp.CallToolResult, *gcpdata.ErrorGroupList, error) {
-		project, err := resolveProject(in.ProjectID, d.DefaultProject)
+		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
 
-		timeRangeHours, err := resolveErrorsTimeRange(in)
+		window, err := resolveErrorsWindow(in.Window)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
 
-		limit := clampLimit(in.Limit, 50, d.ErrorsMaxLimit)
+		limit := clampLimit(in.Limit, 50, ErrorsHardLimit)
 
 		sendProgress(ctx, req, 0, 1, "Listing error groups...")
 
-		result, err := d.Errors.ListErrors(ctx, project, timeRangeHours, limit, in.ServiceFilter, in.VersionFilter)
+		result, err := d.Errors.ListErrors(ctx, project, window, limit, in.ServiceFilter, in.VersionFilter)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "errors_list", fmt.Sprintf("list errors failed for project %s: %v", project, err))
 			return errResult(fmt.Sprintf("Failed to list errors: %v. Verify the project_id and that Error Reporting API is enabled.", err)), nil, nil
@@ -50,13 +52,13 @@ func RegisterErrorsList(s *mcp.Server, d Deps) {
 }
 
 // resolveErrorsTimeRange returns the lookback range in hours for Error Reporting.
-func resolveErrorsTimeRange(in ErrorsListInput) (int, error) {
-	hours := in.TimeRangeHours
-	if hours == 0 {
-		hours = 24
+func resolveErrorsWindow(raw string) (gcpdata.ErrorWindow, error) {
+	if raw == "" {
+		return gcpdata.ErrorWindow24H, nil
 	}
-	if hours < 1 || hours > 720 {
-		return 0, fmt.Errorf("time_range_hours must be between 1 and 720, got %d", hours)
+	w := gcpdata.ErrorWindow(raw)
+	if _, ok := w.Spec(); !ok {
+		return "", fmt.Errorf("invalid window %q: must be one of 1h, 6h, 24h, 7d, 30d", raw)
 	}
-	return hours, nil
+	return w, nil
 }

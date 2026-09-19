@@ -29,8 +29,7 @@ func TestLogsQueryHandler(t *testing.T) {
 				gotProject, gotFilter, gotLimit, gotOrder = project, filter, limit, order
 				return &gcpdata.LogQueryResult{Count: 1, Entries: []gcpdata.LogEntry{{}}}, nil
 			}},
-			DefaultProject: "default-proj",
-			LogsMaxLimit:   1000,
+			Project: MustProjectPolicy("default-proj"),
 		}
 		ts := newTestToolServer(t)
 		RegisterLogsQuery(ts.server, deps)
@@ -51,8 +50,7 @@ func TestLogsQueryHandler(t *testing.T) {
 			Logs: fakeLogs{queryLogs: func(context.Context, string, string, int, string, string) (*gcpdata.LogQueryResult, error) {
 				return nil, errors.New("boom")
 			}},
-			DefaultProject: "p",
-			LogsMaxLimit:   1000,
+			Project: MustProjectPolicy("test-project"),
 		}
 		ts := newTestToolServer(t)
 		RegisterLogsQuery(ts.server, deps)
@@ -71,8 +69,7 @@ func TestLogsQueryHandler(t *testing.T) {
 				called = true
 				return nil, nil
 			}},
-			DefaultProject: "p",
-			LogsMaxLimit:   1000,
+			Project: MustProjectPolicy("test-project"),
 		}
 		ts := newTestToolServer(t)
 		RegisterLogsQuery(ts.server, deps)
@@ -89,16 +86,15 @@ func TestLogsQueryHandler(t *testing.T) {
 func TestErrorsListHandler(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("explicit project overrides default and clamps limit", func(t *testing.T) {
+	t.Run("unpinned project is required and hard limit is enforced", func(t *testing.T) {
 		var gotProject string
 		var gotLimit int
 		deps := Deps{
-			Errors: fakeErrors{listErrors: func(_ context.Context, project string, _ int, limit int, _, _ string) (*gcpdata.ErrorGroupList, error) {
+			Errors: fakeErrors{listErrors: func(_ context.Context, project string, _ gcpdata.ErrorWindow, limit int, _, _ string) (*gcpdata.ErrorGroupList, error) {
 				gotProject, gotLimit = project, limit
 				return &gcpdata.ErrorGroupList{Count: 0}, nil
 			}},
-			DefaultProject: "default-proj",
-			ErrorsMaxLimit: 30,
+			Project: MustProjectPolicy(""),
 		}
 		ts := newTestToolServer(t)
 		RegisterErrorsList(ts.server, deps)
@@ -109,7 +105,7 @@ func TestErrorsListHandler(t *testing.T) {
 		require.NoError(t, err)
 		assert.False(t, res.IsError)
 		assert.Equal(t, "explicit", gotProject)
-		assert.Equal(t, 30, gotLimit, "limit must be clamped to ErrorsMaxLimit")
+		assert.Equal(t, ErrorsHardLimit, gotLimit)
 	})
 }
 
@@ -123,7 +119,7 @@ func TestTraceGetHandler(t *testing.T) {
 				gotTraceID = traceID
 				return &gcpdata.TraceDetail{TraceID: traceID, Count: 2}, nil
 			}},
-			DefaultProject: "p",
+			Project: MustProjectPolicy("test-project"),
 		}
 		ts := newTestToolServer(t)
 		RegisterTraceGet(ts.server, deps)
@@ -158,7 +154,7 @@ func TestErrorPathsSurviveOutputSchema(t *testing.T) {
 				Profiler: fakeProfiler{listProfiles: func(context.Context, gcpdata.ListProfilesParams) (*gcpdata.ProfileListResult, error) {
 					return nil, errors.New("boom")
 				}},
-				DefaultProject: "p",
+				Project: MustProjectPolicy("test-project"),
 			},
 			args: map[string]any{},
 		},
@@ -166,11 +162,10 @@ func TestErrorPathsSurviveOutputSchema(t *testing.T) {
 			tool:     "errors_trends",
 			register: RegisterErrorsTrends,
 			deps: Deps{
-				Errors: fakeErrors{analyzeTrends: func(context.Context, string, int, int, string, string) (*gcpdata.ErrorTrendList, error) {
+				Errors: fakeErrors{analyzeTrends: func(context.Context, string, gcpdata.ErrorWindow, int, string, string) (*gcpdata.ErrorTrendList, error) {
 					return nil, errors.New("boom")
 				}},
-				DefaultProject: "p",
-				ErrorsMaxLimit: 30,
+				Project: MustProjectPolicy("test-project"),
 			},
 			args: map[string]any{},
 		},
@@ -181,8 +176,7 @@ func TestErrorPathsSurviveOutputSchema(t *testing.T) {
 				Logs: fakeLogs{summarizeLogs: func(context.Context, string, string, gcpdata.ProgressFunc) (*gcpdata.LogsSummary, error) {
 					return nil, errors.New("boom")
 				}},
-				DefaultProject: "p",
-				LogsMaxLimit:   1000,
+				Project: MustProjectPolicy("test-project"),
 			},
 			args: map[string]any{"filter": "severity>=ERROR"},
 		},
@@ -216,7 +210,7 @@ func TestTraceListHandler(t *testing.T) {
 					TruncationHint: "Listing stopped after 2 traces due to an error and cannot be resumed: rpc deadline",
 				}, nil
 			}},
-			DefaultProject: "p",
+			Project: MustProjectPolicy("test-project"),
 		}
 		ts := newTestToolServer(t)
 		RegisterTraceList(ts.server, deps)
@@ -239,21 +233,18 @@ func TestTraceListHandler(t *testing.T) {
 func TestProfilerCompareHandler(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("forwards current/base ID order and caches diff under project/diff_id", func(t *testing.T) {
+	t.Run("forwards current/base ID order without caching a synthetic diff", func(t *testing.T) {
 		var gotCurrent, gotBase string
-		cached := map[string]*profile.Profile{}
 		deps := Deps{
 			Profiler: fakeProfiler{
-				compare: func(_ context.Context, _, currentID, baseID string, _, _ int) (*gcpdata.ProfileCompareResult, *profile.Profile, error) {
+				compare: func(_ context.Context, _, currentID, baseID string, _, _ int) (*gcpdata.ProfileCompareResult, error) {
 					gotCurrent, gotBase = currentID, baseID
 					return &gcpdata.ProfileCompareResult{
-						DiffID:      "diffXYZ",
 						CurrentMeta: gcpdata.ProfileMeta{ProfileType: "CPU", Target: "svc"},
-					}, &profile.Profile{}, nil
+					}, nil
 				},
-				cached: cached,
 			},
-			DefaultProject: "proj",
+			Project: MustProjectPolicy("test-project"),
 		}
 		ts := newTestToolServer(t)
 		RegisterProfilerCompare(ts.server, deps)
@@ -269,10 +260,6 @@ func TestProfilerCompareHandler(t *testing.T) {
 		// A swap here would silently invert every regression/improvement.
 		assert.Equal(t, "current-1", gotCurrent, "current profile_id must not be swapped with base")
 		assert.Equal(t, "base-2", gotBase)
-		// top/peek/flamegraph resolve the diff via GetOrFetchProfile, which
-		// derives its key as project+"/"+id — the cache key must match.
-		_, ok := cached["proj/diffXYZ"]
-		assert.True(t, ok, "diff must be cached under project+\"/\"+DiffID")
 	})
 }
 
@@ -304,7 +291,7 @@ func TestProfilerNavigationHandlersValidateBeforeFetch(t *testing.T) {
 					fetched = true
 					return nil, gcpdata.ProfileMeta{}, nil
 				}},
-				DefaultProject: "p",
+				Project: MustProjectPolicy("test-project"),
 			}
 			ts := newTestToolServer(t)
 			tc.register(ts.server, deps)
@@ -334,7 +321,7 @@ func TestProfilerListHandler(t *testing.T) {
 					},
 				}, nil
 			}},
-			DefaultProject: "p",
+			Project: MustProjectPolicy("test-project"),
 		}
 		ts := newTestToolServer(t)
 		RegisterProfilerList(ts.server, deps)

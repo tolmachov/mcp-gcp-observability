@@ -35,9 +35,9 @@ func newTestToolServer(t *testing.T) *testToolServer {
 // (unused by metrics tools), and Mode defaults to Standard.
 func metricsTestDeps(querier gcpdata.MetricsQuerier, registry *metrics.Registry, defaultProject string) Deps {
 	return Deps{
-		Querier:        querier,
-		Registry:       registry,
-		DefaultProject: defaultProject,
+		Querier:  querier,
+		Registry: registry,
+		Project:  MustProjectPolicy(defaultProject),
 	}
 }
 

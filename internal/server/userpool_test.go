@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -27,7 +26,7 @@ import (
 func poolTestVerifier() auth.TokenVerifier {
 	return func(_ context.Context, token string, _ *http.Request) (*auth.TokenInfo, error) {
 		return authsrv.NewTokenInfoForTesting(
-			token, token+"@example.com", "example.com", "", "ya29."+token, time.Now().Add(time.Hour)), nil
+			token, token+"@example.com", "example.com", "ya29."+token, time.Now().Add(time.Hour)), nil
 	}
 }
 
@@ -385,15 +384,15 @@ func TestUserPoolWaiterHonorsRequestContext(t *testing.T) {
 	pool.release(entry)
 }
 
-// TestUserPoolSeparatesProjects: the same user authorized against two
-// different projects gets two independent assemblies (project-choice mode).
-func TestUserPoolSeparatesProjects(t *testing.T) {
+// The user identity is the sole assembly key. Project selection is a per-call
+// policy decision and must never duplicate credential/cache state.
+func TestUserPoolKeysOnlyByIdentity(t *testing.T) {
 	b := newCountingBuilder()
 	pool := newUserPool(context.Background(), b.builder(), discardLogger())
 	verifier := func(_ context.Context, token string, _ *http.Request) (*auth.TokenInfo, error) {
-		sub, proj, _ := strings.Cut(token, "/")
+		sub := "alice"
 		return authsrv.NewTokenInfoForTesting(
-			sub, sub+"@example.com", "example.com", proj, "ya29."+token, time.Now().Add(time.Hour)), nil
+			sub, sub+"@example.com", "example.com", "ya29."+token, time.Now().Add(time.Hour)), nil
 	}
 	handler := auth.RequireBearerToken(verifier, nil)(pool)
 	ts := httptest.NewServer(handler)
@@ -403,7 +402,6 @@ func TestUserPoolSeparatesProjects(t *testing.T) {
 		status, _ := poolGet(t, ts, tok)
 		require.Equal(t, http.StatusOK, status)
 	}
-	// One build per (user, project), not per request and not one shared.
-	assert.Equal(t, 2, b.buildCount("alice@example.com"))
-	assert.Equal(t, 2, pool.size())
+	assert.Equal(t, 1, b.buildCount("alice@example.com"))
+	assert.Equal(t, 1, pool.size())
 }

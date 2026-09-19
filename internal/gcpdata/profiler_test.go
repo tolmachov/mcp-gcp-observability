@@ -2,7 +2,9 @@ package gcpdata
 
 import (
 	"bytes"
+	"compress/gzip"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +16,26 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
+}
+
+func TestParseSourceProfileBoundsCompressedAndDecompressedSize(t *testing.T) {
+	_, err := parseSourceProfile(make([]byte, maxCompressedProfileBytes+1))
+	assert.ErrorContains(t, err, "compressed profile")
+
+	var compressed bytes.Buffer
+	gz := gzip.NewWriter(&compressed)
+	_, err = io.CopyN(gz, zeroReader{}, maxDecompressedProfileBytes+1)
+	require.NoError(t, err)
+	require.NoError(t, gz.Close())
+	_, err = parseSourceProfile(compressed.Bytes())
+	assert.ErrorContains(t, err, "decompressed profile")
+}
 
 // buildTestProfile creates a synthetic profile for testing.
 //
@@ -600,13 +622,7 @@ func TestCompareProfiles_DeltaComputation(t *testing.T) {
 	currentProfile := makeProfile(map[string]int64{"funcA": 100, "funcB": 50})
 	baseProfile := makeProfile(map[string]int64{"funcA": 80, "funcC": 30})
 
-	// Put profiles in cache so CompareProfiles can find them.
-	cache := NewProfileCache(10)
-	cache.Put("proj/current", currentProfile, ProfileMeta{ProfileID: "current"})
-	cache.Put("proj/base", baseProfile, ProfileMeta{ProfileID: "base"})
-
-	// Call the internal comparison logic directly by analyzing profiles manually.
-	// (CompareProfiles needs a real API service; test the delta logic via TopFunctions + manual delta.)
+	// Exercise the same delta semantics independently of the transport/API.
 	currentTop, currentTotal, _, err := TopFunctions(currentProfile, 0, 0, "cumulative", "")
 	require.NoError(t, err)
 	baseTop, baseTotal, _, err := TopFunctions(baseProfile, 0, 0, "cumulative", "")

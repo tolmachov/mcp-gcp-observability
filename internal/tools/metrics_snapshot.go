@@ -97,7 +97,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 		// Static UI resource URI — signals chart support to the host for prefetch.
 		// Per-call data is delivered via structuredContent through the MCP Apps bridge.
 		Meta: mcp.Meta{"ui": map[string]any{"resourceUri": chartStaticURI}},
-		InputSchema: inputSchemaWithEnums[MetricsSnapshotInput](
+		InputSchema: projectInputSchema[MetricsSnapshotInput](d.Project,
 			enumPatch{"window", enumWindow},
 			enumPatch{"baseline_mode", enumBaselineMode},
 		),
@@ -106,7 +106,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 		if in.MetricType == "" {
 			return errResult("metric_type is required"), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, d.DefaultProject)
+		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -195,9 +195,10 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 				Classification:           string(metrics.ClassInsufficientData),
 				ClassificationConfidence: "low",
 				DataQuality: metrics.DataQuality{
-					ExpectedPoints: expected,
-					ActualPoints:   0,
-					Reliable:       false,
+					ExpectedPoints:  expected,
+					ActualPoints:    0,
+					NonFinitePoints: currentWarnings.NonFinitePoints,
+					Reliable:        false,
 				},
 				Window: WindowInfo{
 					From: start.Format(time.RFC3339),
@@ -263,6 +264,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 				To:   now.Format(time.RFC3339),
 			},
 		}
+		result.DataQuality.NonFinitePoints = currentWarnings.NonFinitePoints
 
 		if f.StepChangeAt != nil {
 			result.StepChangeAt = f.StepChangeAt.Format(time.RFC3339)

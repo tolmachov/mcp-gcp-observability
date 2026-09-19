@@ -61,12 +61,13 @@ func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 		// this declaration lets hosts prefetch the resource from tools/list;
 		// the per-call Meta binds the widget for hosts that skip tools/list caching.
 		Meta:         mcp.Meta{"ui": map[string]any{"resourceUri": compareChartStaticURI}},
+		InputSchema:  projectInputSchema[MetricsCompareInput](d.Project),
 		OutputSchema: outputSchemaFor[CompareResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsCompareInput) (*mcp.CallToolResult, *CompareResult, error) {
 		if in.MetricType == "" {
 			return errResult("metric_type is required"), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, d.DefaultProject)
+		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -256,6 +257,7 @@ func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 				Note:                      noDataNote,
 				MetricType:                in.MetricType,
 				Unit:                      meta.Unit,
+				NonFinitePoints:           warningsA.NonFinitePoints + warningsB.NonFinitePoints,
 			}
 			if len(pointsA) > 0 {
 				expectedA := expectedPointsForWindow(aTo.Sub(aFrom), int(stepSeconds))
@@ -320,6 +322,7 @@ func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 			StepChangePct:             fB.StepChangePct,
 			SLOBreachIntroduced:       sloBreachIntroduced,
 			Note:                      note,
+			NonFinitePoints:           warningsA.NonFinitePoints + warningsB.NonFinitePoints,
 		}
 		if fB.StepChangeAt != nil {
 			cmp.StepChangeAt = fB.StepChangeAt.Format(time.RFC3339)
@@ -362,6 +365,7 @@ type CompareResult struct {
 	NoData              bool     `json:"no_data,omitempty"`
 	NoDataWindows       []string `json:"no_data_windows,omitempty"`
 	Note                string   `json:"note,omitempty"`
+	NonFinitePoints     int      `json:"non_finite_points"`
 
 	// MetricType and Unit are included in both LLM content and structuredContent
 	// so hosts and the LLM can interpret values correctly.

@@ -11,6 +11,7 @@ import (
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
+	"github.com/tolmachov/mcp-gcp-observability/internal/tools"
 )
 
 // maxCompletionValues caps the number of values returned for a single
@@ -30,11 +31,10 @@ const serviceCompletionTimeout = 5 * time.Second
 type promptCompleter struct {
 	registry *metrics.Registry
 	// loadServices lazily discovers service names (by scanning recent logs) and
-	// caches them for the session. nil until a GCP client is wired in Run.
+	// caches them for the lifetime of the local or per-user GCP client set.
+	// nil until a GCP client is wired in Run.
 	loadServices func(ctx context.Context) []string
-	// defaultProject is the configured GCP project, offered when completing the
-	// {project} argument of resource templates.
-	defaultProject string
+	project      tools.ProjectPolicy
 }
 
 // defaultMetricCandidates are common GCP metric types shown when the registry is empty.
@@ -92,8 +92,8 @@ func (p *promptCompleter) candidatesFor(ctx context.Context, refType, refName, a
 	case "ref/prompt":
 		return p.promptArgCandidates(ctx, refName, argName)
 	case "ref/resource":
-		if argName == "project" && p.defaultProject != "" {
-			return []string{p.defaultProject}
+		if argName == "project" && p.project.Pinned() {
+			return []string{p.project.Project()}
 		}
 	}
 	return nil
@@ -120,13 +120,13 @@ func (p *promptCompleter) promptArgCandidates(ctx context.Context, prompt, arg s
 
 // serviceCompletionRetryCooldown is how long a failed service-discovery fetch
 // suppresses retries. It keeps the "don't re-scan on every keystroke" property
-// without latching an empty result for the whole session when the first fetch
+// without latching an empty result for the whole client-pool lifetime when the first fetch
 // merely timed out on a cold Cloud Logging call.
 const serviceCompletionRetryCooldown = 30 * time.Second
 
 // newCachedServiceLister wraps a service-discovery fetch so completion never
-// re-scans logs on every keystroke. A successful fetch is cached for the rest
-// of the session; a failure is NOT cached permanently — it suppresses retries
+// re-scans logs on every keystroke. A successful fetch is cached for the
+// client-pool lifetime; a failure is NOT cached permanently — it suppresses retries
 // only until serviceCompletionRetryCooldown elapses, so a transient cold-start
 // timeout doesn't disable completion for good.
 func newCachedServiceLister(fetch func(ctx context.Context) (*gcpdata.ServiceList, error), logger *slog.Logger) func(ctx context.Context) []string {

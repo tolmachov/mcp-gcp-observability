@@ -9,22 +9,33 @@ import (
 )
 
 // handleCallback receives the user back from Google, validates the identity,
-// and hands a sealed authorization code to the client's redirect URI. The
-// redirect URI comes out of the sealed state, so it was validated at
+// and hands an opaque single-use authorization code to the client's redirect URI. The
+// redirect URI comes out of encrypted server-side state, so it was validated at
 // /authorize and is safe to redirect to.
 func (a *AuthServer) handleCallback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
-	sc, err := openBlob(a.sealer, stateBlob, q.Get("state"), a.now())
+	rec, err := a.loadAuthorizationState(r.Context(), q.Get("state"), true)
 	switch {
 	case errors.Is(err, errBlobExpired):
 		a.renderErrorPage(w, "Login expired",
 			"The login took too long. Start over from your MCP client.")
 		return
+	case err != nil && !errors.Is(err, errStateNotFound) && !errors.Is(err, errStateReplay):
+		a.logger.Error("oauth_store_failure", "operation", "use_authorization_state", "err", err)
+		a.renderErrorPageStatus(w, http.StatusServiceUnavailable, "Service unavailable",
+			"The authorization state store is unavailable. Try again later.")
+		return
 	case err != nil:
 		a.logger.Warn("callback state rejected", "reason", err)
 		a.renderErrorPage(w, "Invalid state",
 			"The OAuth state is missing or invalid. Start over from your MCP client.")
+		return
+	}
+	sc, err := openBlob(a.sealer, stateBlob, rec.Claims, a.now())
+	if err != nil {
+		a.logger.Error("stored OAuth state could not be decrypted", "err", err)
+		a.renderErrorPage(w, "Invalid state", "The OAuth state is invalid. Start over from your MCP client.")
 		return
 	}
 
@@ -43,6 +54,11 @@ func (a *AuthServer) handleCallback(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		a.logger.Error("google code exchange failed", "err", err)
 		redirectError(w, r, sc.RedirectURI, sc.ClientState, "server_error", "upstream token exchange failed")
+		return
+	}
+	if tok.RefreshToken == "" {
+		redirectError(w, r, sc.RedirectURI, sc.ClientState, "access_denied",
+			"Google did not issue an offline refresh token; revoke the app grant and authorize again")
 		return
 	}
 	rawIDToken, _ := tok.Extra("id_token").(string)
@@ -76,13 +92,7 @@ func (a *AuthServer) handleCallback(w http.ResponseWriter, r *http.Request) {
 			"the Google Cloud permission was not granted — log in again and keep all requested permissions ticked")
 		return
 	}
-	project := a.cfg.RequireProjectAccess
-	if a.cfg.AllowProjectChoice {
-		if project = sc.Project; project == "" {
-			redirectError(w, r, sc.RedirectURI, sc.ClientState, "invalid_request", "no GCP project was chosen")
-			return
-		}
-	}
+	project := a.cfg.PinnedProject
 	hasAccess, err := a.checkProjectAccess(r.Context(), tok.AccessToken, project)
 	if err != nil {
 		a.logger.Error("project access check failed", "email", id.Email, "err", err)
@@ -95,7 +105,7 @@ func (a *AuthServer) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	code, err := sealBlob(a.sealer, codeBlob, codeClaims{
+	claims, err := sealBlob(a.sealer, storedCodeBlob, codeClaims{
 		Subject:            id.Subject,
 		Email:              id.Email,
 		Domain:             id.HostedDomain,
@@ -103,7 +113,6 @@ func (a *AuthServer) handleCallback(w http.ResponseWriter, r *http.Request) {
 		RedirectURI:        sc.RedirectURI,
 		CodeChallenge:      sc.CodeChallenge,
 		Resource:           sc.Resource,
-		Project:            project,
 		Scopes:             granted,
 		GoogleAccessToken:  tok.AccessToken,
 		GoogleExpiry:       tok.Expiry.Unix(),
@@ -113,6 +122,21 @@ func (a *AuthServer) handleCallback(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		a.logger.Error("sealing authorization code failed", "err", err)
 		redirectError(w, r, sc.RedirectURI, sc.ClientState, "server_error", "internal error")
+		return
+	}
+	familyID, err := randomOpaque(18)
+	if err != nil {
+		redirectError(w, r, sc.RedirectURI, sc.ClientState, "server_error", "internal error")
+		return
+	}
+	code, key, err := makeAuthorizationCode()
+	if err != nil {
+		redirectError(w, r, sc.RedirectURI, sc.ClientState, "server_error", "internal error")
+		return
+	}
+	if err := a.store.PutCode(r.Context(), key, codeRecord{Claims: claims, Status: "active", FamilyID: familyID, ExpiresAt: a.now().Add(codeTTL)}); err != nil {
+		a.logger.Error("oauth_store_failure", "operation", "put_code", "err", err)
+		redirectError(w, r, sc.RedirectURI, sc.ClientState, "server_error", "authorization state store unavailable")
 		return
 	}
 

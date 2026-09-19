@@ -16,33 +16,55 @@ import (
 
 const errorReportingTimeout = 30 * time.Second
 
-// timeRangePeriod rounds up to the smallest Error Reporting query period that fully covers the requested range.
-func timeRangePeriod(hours int) errorreportingpb.QueryTimeRange_Period {
-	switch {
-	case hours <= 1:
-		return errorreportingpb.QueryTimeRange_PERIOD_1_HOUR
-	case hours <= 6:
-		return errorreportingpb.QueryTimeRange_PERIOD_6_HOURS
-	case hours <= 24:
-		return errorreportingpb.QueryTimeRange_PERIOD_1_DAY
-	case hours <= 168:
-		return errorreportingpb.QueryTimeRange_PERIOD_1_WEEK
+type ErrorWindow string
+
+const (
+	ErrorWindow1H  ErrorWindow = "1h"
+	ErrorWindow6H  ErrorWindow = "6h"
+	ErrorWindow24H ErrorWindow = "24h"
+	ErrorWindow7D  ErrorWindow = "7d"
+	ErrorWindow30D ErrorWindow = "30d"
+)
+
+type ErrorWindowSpec struct {
+	Period errorreportingpb.QueryTimeRange_Period
+	Span   time.Duration
+	Bucket time.Duration
+}
+
+func (w ErrorWindow) Spec() (ErrorWindowSpec, bool) {
+	switch w {
+	case ErrorWindow1H:
+		return ErrorWindowSpec{errorreportingpb.QueryTimeRange_PERIOD_1_HOUR, time.Hour, 5 * time.Minute}, true
+	case ErrorWindow6H:
+		return ErrorWindowSpec{errorreportingpb.QueryTimeRange_PERIOD_6_HOURS, 6 * time.Hour, 30 * time.Minute}, true
+	case ErrorWindow24H:
+		return ErrorWindowSpec{errorreportingpb.QueryTimeRange_PERIOD_1_DAY, 24 * time.Hour, time.Hour}, true
+	case ErrorWindow7D:
+		return ErrorWindowSpec{errorreportingpb.QueryTimeRange_PERIOD_1_WEEK, 7 * 24 * time.Hour, 6 * time.Hour}, true
+	case ErrorWindow30D:
+		return ErrorWindowSpec{errorreportingpb.QueryTimeRange_PERIOD_30_DAYS, 30 * 24 * time.Hour, 24 * time.Hour}, true
 	default:
-		return errorreportingpb.QueryTimeRange_PERIOD_30_DAYS
+		return ErrorWindowSpec{}, false
 	}
 }
 
 // ListErrors lists error groups sorted by occurrence count.
 // Error Reporting only supports lookback periods ending at "now"; callers
 // must not promise historical absolute-window semantics on top of this API.
-func ListErrors(ctx context.Context, client *errorreporting.ErrorStatsClient, project string, timeRangeHours, limit int, serviceFilter, versionFilter string) (*ErrorGroupList, error) {
+func ListErrors(ctx context.Context, client *errorreporting.ErrorStatsClient, project string, window ErrorWindow, limit int, serviceFilter, versionFilter string) (*ErrorGroupList, error) {
 	ctx, cancel := context.WithTimeout(ctx, errorReportingTimeout)
 	defer cancel()
+	spec, ok := window.Spec()
+	if !ok {
+		return nil, fmt.Errorf("invalid error window %q", window)
+	}
+	timeRangeBegin := time.Now().Add(-spec.Span).UTC()
 
 	req := &errorreportingpb.ListGroupStatsRequest{
 		ProjectName: fmt.Sprintf("projects/%s", project),
 		TimeRange: &errorreportingpb.QueryTimeRange{
-			Period: timeRangePeriod(timeRangeHours),
+			Period: spec.Period,
 		},
 		PageSize: safeInt32(limit),
 		Order:    errorreportingpb.ErrorGroupOrder_COUNT_DESC,
@@ -100,9 +122,9 @@ func ListErrors(ctx context.Context, client *errorreporting.ErrorStatsClient, pr
 		groups = append(groups, g)
 	}
 
-	result := &ErrorGroupList{
-		Count:  len(groups),
-		Groups: groups,
+	result := &ErrorGroupList{Count: len(groups), Groups: groups, Window: window, TimeRangeBegin: timeRangeBegin.Format(time.RFC3339)}
+	if resp, ok := it.Response.(*errorreportingpb.ListGroupStatsResponse); ok && resp.TimeRangeBegin != nil {
+		result.TimeRangeBegin = formatTimestamp(resp.TimeRangeBegin)
 	}
 	if tok := it.PageInfo().Token; tok != "" {
 		result.Truncated = true

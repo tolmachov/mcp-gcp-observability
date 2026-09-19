@@ -32,7 +32,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
-		InputSchema: inputSchemaWithEnums[MetricsTopInput](
+		InputSchema: projectInputSchema[MetricsTopInput](d.Project,
 			enumPatch{"window", enumWindow},
 			enumPatch{"baseline_mode", enumBaselineMode},
 		),
@@ -41,7 +41,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 		if in.MetricType == "" {
 			return errResult("metric_type is required"), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, d.DefaultProject)
+		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -122,6 +122,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 					in.MetricType, gcpdata.MaxTimeSeries))
 		}
 		unsupportedCount := reportUnsupportedPoints(ctx, req, "metrics_top_contributors", in.MetricType, currentSeries)
+		nonFiniteCount := reportNonFinitePoints(ctx, req, "metrics_top_contributors", in.MetricType, "current", currentSeries)
 
 		if len(currentSeries) == 0 {
 			msg := emptyWindowMessage(in.MetricType, windowStr, descriptor.Kind, in.Filter)
@@ -132,6 +133,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 				NoData:          true,
 				Note:            msg,
 				AvailableLabels: availableLabels,
+				NonFinitePoints: nonFiniteCount,
 			}
 			return nil, r, nil
 		}
@@ -256,22 +258,28 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 		if unsupportedCount > 0 {
 			unsupportedNote = fmt.Sprintf("Dropped %d points with unsupported or malformed value types during decode (see server log).", unsupportedCount)
 		}
-		note := joinNote(baselineErrNote, baselinePartialNote, partialCoverageNote, twoStageNote, truncatedNote, unsupportedNote)
+		var nonFiniteNote string
+		if nonFiniteCount > 0 {
+			nonFiniteNote = fmt.Sprintf("Discarded %d non-finite point(s) from the current window.", nonFiniteCount)
+		}
+		note := joinNote(baselineErrNote, baselinePartialNote, partialCoverageNote, twoStageNote, truncatedNote, unsupportedNote, nonFiniteNote)
 
 		return nil, &TopContributorsResult{
 			Dimension:       in.Dimension,
 			Contributors:    results,
 			Note:            note,
 			AvailableLabels: availableLabels,
+			NonFinitePoints: nonFiniteCount,
 		}, nil
 	})
 }
 
 type TopContributorsResult struct {
-	Dimension    string        `json:"dimension"`
-	Contributors []Contributor `json:"contributors"`
-	NoData       bool          `json:"no_data,omitempty"`
-	Note         string        `json:"note,omitempty"`
+	Dimension       string        `json:"dimension"`
+	Contributors    []Contributor `json:"contributors"`
+	NoData          bool          `json:"no_data,omitempty"`
+	Note            string        `json:"note,omitempty"`
+	NonFinitePoints int           `json:"non_finite_points"`
 
 	AvailableLabels *AvailableLabels `json:"available_labels,omitempty"`
 }

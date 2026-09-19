@@ -23,28 +23,23 @@ const (
 	TrendFlatCount   = "flat"        // unchanged (or no timed-count data available)
 )
 
-// trendBucketsPerWindow controls how finely the analysis window is sliced. A
-// dozen buckets keeps the older/recent split clean while bounding response size.
-const trendBucketsPerWindow = 12
-
 // AnalyzeErrorTrends queries Error Reporting group stats with timed counts and
 // classifies how each group's frequency changed between the older and recent
 // halves of the lookback window. Error Reporting only supports windows ending at
 // "now", so the comparison is intra-window (first half vs second half) rather
 // than against an arbitrary historical baseline.
-func AnalyzeErrorTrends(ctx context.Context, client *errorreporting.ErrorStatsClient, project string, timeRangeHours, limit int, serviceFilter, versionFilter string) (*ErrorTrendList, error) {
+func AnalyzeErrorTrends(ctx context.Context, client *errorreporting.ErrorStatsClient, project string, window ErrorWindow, limit int, serviceFilter, versionFilter string) (*ErrorTrendList, error) {
 	ctx, cancel := context.WithTimeout(ctx, errorReportingTimeout)
 	defer cancel()
-
-	bucket := time.Duration(timeRangeHours) * time.Hour / trendBucketsPerWindow
-	if bucket < time.Minute {
-		bucket = time.Minute
+	spec, ok := window.Spec()
+	if !ok {
+		return nil, fmt.Errorf("invalid error window %q", window)
 	}
 
 	req := &errorreportingpb.ListGroupStatsRequest{
 		ProjectName:        fmt.Sprintf("projects/%s", project),
-		TimeRange:          &errorreportingpb.QueryTimeRange{Period: timeRangePeriod(timeRangeHours)},
-		TimedCountDuration: durationpb.New(bucket),
+		TimeRange:          &errorreportingpb.QueryTimeRange{Period: spec.Period},
+		TimedCountDuration: durationpb.New(spec.Bucket),
 		PageSize:           safeInt32(limit),
 		Order:              errorreportingpb.ErrorGroupOrder_COUNT_DESC,
 	}
@@ -69,7 +64,11 @@ func AnalyzeErrorTrends(ctx context.Context, client *errorreporting.ErrorStatsCl
 		stats = append(stats, s)
 	}
 
-	result := analyzeTrendStats(stats, timeRangeHours)
+	result := analyzeTrendStats(stats, window)
+	result.TimeRangeBegin = time.Now().Add(-spec.Span).UTC().Format(time.RFC3339)
+	if resp, ok := it.Response.(*errorreportingpb.ListGroupStatsResponse); ok && resp.TimeRangeBegin != nil {
+		result.TimeRangeBegin = formatTimestamp(resp.TimeRangeBegin)
+	}
 	if tok := it.PageInfo().Token; tok != "" {
 		result.Truncated = true
 		result.TruncationHint = fmt.Sprintf("Analyzed the first %d error group(s) by total count; more groups exist for this window. Narrow service/version filters or lower the time range for a focused result.", limit)
@@ -79,7 +78,7 @@ func AnalyzeErrorTrends(ctx context.Context, client *errorreporting.ErrorStatsCl
 
 // analyzeTrendStats classifies error-group stats into trends. Split from
 // AnalyzeErrorTrends so the classification is testable without an API client.
-func analyzeTrendStats(stats []*errorreportingpb.ErrorGroupStats, timeRangeHours int) *ErrorTrendList {
+func analyzeTrendStats(stats []*errorreportingpb.ErrorGroupStats, window ErrorWindow) *ErrorTrendList {
 	midpoint, haveBuckets := timedCountsMidpoint(stats)
 
 	trends := make([]ErrorTrend, 0, len(stats))
@@ -123,10 +122,10 @@ func analyzeTrendStats(stats []*errorreportingpb.ErrorGroupStats, timeRangeHours
 	})
 
 	result := &ErrorTrendList{
-		Count:       len(trends),
-		WindowHours: timeRangeHours,
-		Summary:     summary,
-		Trends:      trends,
+		Count:   len(trends),
+		Window:  window,
+		Summary: summary,
+		Trends:  trends,
 	}
 	if !haveBuckets {
 		result.TruncationHint = "Error Reporting returned no timed-count data for this window, so trend direction could not be determined; all groups are reported as flat with their total counts."

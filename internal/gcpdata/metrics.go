@@ -87,6 +87,8 @@ type MetricTimeSeries struct {
 	// land in Points as usual; this counter lets downstream consumers
 	// surface lossy decoding without dropping the whole series.
 	UnsupportedCount int `json:"unsupported_count,omitempty"`
+	// NonFiniteCount counts NaN and infinity values rejected at ingestion.
+	NonFiniteCount int `json:"non_finite_count,omitempty"`
 }
 
 // MetricDescriptorBasic contains fields needed for aligner selection and response enrichment.
@@ -308,6 +310,10 @@ func QueryTimeSeries(ctx context.Context, client *monitoring.MetricClient, param
 				mts.UnsupportedCount++
 				continue
 			}
+			if math.IsNaN(val) || math.IsInf(val, 0) {
+				mts.NonFiniteCount++
+				continue
+			}
 			mts.Points = append(mts.Points, metrics.Point{
 				Timestamp: p.Interval.EndTime.AsTime(),
 				Value:     val,
@@ -334,6 +340,8 @@ func QueryTimeSeries(ctx context.Context, client *monitoring.MetricClient, param
 // forward these through mcpLog so operators can see registry typos and
 // sparse group coverage without trawling stderr. Zero value = no warnings.
 type AggregationWarnings struct {
+	// NonFinitePoints is the number of NaN/Inf upstream points discarded.
+	NonFinitePoints int
 	// SingleGroup is set when a two-stage query was requested but the
 	// upstream returned exactly one group. Legitimate when the window
 	// genuinely has one entity (single game, single tenant); almost
@@ -380,7 +388,7 @@ type AggregationWarnings struct {
 // HasAny returns true if any actionable warning field is set.
 // (TotalBuckets and GroupCount are context, not warnings.)
 func (w AggregationWarnings) HasAny() bool {
-	return w.SingleGroup || w.CarryForwardBuckets > 0 || w.DepartedGroupBuckets > 0 || w.DepartedSeries > 0 || w.TruncatedSeries
+	return w.NonFinitePoints > 0 || w.SingleGroup || w.CarryForwardBuckets > 0 || w.DepartedGroupBuckets > 0 || w.DepartedSeries > 0 || w.TruncatedSeries
 }
 
 // RaggedBuckets returns legacy combined counter (carry-forward + departed-group).
@@ -423,6 +431,7 @@ func QueryTimeSeriesAggregated(ctx context.Context, client *monitoring.MetricCli
 		// Single-stage: let Cloud Monitoring do the work.
 		series, err := QueryTimeSeries(ctx, client, p)
 		series, warnings.TruncatedSeries = stripTruncationSentinel(series)
+		warnings.NonFinitePoints = countNonFinitePoints(series)
 		return series, warnings, err
 	}
 
@@ -432,6 +441,7 @@ func QueryTimeSeriesAggregated(ctx context.Context, client *monitoring.MetricCli
 		return nil, warnings, err
 	}
 	groupSeries, warnings.TruncatedSeries = stripTruncationSentinel(groupSeries)
+	warnings.NonFinitePoints = countNonFinitePoints(groupSeries)
 	warnings.GroupCount = len(groupSeries)
 
 	// Return a single synthetic series carrying the folded points. When
@@ -463,12 +473,21 @@ func QueryTimeSeriesAggregated(ctx context.Context, client *monitoring.MetricCli
 	warnings.CarryForwardBuckets = stats.CarryForwardBuckets
 	warnings.DepartedGroupBuckets = stats.DepartedGroupBuckets
 	warnings.DepartedSeries = stats.DepartedSeries
+	warnings.NonFinitePoints += stats.NonFinitePoints
 	warnings.TotalBuckets = len(folded)
 	return []MetricTimeSeries{{
 		MetricKind: groupSeries[0].MetricKind,
 		ValueType:  groupSeries[0].ValueType,
 		Points:     folded,
 	}}, warnings, nil
+}
+
+func countNonFinitePoints(series []MetricTimeSeries) int {
+	total := 0
+	for _, s := range series {
+		total += s.NonFiniteCount
+	}
+	return total
 }
 
 func stripTruncationSentinel(series []MetricTimeSeries) ([]MetricTimeSeries, bool) {
@@ -544,6 +563,7 @@ type foldStats struct {
 	CarryForwardBuckets  int
 	DepartedGroupBuckets int
 	DepartedSeries       int
+	NonFinitePoints      int
 }
 
 func foldGroupSeries(series []MetricTimeSeries, reducer metrics.Reducer) ([]metrics.Point, foldStats) {
@@ -645,9 +665,14 @@ func foldGroupSeries(series []MetricTimeSeries, reducer metrics.Reducer) ([]metr
 		} else if carriedCount > 0 {
 			stats.CarryForwardBuckets++
 		}
+		value := applyReducer(values, reducer)
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			stats.NonFinitePoints++
+			continue
+		}
 		points = append(points, metrics.Point{
 			Timestamp: time.Unix(0, ts),
-			Value:     applyReducer(values, reducer),
+			Value:     value,
 		})
 	}
 	return points, stats
@@ -666,18 +691,9 @@ func foldGroupSeries(series []MetricTimeSeries, reducer metrics.Reducer) ([]metr
 //     goroutines that drive this code path already wrap in defer/recover,
 //     so the panic cannot crash the MCP server process.
 //
-//   - NaN propagates: NaN is a legitimate Cloud Monitoring value
-//     (DISTRIBUTION with zero samples, divide-by-zero ratios) and
-//     silencing it by skipping would falsify the numeric answer.
-//     Sum/Mean poison the bucket via standard IEEE 754 arithmetic
-//     (NaN + x = NaN). Max/Min are hand-rolled with an explicit
-//     `v != v` check because IEEE 754 ordered comparisons return false
-//     for NaN — a bare `v > mx` would silently drop NaNs and quietly
-//     return whichever finite value happened to lead the slice. The
-//     hand-rolled loops force NaN to win the comparison so one NaN
-//     anywhere in the bucket surfaces as NaN. Operators should see NaN
-//     in the tool output and fix the upstream metric, not have it
-//     silently replaced with a plausible-looking number.
+// Values are finite by construction: QueryTimeSeries rejects NaN and Inf at
+// ingestion. A finite sum can still overflow; foldGroupSeries drops that
+// result and accounts for it in AggregationWarnings.
 //
 // Local variable names avoid shadowing Go 1.21+ builtins min/max so
 // linters stay quiet and a future simplify-pass doesn't swap the loop
@@ -694,7 +710,7 @@ func applyReducer(values []float64, reducer metrics.Reducer) float64 {
 	case metrics.ReducerMax:
 		mx := values[0]
 		for _, v := range values[1:] {
-			if v > mx || (math.IsNaN(v) && !math.IsNaN(mx)) { // NaN wins
+			if v > mx {
 				mx = v
 			}
 		}
@@ -702,7 +718,7 @@ func applyReducer(values []float64, reducer metrics.Reducer) float64 {
 	case metrics.ReducerMin:
 		mn := values[0]
 		for _, v := range values[1:] {
-			if v < mn || (math.IsNaN(v) && !math.IsNaN(mn)) { // NaN wins
+			if v < mn {
 				mn = v
 			}
 		}

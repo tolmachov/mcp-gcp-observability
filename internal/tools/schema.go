@@ -39,6 +39,38 @@ func inputSchemaWithEnums[T any](patches ...enumPatch) *jsonschema.Schema {
 	return schema
 }
 
+// projectInputSchema generates the public schema for a project-scoped tool.
+// Pinned deployments expose no project_id at all. Unpinned deployments make
+// it required. Unknown fields are rejected in both modes.
+func projectInputSchema[T any](policy ProjectPolicy, patches ...enumPatch) *jsonschema.Schema {
+	schema := inputSchemaWithEnums[T](patches...)
+	schema.AdditionalProperties = &jsonschema.Schema{Not: &jsonschema.Schema{}}
+	if policy.Pinned() {
+		delete(schema.Properties, "project_id")
+		required := schema.Required[:0]
+		for _, name := range schema.Required {
+			if name != "project_id" {
+				required = append(required, name)
+			}
+		}
+		schema.Required = required
+		return schema
+	}
+	prop, ok := schema.Properties["project_id"]
+	if !ok {
+		panic("projectInputSchema: project_id not found")
+	}
+	prop.Description = "GCP project ID; required by this unpinned deployment"
+	prop.Pattern = projectIDPattern.String()
+	for _, name := range schema.Required {
+		if name == "project_id" {
+			return schema
+		}
+	}
+	schema.Required = append(schema.Required, "project_id")
+	return schema
+}
+
 // toAny converts a string slice to []any for use with jsonschema.Schema.Enum.
 func toAny(ss []string) []any {
 	out := make([]any, len(ss))
@@ -54,6 +86,7 @@ var (
 	enumHTTPMethod   = toAny([]string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
 	enumSeverity     = toAny([]string{"DEFAULT", "DEBUG", "INFO", "NOTICE", "WARNING", "ERROR", "CRITICAL", "ALERT", "EMERGENCY"})
 	enumWindow       = toAny([]string{"15m", "30m", "1h", "3h", "6h", "24h"})
+	enumErrorWindow  = toAny([]string{"1h", "6h", "24h", "7d", "30d"})
 	enumBaselineMode = toAny([]string{"prev_window", "same_weekday_hour", "pre_event"})
 	enumProfileType  = toAny([]string{"CPU", "WALL", "HEAP", "THREADS", "CONTENTION", "PEAK_HEAP", "HEAP_ALLOC"})
 	enumSortBy       = toAny([]string{"self", "cumulative"})

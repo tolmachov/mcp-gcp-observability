@@ -157,7 +157,6 @@ func testSnapshotPreEventSpecThreading(t *testing.T) {
 
 	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type":   metricType,
-		"project_id":    "test-project",
 		"window":        "15m",
 		"baseline_mode": "pre_event",
 		"event_time":    time.Now().Add(-30 * time.Minute).UTC().Format(time.RFC3339),
@@ -196,7 +195,6 @@ func testSnapshotSameWeekdayHourSpecThreading(t *testing.T) {
 
 	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type":   metricType,
-		"project_id":    "test-project",
 		"window":        "15m",
 		"baseline_mode": "same_weekday_hour",
 	})
@@ -261,7 +259,6 @@ func runAggregationSnapshot(t *testing.T, fq *fakeQuerier, registry *metrics.Reg
 
 	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
 		"metric_type":   metricType,
-		"project_id":    "test-project",
 		"window":        "15m",
 		"baseline_mode": "prev_window",
 	})

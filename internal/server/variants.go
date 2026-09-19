@@ -26,11 +26,6 @@ const (
 // pinned by TestRegisterAllToolsCount.
 const allToolsCount = 24
 
-// profileCacheSize is the number of parsed profiles the profiler querier keeps
-// in memory. Diff profiles produced by profiler_compare live only here, so this
-// also bounds how many diffs remain navigable via diff_id.
-const profileCacheSize = 10
-
 // variantSpec declares one capability set: a register function (signature
 // shared with registerAllTools / tools.RegisterCore), the mode it should
 // register tools with, and the metadata exposed during variants negotiation.

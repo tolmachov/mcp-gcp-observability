@@ -88,14 +88,11 @@ func testConfig(t *testing.T) *Config {
 }
 
 // newTestServer wires an AuthServer with the fake IdP and returns an
-// httptest server with the auth routes mounted. The rate limiter is made
-// effectively unlimited so protocol tests are not coupled to the budget.
+// httptest server with the auth routes mounted.
 func newTestServer(t *testing.T, cfg *Config, idp *fakeIdP) (*AuthServer, *httptest.Server) {
 	t.Helper()
 	a, err := NewWithProvider(cfg, slog.New(slog.DiscardHandler), idp)
 	require.NoError(t, err)
-	a.limiter = newIPRateLimiter(100000, 100000)
-
 	mux := http.NewServeMux()
 	a.Routes(mux)
 	ts := httptest.NewServer(mux)
@@ -174,7 +171,7 @@ func authorizeThroughCallback(t *testing.T, ts *httptest.Server, clientID, redir
 	_ = resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "authorize should render consent: %s", page)
 	m := consentRequestRe.FindSubmatch(page)
-	require.NotNil(t, m, "consent page should carry the sealed request")
+	require.NotNil(t, m, "consent page should carry the opaque request token")
 	blob := string(m[1])
 
 	resp, err = client.PostForm(ts.URL+"/authorize/confirm", url.Values{"request": {blob}})
@@ -300,6 +297,42 @@ func TestFullAuthorizationFlow(t *testing.T) {
 	assert.Equal(t, "ya29.refreshed", extra2.GoogleAccessToken)
 }
 
+func TestGoogleCallbackStateReplayIsRejected(t *testing.T) {
+	_, ts := newTestServer(t, testConfig(t), happyIdP())
+	const redirectURI = "http://localhost:41234/callback"
+	clientID := registerClient(t, ts, redirectURI)
+	_, challenge := pkcePair()
+	client := noRedirectClient()
+
+	resp, err := client.Get(ts.URL + "/authorize?" + url.Values{
+		"client_id": {clientID}, "redirect_uri": {redirectURI}, "response_type": {"code"},
+		"code_challenge": {challenge}, "code_challenge_method": {"S256"},
+	}.Encode())
+	require.NoError(t, err)
+	page, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	match := consentRequestRe.FindSubmatch(page)
+	require.Len(t, match, 2)
+	requestToken := string(match[1])
+
+	resp, err = client.PostForm(ts.URL+"/authorize/confirm", url.Values{"request": {requestToken}})
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	googleURL, err := url.Parse(resp.Header.Get("Location"))
+	require.NoError(t, err)
+	callback := ts.URL + "/callback?" + url.Values{"state": {googleURL.Query().Get("state")}, "code": {"google-code"}}.Encode()
+
+	first, err := client.Get(callback)
+	require.NoError(t, err)
+	_ = first.Body.Close()
+	assert.Equal(t, http.StatusFound, first.StatusCode)
+	second, err := client.Get(callback)
+	require.NoError(t, err)
+	_ = second.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, second.StatusCode)
+}
+
 func TestAuthorizeRejections(t *testing.T) {
 	_, ts := newTestServer(t, testConfig(t), happyIdP())
 	const redirectURI = "http://localhost:41234/callback"
@@ -342,6 +375,13 @@ func TestAuthorizeRejections(t *testing.T) {
 		v.Set("redirect_uri", "http://localhost:59999/callback")
 		resp := get(v)
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
+	})
+	t.Run("loopback query must match exactly", func(t *testing.T) {
+		v := base()
+		v.Set("redirect_uri", "http://localhost:59999/callback?different=1")
+		resp := get(v)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		assert.Empty(t, resp.Header.Get("Location"))
 	})
 	t.Run("missing PKCE redirects with invalid_request", func(t *testing.T) {
 		v := base()
@@ -394,6 +434,16 @@ func TestRegisterRejections(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 		assert.Equal(t, "invalid_redirect_uri", regErr.ErrorCode)
 	})
+	t.Run("userinfo", func(t *testing.T) {
+		resp, regErr := post(`{"redirect_uris":["https://user@example.com/cb"]}`)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		assert.Equal(t, "invalid_redirect_uri", regErr.ErrorCode)
+	})
+	t.Run("fragment", func(t *testing.T) {
+		resp, regErr := post(`{"redirect_uris":["http://localhost/cb#fragment"]}`)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		assert.Equal(t, "invalid_redirect_uri", regErr.ErrorCode)
+	})
 	t.Run("unsupported grant type", func(t *testing.T) {
 		resp, regErr := post(`{"redirect_uris":["http://localhost/cb"],"grant_types":["implicit"]}`)
 		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -418,7 +468,7 @@ func TestCallbackRejections(t *testing.T) {
 		clientID := registerClient(t, ts, redirectURI)
 		_, challenge := pkcePair()
 
-		// Drive authorize+confirm to get a legitimate sealed state.
+		// Drive authorize+confirm to get a legitimate Firestore-backed state.
 		resp, err := client.Get(ts.URL + "/authorize?" + url.Values{
 			"client_id": {clientID}, "redirect_uri": {redirectURI},
 			"response_type": {"code"}, "code_challenge": {challenge}, "code_challenge_method": {"S256"},

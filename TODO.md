@@ -12,7 +12,7 @@
 | **Логи** | 7: query, k8s, by_trace, by_request_id, find_requests, services, summary | 3: query, time-range, search | Go-версия **сильнее** — K8s-фильтры, корреляция по trace/request ID, service discovery |
 | **Трейсы** | 3: trace_get, trace_list, trace_find_from_logs | 4: get, list, find-from-logs, natural-language | Паритет (кроме natural-language) |
 | **Ошибки** | 3: errors_list, errors_get, errors_trends | 3: list, get-details, analyse-trends | Паритет |
-| **Профилирование** | 6: list, top, peek, flamegraph, compare, trends | 3: list, analyse, compare-trends | Go-версия **сильнее** — pprof-анализ, flamegraph, peek callers/callees, diff profiles |
+| **Профилирование** | 6: list, top, peek, flamegraph, compare, trends | 3: list, analyse, compare-trends | Go-версия **сильнее** — pprof-анализ, flamegraph, peek callers/callees, request-local diff |
 
 ---
 
@@ -23,10 +23,10 @@
 - `profiler_top` — ранжирование функций по стоимости (как pprof top)
 - `profiler_peek` — callers/callees функции (как pprof peek)
 - `profiler_flamegraph` — ограниченное поддерево call tree
-- `profiler_compare` — сравнение двух профилей, diff profile для drill-down
+- `profiler_compare` — request-local сравнение двух исходных профилей
 - `profiler_trends` — отслеживание стоимости функций во времени
 
-Реализация значительно шире исходного плана: pprof-парсинг, LRU-кэш профилей, diff profiles, ambiguity detection, truncation hints, 614 тестов.
+Реализация значительно шире исходного плана: pprof-парсинг, byte-bounded кэш сжатых исходных профилей, request-local diff, ambiguity detection и truncation hints.
 
 ---
 
@@ -72,7 +72,7 @@
 Анализ изменения частоты ошибок во времени (аналог `gcp-error-reporting-analyse-trends`).
 
 **Параметры:**
-- `time_range_hours` (int, default 168 = 7 дней)
+- `window` (enum: `1h`, `6h`, `24h`, `7d`, `30d`; default `24h`)
 - `service_filter` (string, optional)
 - `project_id`
 

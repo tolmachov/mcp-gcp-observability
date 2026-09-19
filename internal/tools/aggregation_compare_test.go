@@ -76,7 +76,6 @@ func runAggregationCompare(t *testing.T, fq *fakeQuerier, registry *metrics.Regi
 	windowBEnd := now
 	_, err := ts.callTool(ctx, "metrics_compare", map[string]any{
 		"metric_type":   metricType,
-		"project_id":    "test-project",
 		"window_a_from": windowA.Format(time.RFC3339),
 		"window_a_to":   windowAEnd.Format(time.RFC3339),
 		"window_b_from": windowB.Format(time.RFC3339),

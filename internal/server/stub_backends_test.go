@@ -53,7 +53,7 @@ func (stubBackends) FindTracesFromLogs(context.Context, string, string, string, 
 	panic("stubBackends: handler not invoked in this test")
 }
 
-func (stubBackends) ListErrors(context.Context, string, int, int, string, string) (*gcpdata.ErrorGroupList, error) {
+func (stubBackends) ListErrors(context.Context, string, gcpdata.ErrorWindow, int, string, string) (*gcpdata.ErrorGroupList, error) {
 	panic("stubBackends: handler not invoked in this test")
 }
 
@@ -61,7 +61,7 @@ func (stubBackends) GetErrorGroup(context.Context, string, string, int, string) 
 	panic("stubBackends: handler not invoked in this test")
 }
 
-func (stubBackends) AnalyzeErrorTrends(context.Context, string, int, int, string, string) (*gcpdata.ErrorTrendList, error) {
+func (stubBackends) AnalyzeErrorTrends(context.Context, string, gcpdata.ErrorWindow, int, string, string) (*gcpdata.ErrorTrendList, error) {
 	panic("stubBackends: handler not invoked in this test")
 }
 
@@ -81,15 +81,15 @@ func (stubBackends) GetOrFetchProfile(context.Context, string, string) (*profile
 	panic("stubBackends: handler not invoked in this test")
 }
 
-func (stubBackends) CompareProfiles(context.Context, string, string, string, int, int) (*gcpdata.ProfileCompareResult, *profile.Profile, error) {
+func (stubBackends) GetProfileOrDiff(context.Context, string, string, string) (*profile.Profile, gcpdata.ProfileMeta, error) {
+	panic("stubBackends: handler not invoked in this test")
+}
+
+func (stubBackends) CompareProfiles(context.Context, string, string, string, int, int) (*gcpdata.ProfileCompareResult, error) {
 	panic("stubBackends: handler not invoked in this test")
 }
 
 func (stubBackends) ComputeTrends(context.Context, gcpdata.ComputeTrendsParams, func(int, int, string)) (*gcpdata.ProfileTrendsResult, error) {
-	panic("stubBackends: handler not invoked in this test")
-}
-
-func (stubBackends) CacheProfile(string, string, *profile.Profile, gcpdata.ProfileMeta) {
 	panic("stubBackends: handler not invoked in this test")
 }
 

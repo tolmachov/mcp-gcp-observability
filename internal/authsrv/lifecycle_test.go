@@ -1,6 +1,7 @@
 package authsrv
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -192,7 +193,7 @@ func TestLoopbackPortMayDifferThroughToken(t *testing.T) {
 }
 
 // TestAuthorizeConfirmRejections covers the CSRF boundary of the consent
-// form: only a sealed, unexpired request blob may proceed to Google.
+// form: only an opaque, server-side, unexpired request token may proceed to Google.
 func TestAuthorizeConfirmRejections(t *testing.T) {
 	a, ts := newTestServer(t, testConfig(t), happyIdP())
 	client := noRedirectClient()
@@ -205,13 +206,17 @@ func TestAuthorizeConfirmRejections(t *testing.T) {
 		assert.Empty(t, resp.Header.Get("Location"))
 		assert.Contains(t, body, "Invalid request")
 	})
-	t.Run("expired blob renders distinct error", func(t *testing.T) {
-		blob, err := sealBlob(a.sealer, stateBlob, stateClaims{
+	t.Run("expired request renders distinct error", func(t *testing.T) {
+		claims, err := sealBlob(a.sealer, stateBlob, stateClaims{
 			ClientID: "c", RedirectURI: "http://localhost/cb", CodeChallenge: "x",
-			IssuedAt: time.Now().Add(-2 * stateTTL).Unix(),
+			IssuedAt: time.Now().Unix(),
 		})
 		require.NoError(t, err)
-		resp, err := client.PostForm(ts.URL+"/authorize/confirm", url.Values{"request": {blob}})
+		raw := prefixState + "expired-test-state"
+		require.NoError(t, a.store.PutAuthorizationState(context.Background(), tokenHash(raw), authorizationStateRecord{
+			Claims: claims, Status: "active", ExpiresAt: time.Now().Add(-time.Second),
+		}))
+		resp, err := client.PostForm(ts.URL+"/authorize/confirm", url.Values{"request": {raw}})
 		require.NoError(t, err)
 		body := readAll(t, resp)
 		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -227,7 +232,7 @@ func TestAuthorizeConfirmRejections(t *testing.T) {
 
 // TestRefreshRotationPassthrough pins the handling of Google's occasional
 // refresh-token rotation: a rotated token must be carried into the new
-// sealed refresh token; without rotation the original is kept.
+// encrypted server-side grant; without rotation the original is kept.
 func TestRefreshRotationPassthrough(t *testing.T) {
 	idp := happyIdP()
 	idp.refreshTok = &oauth2.Token{

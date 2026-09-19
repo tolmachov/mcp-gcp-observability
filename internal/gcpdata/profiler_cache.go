@@ -2,85 +2,99 @@ package gcpdata
 
 import (
 	"sync"
-
-	"github.com/google/pprof/profile"
+	"sync/atomic"
 )
 
-const defaultProfileCacheSize = 10
+const (
+	profileCacheUserBytes    int64 = 16 << 20
+	profileCacheProcessBytes int64 = 64 << 20
+)
 
-// profileCacheKey derives the cache key for a profile from its project and
-// name (or synthetic diff ID). It is the single source of the key scheme, so
-// the store side (GetOrFetchProfile, CompareProfiles, CacheProfile) and the
-// lookup side can never drift and silently miss.
-func profileCacheKey(project, profileName string) string {
-	return project + "/" + profileName
-}
+var processProfileCacheBytes atomic.Int64
+
+func profileCacheKey(project, profileName string) string { return project + "/" + profileName }
 
 type profileCacheEntry struct {
-	key     string
-	profile *profile.Profile
-	meta    ProfileMeta
+	key  string
+	data []byte
+	meta ProfileMeta
 }
 
-// ProfileCache is a bounded LRU cache for parsed pprof profiles.
+// ProfileCache is a byte-bounded LRU of compressed source profiles. Parsed
+// pprof graphs are request-local and are never retained.
 type ProfileCache struct {
-	mu      sync.Mutex
-	entries []profileCacheEntry
-	maxSize int
+	mu       sync.Mutex
+	entries  []profileCacheEntry
+	bytes    int64
+	maxBytes int64
 }
 
-// NewProfileCache creates a new profile cache with the given maximum size.
-// maxSize is clamped to [1, 100] to prevent unbounded memory usage.
-func NewProfileCache(maxSize int) *ProfileCache {
-	if maxSize <= 0 {
-		maxSize = defaultProfileCacheSize
-	}
-	if maxSize > 100 {
-		maxSize = 100
-	}
-	return &ProfileCache{maxSize: maxSize}
-}
+func NewProfileCache() *ProfileCache { return &ProfileCache{maxBytes: profileCacheUserBytes} }
 
-// Get retrieves a cached profile by key, moving it to the most-recently-used position.
-// The returned *profile.Profile is shared — callers must not mutate it.
-// Use profile.Copy() if mutation is needed (e.g. buildDiffProfile copies both inputs
-// because base samples are negated in-place before merging, and both originals are
-// shared cache entries that must not be modified).
-func (c *ProfileCache) Get(key string) (*profile.Profile, ProfileMeta, bool) {
+func (c *ProfileCache) Get(key string) ([]byte, ProfileMeta, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for i, e := range c.entries {
 		if e.key == key {
-			// Move to end (most recently used).
 			c.entries = append(c.entries[:i], c.entries[i+1:]...)
 			c.entries = append(c.entries, e)
-			return e.profile, e.meta, true
+			return append([]byte(nil), e.data...), e.meta, true
 		}
 	}
 	return nil, ProfileMeta{}, false
 }
 
-// Put adds a profile to the cache, evicting the oldest entry if at capacity.
-func (c *ProfileCache) Put(key string, p *profile.Profile, meta ProfileMeta) {
+// Put caches compressed data when both the per-user and process budgets permit.
+// Oversized or process-saturated entries remain usable for the current request
+// but are intentionally not cached.
+func (c *ProfileCache) Put(key string, data []byte, meta ProfileMeta) bool {
+	size := int64(len(data))
+	if size == 0 || size > c.maxBytes {
+		return false
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// Remove existing entry with same key.
 	for i, e := range c.entries {
 		if e.key == key {
-			c.entries = append(c.entries[:i], c.entries[i+1:]...)
+			c.remove(i)
 			break
 		}
 	}
-	// Evict oldest if at capacity.
-	if len(c.entries) >= c.maxSize {
-		c.entries = c.entries[1:]
+	for c.bytes+size > c.maxBytes && len(c.entries) > 0 {
+		c.remove(0)
 	}
-	c.entries = append(c.entries, profileCacheEntry{key: key, profile: p, meta: meta})
+	if processProfileCacheBytes.Add(size) > profileCacheProcessBytes {
+		processProfileCacheBytes.Add(-size)
+		return false
+	}
+	c.entries = append(c.entries, profileCacheEntry{key: key, data: append([]byte(nil), data...), meta: meta})
+	c.bytes += size
+	return true
 }
 
-// Len returns the number of entries in the cache.
+func (c *ProfileCache) remove(i int) {
+	size := int64(len(c.entries[i].data))
+	c.entries = append(c.entries[:i], c.entries[i+1:]...)
+	c.bytes -= size
+	processProfileCacheBytes.Add(-size)
+}
+
 func (c *ProfileCache) Len() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.entries)
+}
+
+func (c *ProfileCache) Bytes() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.bytes
+}
+
+func (c *ProfileCache) Close() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	processProfileCacheBytes.Add(-c.bytes)
+	c.entries = nil
+	c.bytes = 0
 }

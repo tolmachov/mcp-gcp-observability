@@ -419,33 +419,15 @@ func TestApplyReducer(t *testing.T) {
 	}
 }
 
-// TestApplyReducerNaNPropagation locks the documented semantics: a NaN in
-// the input poisons the bucket for every reducer. Cloud Monitoring can
-// legitimately return NaN (histogram with zero samples → DistributionValue
-// Mean is 0/0, divide-by-zero ratios) and the tool output must surface
-// that so operators fix the upstream metric rather than see a
-// plausible-looking fabricated number.
-func TestApplyReducerNaNPropagation(t *testing.T) {
-	nan := math.NaN()
-	cases := []struct {
-		name    string
-		values  []float64
-		reducer metrics.Reducer
-	}{
-		{"sum with leading NaN", []float64{nan, 1, 2}, metrics.ReducerSum},
-		{"sum with trailing NaN", []float64{1, 2, nan}, metrics.ReducerSum},
-		{"mean with NaN", []float64{1, nan, 3}, metrics.ReducerMean},
-		{"max with leading NaN", []float64{nan, 1, 2}, metrics.ReducerMax},
-		{"max with trailing NaN", []float64{1, 2, nan}, metrics.ReducerMax},
-		{"min with leading NaN", []float64{nan, 1, 2}, metrics.ReducerMin},
-		{"min with trailing NaN", []float64{1, 2, nan}, metrics.ReducerMin},
+func TestFoldGroupSeriesDropsPostAggregationOverflow(t *testing.T) {
+	ts := time.Unix(1, 0)
+	series := []MetricTimeSeries{
+		{Points: []metrics.Point{{Timestamp: ts, Value: math.MaxFloat64}}},
+		{Points: []metrics.Point{{Timestamp: ts, Value: math.MaxFloat64}}},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := applyReducer(tc.values, tc.reducer)
-			assert.True(t, math.IsNaN(got))
-		})
-	}
+	points, stats := foldGroupSeries(series, metrics.ReducerSum)
+	assert.Empty(t, points)
+	assert.Equal(t, 1, stats.NonFinitePoints)
 }
 
 // TestBuildAggregatedParams pins the single-vs-two-stage path selection

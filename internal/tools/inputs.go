@@ -8,7 +8,7 @@ type TimeFilterInput struct {
 
 // ProjectInput is embedded by tools that accept project_id.
 type ProjectInput struct {
-	ProjectID string `json:"project_id,omitempty" jsonschema:"GCP project ID (uses default if not specified)"`
+	ProjectID string `json:"project_id,omitempty" jsonschema:"GCP project ID (required only by unpinned deployments)"`
 }
 
 // LogsQueryInput is the input for logs_query.
@@ -55,7 +55,7 @@ type TraceFindFromLogsInput struct {
 	ProjectInput
 	TimeFilterInput
 	Filter    string `json:"filter"                jsonschema:"Cloud Logging filter to scan for traces (e.g. 'severity>=ERROR resource.type=\"k8s_container\"'). Entries without a trace are ignored."`
-	ScanLimit int    `json:"scan_limit,omitempty"  jsonschema:"Maximum number of log entries to scan (default 500, server max applies). Higher values discover more traces at the cost of latency."`
+	ScanLimit int    `json:"scan_limit,omitempty"  jsonschema:"Maximum number of log entries to scan (default and hard maximum 200)."`
 	Limit     int    `json:"limit,omitempty"       jsonschema:"Maximum number of distinct traces to return (default 20, max 100)."`
 }
 
@@ -87,14 +87,13 @@ type LogsSummaryInput struct {
 }
 
 // ErrorsListInput is the input for errors_list.
-// Note: Error Reporting only supports lookback periods ending at now, so
-// start_time/end_time are intentionally absent. Use time_range_hours instead.
+// Note: Error Reporting only supports fixed lookback periods ending at now.
 type ErrorsListInput struct {
 	ProjectInput
-	TimeRangeHours int    `json:"time_range_hours,omitempty" jsonschema:"Time range in hours to look back (default 24, max 720). Error Reporting only supports lookback periods ending now."`
-	Limit          int    `json:"limit,omitempty"            jsonschema:"Maximum number of error groups to return (default 50, server max applies)"`
-	ServiceFilter  string `json:"service_filter,omitempty"   jsonschema:"Filter by service name"`
-	VersionFilter  string `json:"version_filter,omitempty"   jsonschema:"Filter by service version"`
+	Window        string `json:"window,omitempty"         jsonschema:"Exact Error Reporting lookback window (default 24h). One of: 1h, 6h, 24h, 7d, 30d"`
+	Limit         int    `json:"limit,omitempty"          jsonschema:"Maximum number of error groups to return (default 50, max 100)"`
+	ServiceFilter string `json:"service_filter,omitempty" jsonschema:"Filter by service name"`
+	VersionFilter string `json:"version_filter,omitempty" jsonschema:"Filter by service version"`
 }
 
 // ErrorsGetInput is the input for errors_get.
@@ -184,37 +183,40 @@ type ProfilerListInput struct {
 // ProfilerTopInput is the input for profiler_top.
 type ProfilerTopInput struct {
 	ProjectInput
-	ProfileID  string `json:"profile_id"             jsonschema:"Profile ID from profiler_list results, or diff_id from profiler_compare results"`
-	Limit      int    `json:"limit,omitempty"         jsonschema:"Maximum number of functions to return (default 20, max 50)"`
-	SortBy     string `json:"sort_by,omitempty"       jsonschema:"Sort by 'self' or 'cumulative' cost (default 'cumulative')"`
-	ValueIndex int    `json:"value_index,omitempty"   jsonschema:"Value index for multi-value profiles (default 0). Use profiler_top once to see available_values."`
-	Filter     string `json:"filter,omitempty"        jsonschema:"Substring filter on function name or file path (e.g. 'mypackage/handler')"`
+	ProfileID     string `json:"profile_id"             jsonschema:"Current profile ID from profiler_list results"`
+	BaseProfileID string `json:"base_profile_id,omitempty" jsonschema:"Optional base profile ID; when set, analysis is computed from current minus base during this request"`
+	Limit         int    `json:"limit,omitempty"         jsonschema:"Maximum number of functions to return (default 20, max 50)"`
+	SortBy        string `json:"sort_by,omitempty"       jsonschema:"Sort by 'self' or 'cumulative' cost (default 'cumulative')"`
+	ValueIndex    int    `json:"value_index,omitempty"   jsonschema:"Value index for multi-value profiles (default 0). Use profiler_top once to see available_values."`
+	Filter        string `json:"filter,omitempty"        jsonschema:"Substring filter on function name or file path (e.g. 'mypackage/handler')"`
 }
 
 // ProfilerPeekInput is the input for profiler_peek.
 type ProfilerPeekInput struct {
 	ProjectInput
-	ProfileID    string `json:"profile_id"             jsonschema:"Profile ID from profiler_list results, or diff_id from profiler_compare results"`
-	FunctionName string `json:"function_name"          jsonschema:"Function name to inspect (from profiler_top results). Substring match."`
-	Limit        int    `json:"limit,omitempty"         jsonschema:"Max callers/callees to return (default 10, max 30)"`
-	ValueIndex   int    `json:"value_index,omitempty"   jsonschema:"Value index for multi-value profiles (default 0)"`
+	ProfileID     string `json:"profile_id"             jsonschema:"Current profile ID from profiler_list results"`
+	BaseProfileID string `json:"base_profile_id,omitempty" jsonschema:"Optional base profile ID for request-local diff analysis"`
+	FunctionName  string `json:"function_name"          jsonschema:"Function name to inspect (from profiler_top results). Substring match."`
+	Limit         int    `json:"limit,omitempty"         jsonschema:"Max callers/callees to return (default 10, max 30)"`
+	ValueIndex    int    `json:"value_index,omitempty"   jsonschema:"Value index for multi-value profiles (default 0)"`
 }
 
 // ProfilerFlamegraphInput is the input for profiler_flamegraph.
 type ProfilerFlamegraphInput struct {
 	ProjectInput
-	ProfileID    string  `json:"profile_id"              jsonschema:"Profile ID from profiler_list results, or diff_id from profiler_compare results"`
-	RootFunction string  `json:"root_function,omitempty"  jsonschema:"Function to use as subtree root (omit for full profile root). Substring match."`
-	MaxDepth     int     `json:"max_depth,omitempty"      jsonschema:"Maximum tree depth to return (default 3, max 6)"`
-	MinPct       float64 `json:"min_pct,omitempty"        jsonschema:"Minimum percentage of total to include a node (default 1.0)"`
-	ValueIndex   int     `json:"value_index,omitempty"    jsonschema:"Value index for multi-value profiles (default 0)"`
+	ProfileID     string  `json:"profile_id"              jsonschema:"Current profile ID from profiler_list results"`
+	BaseProfileID string  `json:"base_profile_id,omitempty" jsonschema:"Optional base profile ID for request-local diff analysis"`
+	RootFunction  string  `json:"root_function,omitempty"  jsonschema:"Function to use as subtree root (omit for full profile root). Substring match."`
+	MaxDepth      int     `json:"max_depth,omitempty"      jsonschema:"Maximum tree depth to return (default 3, max 6)"`
+	MinPct        float64 `json:"min_pct,omitempty"        jsonschema:"Minimum percentage of total to include a node (default 1.0)"`
+	ValueIndex    int     `json:"value_index,omitempty"    jsonschema:"Value index for multi-value profiles (default 0)"`
 }
 
 // ProfilerCompareInput is the input for profiler_compare.
 type ProfilerCompareInput struct {
 	ProjectInput
-	ProfileID     string `json:"profile_id"              jsonschema:"Current profile ID from profiler_list (diff_id is not supported here)"`
-	BaseProfileID string `json:"base_profile_id"         jsonschema:"Base profile ID to compare against from profiler_list (diff_id is not supported here)"`
+	ProfileID     string `json:"profile_id"              jsonschema:"Current source profile ID from profiler_list"`
+	BaseProfileID string `json:"base_profile_id"         jsonschema:"Base source profile ID to compare against from profiler_list"`
 	ValueIndex    int    `json:"value_index,omitempty"    jsonschema:"Value index for multi-value profiles (default 0)"`
 }
 

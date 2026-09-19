@@ -23,7 +23,7 @@ func RegisterProfilerTrends(s *mcp.Server, d Deps) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
-		InputSchema: inputSchemaWithEnums[ProfilerTrendsInput](
+		InputSchema: projectInputSchema[ProfilerTrendsInput](d.Project,
 			enumPatch{"profile_type", enumProfileType},
 		),
 		OutputSchema: outputSchemaFor[gcpdata.ProfileTrendsResult](),
@@ -37,7 +37,7 @@ func RegisterProfilerTrends(s *mcp.Server, d Deps) {
 		if in.Target == "" {
 			return errResult("target is required (service name from profiler_list results)"), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, d.DefaultProject)
+		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
