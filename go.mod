@@ -1,6 +1,6 @@
 module github.com/tolmachov/mcp-gcp-observability
 
-go 1.26.4
+go 1.26.8
 
 require (
 	cloud.google.com/go/cloudprofiler v1.0.0
