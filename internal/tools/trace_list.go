@@ -23,13 +23,13 @@ func RegisterTraceList(s *mcp.Server, d Deps) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
-		InputSchema: inputSchemaWithEnums[TraceListInput](
+		InputSchema: projectInputSchema[TraceListInput](d.Project,
 			enumPatch{"order_by", enumTraceOrderBy},
 			enumPatch{"view", enumTraceView},
 		),
 		OutputSchema: outputSchemaFor[gcpdata.TraceListResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in TraceListInput) (*mcp.CallToolResult, *gcpdata.TraceListResult, error) {
-		project, err := resolveProject(in.ProjectID, d.DefaultProject)
+		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}

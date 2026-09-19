@@ -26,14 +26,28 @@ func newRedirectPolicy(extra []string) *redirectPolicy {
 
 // allowed reports whether a single redirect URI is acceptable.
 func (p *redirectPolicy) allowed(raw string) bool {
-	if slices.Contains(p.exact, raw) {
-		return true
-	}
 	u, err := url.Parse(raw)
-	if err != nil {
+	if err != nil || !u.IsAbs() || u.User != nil || u.Fragment != "" || u.Host == "" && u.Opaque == "" {
 		return false
 	}
-	return u.Scheme == "http" && isLoopbackHost(u.Hostname()) && u.Fragment == ""
+	if u.Scheme == "http" {
+		return isLoopbackHost(u.Hostname())
+	}
+	return slices.Contains(p.exact, raw)
+}
+
+func validAllowlistedRedirect(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || !u.IsAbs() || u.User != nil || u.Fragment != "" {
+		return false
+	}
+	if u.Scheme == "http" {
+		return u.Host != "" && isLoopbackHost(u.Hostname())
+	}
+	if u.Scheme == "https" {
+		return u.Host != ""
+	}
+	return u.Scheme != "" && (u.Host != "" || u.Opaque != "" || u.Path != "")
 }
 
 // isLoopbackHost reports whether host is localhost or a loopback IP literal.
@@ -55,7 +69,7 @@ func matchRegistered(registered []string, raw string) bool {
 		return true
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "http" || !isLoopbackHost(u.Hostname()) {
+	if err != nil || u.Scheme != "http" || !isLoopbackHost(u.Hostname()) || u.User != nil || u.Fragment != "" {
 		return false
 	}
 	for _, r := range registered {
@@ -63,7 +77,8 @@ func matchRegistered(registered []string, raw string) bool {
 		if err != nil || ru.Scheme != "http" || !isLoopbackHost(ru.Hostname()) {
 			continue
 		}
-		if strings.EqualFold(ru.Hostname(), u.Hostname()) && ru.Path == u.Path {
+		if ru.User == nil && ru.Fragment == "" && strings.EqualFold(ru.Hostname(), u.Hostname()) &&
+			ru.Path == u.Path && ru.RawQuery == u.RawQuery {
 			return true
 		}
 	}

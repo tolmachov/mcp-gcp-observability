@@ -12,7 +12,7 @@ AR_REPO     ?= mcp
 SERVICE     ?= mcp-gcp-observability
 IMAGE        = $(GCP_REGION)-docker.pkg.dev/$(GCP_PROJECT)/$(AR_REPO)/$(SERVICE):$(VERSION)
 
-.PHONY: build lint fmt clean install test test-race test-integration docker-build docker-push deploy
+.PHONY: build lint fmt clean install test test-race test-deploy test-integration test-production docker-build docker-push bootstrap-check bootstrap-apply edge-check edge-apply infra-check infra-apply observability-check observability-apply deploy-check deploy-prepare deploy-cutover deploy
 
 build:
 	go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY) .
@@ -23,9 +23,16 @@ test:
 test-race:
 	go test -race ./...
 
+test-deploy:
+	python3 -B -m unittest discover -s deploy -p 'test_*.py' -v
+
 # Requires a real GCP project and credentials (loads ../.env). See test/integration_test.go.
 test-integration:
 	go test -tags integration ./test/...
+
+# Release gate: unlike exploratory integration runs, no skipped tool is accepted.
+test-production:
+	./deploy/verify-gcp.sh
 
 lint:
 	golangci-lint run
@@ -45,22 +52,40 @@ docker-build:
 docker-push: docker-build
 	docker push $(IMAGE)
 
-# Deploys the shared authenticated server. One-time GCP setup (APIs, OAuth
-# client, secrets, service account) is documented in the README; this target
-# only rolls out a new revision. Non-secret runtime settings live in
-# deploy/cloudrun.env (copy deploy/cloudrun.env.example); the file is folded
-# into --set-env-vars because gcloud forbids combining --env-vars-file with
-# --set-secrets.
+bootstrap-check:
+	GCP_PROJECT="$(GCP_PROJECT)" GCP_REGION="$(GCP_REGION)" AR_REPO="$(AR_REPO)" SERVICE="$(SERVICE)" ./deploy/bootstrap.sh check
+
+bootstrap-apply:
+	GCP_PROJECT="$(GCP_PROJECT)" GCP_REGION="$(GCP_REGION)" AR_REPO="$(AR_REPO)" SERVICE="$(SERVICE)" ./deploy/bootstrap.sh apply
+
+edge-check:
+	GCP_PROJECT="$(GCP_PROJECT)" GCP_REGION="$(GCP_REGION)" AR_REPO="$(AR_REPO)" SERVICE="$(SERVICE)" ./deploy/edge.sh check
+
+edge-apply:
+	GCP_PROJECT="$(GCP_PROJECT)" GCP_REGION="$(GCP_REGION)" AR_REPO="$(AR_REPO)" SERVICE="$(SERVICE)" ./deploy/edge.sh apply
+
+infra-check: bootstrap-check edge-check
+
+infra-apply: bootstrap-apply edge-apply
+
+observability-check:
+	GCP_PROJECT="$(GCP_PROJECT)" GCP_REGION="$(GCP_REGION)" SERVICE="$(SERVICE)" ./deploy/observability.sh check
+
+observability-apply:
+	GCP_PROJECT="$(GCP_PROJECT)" GCP_REGION="$(GCP_REGION)" SERVICE="$(SERVICE)" ./deploy/observability.sh apply
+
+deploy-check:
+	GCP_PROJECT="$(GCP_PROJECT)" GCP_REGION="$(GCP_REGION)" SERVICE="$(SERVICE)" ./deploy/rollout.sh check
+
+# Prepare a breaking release without an operator token or traffic promotion.
+deploy-prepare: docker-push
+	GCP_PROJECT="$(GCP_PROJECT)" GCP_REGION="$(GCP_REGION)" AR_REPO="$(AR_REPO)" SERVICE="$(SERVICE)" IMAGE="$(IMAGE)" ./deploy/rollout.sh prepare
+
+# Route OAuth and authorize against the prepared candidate first; see RUNBOOK.
+deploy-cutover:
+	GCP_PROJECT="$(GCP_PROJECT)" GCP_REGION="$(GCP_REGION)" SERVICE="$(SERVICE)" ./deploy/rollout.sh cutover
+
+# Compatible releases only: both revisions must accept the operator token.
+# Promotes 10% -> 50% -> 100% after authenticated readiness and signal gates.
 deploy: docker-push
-	gcloud run deploy $(SERVICE) \
-		--project $(GCP_PROJECT) \
-		--region $(GCP_REGION) \
-		--image $(IMAGE) \
-		--service-account $(SERVICE)@$(GCP_PROJECT).iam.gserviceaccount.com \
-		--allow-unauthenticated \
-		--min-instances 0 \
-		--max-instances 3 \
-		--memory 512Mi \
-		--args run \
-		--set-env-vars "^@^$$(grep -v '^\s*\#' deploy/cloudrun.env | grep -v '^\s*$$' | sed 's/: /=/' | paste -sd'@' -)" \
-		--set-secrets AUTH_GOOGLE_CLIENT_SECRET=mcp-obs-google-client-secret:latest,AUTH_TOKEN_KEY=mcp-obs-token-key:latest
+	GCP_PROJECT="$(GCP_PROJECT)" GCP_REGION="$(GCP_REGION)" AR_REPO="$(AR_REPO)" SERVICE="$(SERVICE)" IMAGE="$(IMAGE)" ./deploy/rollout.sh apply

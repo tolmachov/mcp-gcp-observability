@@ -19,7 +19,7 @@ const projectAccessPermission = "resourcemanager.projects.get"
 
 // AccessChecker decides whether the bearer of a Google access token may use
 // this server. Production uses the Cloud Resource Manager testIamPermissions
-// probe (see Config.RequireProjectAccess); tests inject fakes.
+// probe for a pinned deployment; tests inject fakes.
 type AccessChecker interface {
 	// HasProjectAccess reports whether the token's account holds
 	// projectAccessPermission on the given project. "No access" is
@@ -46,8 +46,8 @@ func newCRMAccessChecker() *crmAccessChecker {
 func (c *crmAccessChecker) HasProjectAccess(ctx context.Context, googleAccessToken, project string) (bool, error) {
 	body := `{"permissions":["` + projectAccessPermission + `"]}`
 	// Not attacker-influenced: endpoint is a constant (a test server in
-	// tests) and project is either server configuration or a
-	// format-validated user choice (see projectIDRe), path-escaped here.
+	// tests) and project is format-validated server configuration,
+	// path-escaped here.
 	reqURL := c.endpoint + "/v3/projects/" + url.PathEscape(project) + ":testIamPermissions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, strings.NewReader(body)) //nolint:gosec // G704: see above
 	if err != nil {

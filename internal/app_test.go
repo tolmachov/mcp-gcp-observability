@@ -96,9 +96,7 @@ func TestRunCommand_VariantIsCaseSensitive(t *testing.T) {
 	assert.Contains(t, err.Error(), "must be one of")
 }
 
-// TestRunCommand_UnknownAuthMode verifies --auth with an invalid value is
-// rejected at the CLI layer before any server construction.
-func TestRunCommand_UnknownAuthMode(t *testing.T) {
+func TestRunCommand_AuthFlagWasRemoved(t *testing.T) {
 	var out, errOut bytes.Buffer
 	app := New(strings.NewReader(""), &out, &errOut)
 	err := app.Run(context.Background(), []string{
@@ -107,22 +105,19 @@ func TestRunCommand_UnknownAuthMode(t *testing.T) {
 		"--auth=basic",
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "basic")
-	assert.Contains(t, err.Error(), "unsupported auth mode")
+	assert.Contains(t, err.Error(), "flag provided but not defined: -auth")
 }
 
-// TestRunCommand_AuthRequiresHTTP pins the guard that --auth google cannot
-// run on the stdio transport.
-func TestRunCommand_AuthRequiresHTTP(t *testing.T) {
+func TestRunCommand_HTTPRequiresCompleteOAuthConfiguration(t *testing.T) {
 	var out, errOut bytes.Buffer
 	app := New(strings.NewReader(""), &out, &errOut)
 	err := app.Run(context.Background(), []string{
 		"mcp-gcp-observability", "run",
+		"--transport=http",
 		"--gcp-default-project=test-project",
-		"--auth=google",
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "requires --transport http")
+	assert.Contains(t, err.Error(), "invalid issuer URL")
 }
 
 func writeTempYAML(t *testing.T, content string) string {

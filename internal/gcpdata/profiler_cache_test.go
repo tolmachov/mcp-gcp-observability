@@ -1,88 +1,92 @@
 package gcpdata
 
 import (
+	"bytes"
 	"testing"
 
-	"github.com/google/pprof/profile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func makeTestProfile(label string) *profile.Profile {
-	return &profile.Profile{
-		Comments: []string{label},
-	}
+func newSmallProfileCache(t *testing.T, max int64) *ProfileCache {
+	t.Helper()
+	c := NewProfileCache()
+	c.maxBytes = max
+	t.Cleanup(c.Close)
+	return c
 }
 
 func TestProfileCache_GetMiss(t *testing.T) {
-	c := NewProfileCache(3)
+	c := newSmallProfileCache(t, 16)
 	_, _, ok := c.Get("nonexistent")
 	assert.False(t, ok)
 }
 
-func TestProfileCache_PutAndGet(t *testing.T) {
-	c := NewProfileCache(3)
-	p := makeTestProfile("test")
+func TestProfileCache_PutAndGetCopiesBytes(t *testing.T) {
+	c := newSmallProfileCache(t, 16)
+	data := []byte("source")
 	meta := ProfileMeta{ProfileID: "p1", ProfileType: "CPU"}
+	require.True(t, c.Put("key1", data, meta))
+	data[0] = 'X'
 
-	c.Put("key1", p, meta)
 	got, gotMeta, ok := c.Get("key1")
 	require.True(t, ok)
-	assert.Equal(t, p, got)
+	assert.Equal(t, []byte("source"), got)
 	assert.Equal(t, meta, gotMeta)
+	got[0] = 'Y'
+	again, _, _ := c.Get("key1")
+	assert.Equal(t, []byte("source"), again)
 }
 
-func TestProfileCache_Eviction(t *testing.T) {
-	c := NewProfileCache(2)
-	c.Put("a", makeTestProfile("a"), ProfileMeta{ProfileID: "a"})
-	c.Put("b", makeTestProfile("b"), ProfileMeta{ProfileID: "b"})
-	c.Put("c", makeTestProfile("c"), ProfileMeta{ProfileID: "c"})
+func TestProfileCache_ByteBoundedEviction(t *testing.T) {
+	c := newSmallProfileCache(t, 6)
+	require.True(t, c.Put("a", []byte("aaa"), ProfileMeta{ProfileID: "a"}))
+	require.True(t, c.Put("b", []byte("bb"), ProfileMeta{ProfileID: "b"}))
+	require.True(t, c.Put("c", []byte("cccc"), ProfileMeta{ProfileID: "c"}))
 
-	// "a" should be evicted.
 	_, _, ok := c.Get("a")
 	assert.False(t, ok)
-	// "b" and "c" should still be present.
 	_, _, ok = c.Get("b")
 	assert.True(t, ok)
 	_, _, ok = c.Get("c")
 	assert.True(t, ok)
-	assert.Equal(t, 2, c.Len())
+	assert.Equal(t, int64(6), c.Bytes())
 }
 
 func TestProfileCache_LRUOrder(t *testing.T) {
-	c := NewProfileCache(2)
-	c.Put("a", makeTestProfile("a"), ProfileMeta{ProfileID: "a"})
-	c.Put("b", makeTestProfile("b"), ProfileMeta{ProfileID: "b"})
-
-	// Access "a" to make it recently used.
+	c := newSmallProfileCache(t, 4)
+	require.True(t, c.Put("a", []byte("aa"), ProfileMeta{}))
+	require.True(t, c.Put("b", []byte("bb"), ProfileMeta{}))
 	c.Get("a")
-
-	// Adding "c" should evict "b" (least recently used), not "a".
-	c.Put("c", makeTestProfile("c"), ProfileMeta{ProfileID: "c"})
+	require.True(t, c.Put("c", []byte("cc"), ProfileMeta{}))
 
 	_, _, ok := c.Get("a")
-	assert.True(t, ok, "a should survive because it was accessed recently")
+	assert.True(t, ok)
 	_, _, ok = c.Get("b")
-	assert.False(t, ok, "b should be evicted as least recently used")
+	assert.False(t, ok)
 	_, _, ok = c.Get("c")
 	assert.True(t, ok)
 }
 
-func TestProfileCache_OverwriteSameKey(t *testing.T) {
-	c := NewProfileCache(2)
-	c.Put("a", makeTestProfile("v1"), ProfileMeta{ProfileID: "a", ProfileType: "CPU"})
-	c.Put("a", makeTestProfile("v2"), ProfileMeta{ProfileID: "a", ProfileType: "HEAP"})
-
-	got, gotMeta, ok := c.Get("a")
+func TestProfileCache_OverwriteReleasesBudget(t *testing.T) {
+	c := newSmallProfileCache(t, 8)
+	require.True(t, c.Put("a", []byte("v1"), ProfileMeta{ProfileType: "CPU"}))
+	require.True(t, c.Put("a", []byte("version2"), ProfileMeta{ProfileType: "HEAP"}))
+	got, meta, ok := c.Get("a")
 	require.True(t, ok)
-	assert.Equal(t, "v2", got.Comments[0])
-	assert.Equal(t, "HEAP", gotMeta.ProfileType)
+	assert.True(t, bytes.Equal([]byte("version2"), got))
+	assert.Equal(t, "HEAP", meta.ProfileType)
 	assert.Equal(t, 1, c.Len())
+	assert.Equal(t, int64(8), c.Bytes())
 }
 
-func TestProfileCache_DefaultSize(t *testing.T) {
-	c := NewProfileCache(0)
-	assert.Equal(t, defaultProfileCacheSize, c.maxSize)
-	c = NewProfileCache(-5)
-	assert.Equal(t, defaultProfileCacheSize, c.maxSize)
+func TestProfileCache_RejectsOversizedEntryAndCloseReleasesProcessBudget(t *testing.T) {
+	before := processProfileCacheBytes.Load()
+	c := NewProfileCache()
+	c.maxBytes = 3
+	assert.False(t, c.Put("too-big", []byte("four"), ProfileMeta{}))
+	require.True(t, c.Put("ok", []byte("123"), ProfileMeta{}))
+	assert.Equal(t, before+3, processProfileCacheBytes.Load())
+	c.Close()
+	assert.Equal(t, before, processProfileCacheBytes.Load())
 }

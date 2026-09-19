@@ -23,23 +23,26 @@ func RegisterErrorsTrends(s *mcp.Server, d Deps) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
+		InputSchema: projectInputSchema[ErrorsListInput](d.Project,
+			enumPatch{"window", enumErrorWindow},
+		),
 		OutputSchema: outputSchemaFor[gcpdata.ErrorTrendList](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ErrorsListInput) (*mcp.CallToolResult, *gcpdata.ErrorTrendList, error) {
-		project, err := resolveProject(in.ProjectID, d.DefaultProject)
+		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
 
-		timeRangeHours, err := resolveErrorsTimeRange(in)
+		window, err := resolveErrorsWindow(in.Window)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
 
-		limit := clampLimit(in.Limit, 50, d.ErrorsMaxLimit)
+		limit := clampLimit(in.Limit, 50, ErrorsHardLimit)
 
 		sendProgress(ctx, req, 0, 1, "Analyzing error trends...")
 
-		result, err := d.Errors.AnalyzeErrorTrends(ctx, project, timeRangeHours, limit, in.ServiceFilter, in.VersionFilter)
+		result, err := d.Errors.AnalyzeErrorTrends(ctx, project, window, limit, in.ServiceFilter, in.VersionFilter)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "errors_trends", fmt.Sprintf("analyze error trends failed for project %s: %v", project, err))
 			return errResult(fmt.Sprintf("Failed to analyze error trends: %v. Verify the project_id and that Error Reporting API is enabled.", err)), nil, nil

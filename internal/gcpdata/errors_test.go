@@ -2,35 +2,37 @@ package gcpdata
 
 import (
 	"testing"
+	"time"
 
 	"cloud.google.com/go/errorreporting/apiv1beta1/errorreportingpb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestTimeRangePeriod(t *testing.T) {
+func TestErrorWindowSpec(t *testing.T) {
 	tests := []struct {
-		name  string
-		hours int
-		want  errorreportingpb.QueryTimeRange_Period
+		window ErrorWindow
+		period errorreportingpb.QueryTimeRange_Period
+		span   time.Duration
+		bucket time.Duration
 	}{
-		{"1 hour", 1, errorreportingpb.QueryTimeRange_PERIOD_1_HOUR},
-		{"0 hours", 0, errorreportingpb.QueryTimeRange_PERIOD_1_HOUR},
-		{"2 hours rounds to 6h", 2, errorreportingpb.QueryTimeRange_PERIOD_6_HOURS},
-		{"6 hours exact", 6, errorreportingpb.QueryTimeRange_PERIOD_6_HOURS},
-		{"7 hours rounds to 1d", 7, errorreportingpb.QueryTimeRange_PERIOD_1_DAY},
-		{"24 hours exact", 24, errorreportingpb.QueryTimeRange_PERIOD_1_DAY},
-		{"25 hours rounds to 1w", 25, errorreportingpb.QueryTimeRange_PERIOD_1_WEEK},
-		{"168 hours (1 week) exact", 168, errorreportingpb.QueryTimeRange_PERIOD_1_WEEK},
-		{"169 hours rounds to 30d", 169, errorreportingpb.QueryTimeRange_PERIOD_30_DAYS},
-		{"720 hours (30 days)", 720, errorreportingpb.QueryTimeRange_PERIOD_30_DAYS},
+		{ErrorWindow1H, errorreportingpb.QueryTimeRange_PERIOD_1_HOUR, time.Hour, 5 * time.Minute},
+		{ErrorWindow6H, errorreportingpb.QueryTimeRange_PERIOD_6_HOURS, 6 * time.Hour, 30 * time.Minute},
+		{ErrorWindow24H, errorreportingpb.QueryTimeRange_PERIOD_1_DAY, 24 * time.Hour, time.Hour},
+		{ErrorWindow7D, errorreportingpb.QueryTimeRange_PERIOD_1_WEEK, 7 * 24 * time.Hour, 6 * time.Hour},
+		{ErrorWindow30D, errorreportingpb.QueryTimeRange_PERIOD_30_DAYS, 30 * 24 * time.Hour, 24 * time.Hour},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := timeRangePeriod(tt.hours)
-			assert.Equal(t, tt.want, got)
+		t.Run(string(tt.window), func(t *testing.T) {
+			got, ok := tt.window.Spec()
+			require.True(t, ok)
+			assert.Equal(t, tt.period, got.Period)
+			assert.Equal(t, tt.span, got.Span)
+			assert.Equal(t, tt.bucket, got.Bucket)
 		})
 	}
+	_, ok := ErrorWindow("2h").Spec()
+	assert.False(t, ok)
 }
 
 func TestConvertErrorContext(t *testing.T) {

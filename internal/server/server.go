@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/experimental-ext-variants/go/sdk/variants"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -54,7 +57,7 @@ const serverInstructions = "Recommended workflow: " +
 	"2) profiler_top — see top functions by resource consumption. " +
 	"3) profiler_peek — understand a hotspot's callers and callees. " +
 	"4) profiler_flamegraph — view bounded subtree of the call graph. " +
-	"5) profiler_compare — compare two profiles to find regressions (use diff_id with top/peek/flamegraph). " +
+	"5) profiler_compare — compare two profiles to find regressions; pass base_profile_id to top/peek/flamegraph to navigate a diff. " +
 	"6) profiler_trends — track how function costs change over time across multiple profiles. " +
 	"Use profiler_compare for point-in-time A/B comparison; use profiler_trends for historical cost evolution."
 
@@ -67,13 +70,19 @@ type Server struct {
 	stdin     io.Reader
 	stdout    io.Writer
 	errOut    io.Writer
+	project   tools.ProjectPolicy
+	profiler  chan struct{}
 }
 
 // New creates a new MCP server.
 func New(cfg *gcpclient.Config, version string, stdin io.Reader, stdout, errOut io.Writer) (*Server, error) {
+	project, err := tools.NewProjectPolicy(cfg.DefaultProject)
+	if err != nil {
+		return nil, err
+	}
 	completer := &promptCompleter{}
 
-	logger := slog.New(slog.NewTextHandler(errOut, &slog.HandlerOptions{
+	logger := slog.New(slog.NewJSONHandler(errOut, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
 
@@ -87,6 +96,8 @@ func New(cfg *gcpclient.Config, version string, stdin io.Reader, stdout, errOut 
 		stdin:     stdin,
 		stdout:    stdout,
 		errOut:    errOut,
+		project:   project,
+		profiler:  make(chan struct{}, 2),
 	}
 	return s, nil
 }
@@ -126,7 +137,88 @@ func (s *Server) newMCPInstance(completer *promptCompleter) *mcp.Server {
 	)
 	srv.AddReceivingMiddleware(panicRecoveryMiddleware(s.logger))
 	srv.AddReceivingMiddleware(authErrorHintMiddleware())
+	srv.AddReceivingMiddleware(toolLimitsMiddleware(make(chan struct{}, 4), s.profiler, s.logger))
 	return srv
+}
+
+const maxEncodedToolResultBytes = 2 << 20
+const profilerToolTimeout = 8 * time.Minute
+const structuredResultContentNotice = "The complete result is available in structuredContent."
+
+func toolLimitsMiddleware(userCalls, profilerCalls chan struct{}, logger *slog.Logger) func(mcp.MethodHandler) mcp.MethodHandler {
+	return func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+			if method != "tools/call" {
+				return next(ctx, method, req)
+			}
+			select {
+			case userCalls <- struct{}{}:
+				defer func() { <-userCalls }()
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			var releaseProfiler func()
+			if call, ok := req.(*mcp.CallToolRequest); ok && call.Params != nil && strings.HasPrefix(call.Params.Name, "profiler_") {
+				profilerCtx, cancel := context.WithTimeout(ctx, profilerToolTimeout)
+				defer cancel()
+				ctx = profilerCtx
+				if len(profilerCalls) == cap(profilerCalls) {
+					logger.Warn("profiler_saturation", "limit", cap(profilerCalls), "tool", call.Params.Name)
+				}
+				select {
+				case profilerCalls <- struct{}{}:
+					releaseProfiler = func() { <-profilerCalls }
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			if releaseProfiler != nil {
+				defer releaseProfiler()
+			}
+			result, err := next(ctx, method, req)
+			if err != nil || result == nil {
+				return result, err
+			}
+			encoded, marshalErr := json.Marshal(result)
+			if marshalErr != nil {
+				return nil, fmt.Errorf("serialize tool result: %w", marshalErr)
+			}
+			// The typed MCP helper mirrors structuredContent into a JSON text
+			// content block. For large but valid results that duplication alone
+			// can push the wire response over budget. Remove only an exact
+			// auto-generated duplicate, then measure the actual response again.
+			// Custom human-facing content (for example metric analysis without
+			// chart points) is never rewritten.
+			if len(encoded) > maxEncodedToolResultBytes && compactDuplicatedStructuredContent(result) {
+				encoded, marshalErr = json.Marshal(result)
+				if marshalErr != nil {
+					return nil, fmt.Errorf("serialize compacted tool result: %w", marshalErr)
+				}
+			}
+			if len(encoded) > maxEncodedToolResultBytes {
+				logger.Error("response_budget_violation", "method", method, "bytes", len(encoded), "limit", maxEncodedToolResultBytes)
+				return nil, fmt.Errorf("tool result exceeds the %d-byte response budget", maxEncodedToolResultBytes)
+			}
+			return result, nil
+		}
+	}
+}
+
+func compactDuplicatedStructuredContent(result mcp.Result) bool {
+	call, ok := result.(*mcp.CallToolResult)
+	if !ok || call.StructuredContent == nil || len(call.Content) != 1 {
+		return false
+	}
+	textContent, ok := call.Content[0].(*mcp.TextContent)
+	if !ok {
+		return false
+	}
+	structured, err := json.Marshal(call.StructuredContent)
+	if err != nil || textContent.Text != string(structured) {
+		return false
+	}
+	call.Content = []mcp.Content{&mcp.TextContent{Text: structuredResultContentNotice}}
+	return true
 }
 
 // RunOptions selects the transport and its settings for Server.Run.
@@ -139,11 +231,9 @@ type RunOptions struct {
 	// bypasses the variants negotiation protocol entirely (the client sees a
 	// plain MCP server). Valid values are listed by KnownVariantIDs.
 	VariantID string
-	// Auth, when non-nil, enables the embedded OAuth authorization server on
-	// the http transport: MCP requests require a bearer token, and GCP API
-	// calls run under each caller's own Google identity. nil serves
-	// unauthenticated HTTP (put an authenticating proxy in front) and uses
-	// Application Default Credentials, like stdio.
+	// Auth is mandatory for HTTP: MCP requests require a Google-backed bearer
+	// token and GCP API calls run under each caller's own identity. It must be
+	// nil for stdio, which uses Application Default Credentials.
 	Auth *authsrv.Config
 }
 
@@ -162,6 +252,9 @@ func (s *Server) Run(ctx context.Context, opts RunOptions) error {
 	if opts.Auth != nil && opts.Transport != TransportHTTP {
 		return fmt.Errorf("auth requires --transport %s", TransportHTTP)
 	}
+	if opts.Transport == TransportHTTP && opts.Auth == nil {
+		return fmt.Errorf("HTTP transport requires Google OAuth and Firestore configuration")
+	}
 
 	// LoadRegistry merges user overlay (if any) with embedded GCP defaults.
 	registryPath := s.resolveRegistryPath()
@@ -170,7 +263,7 @@ func (s *Server) Run(ctx context.Context, opts RunOptions) error {
 		return fmt.Errorf("loading metrics registry: %w", regErr)
 	}
 
-	if opts.Auth != nil {
+	if opts.Transport == TransportHTTP {
 		return s.runHTTPWithAuth(ctx, reg, opts)
 	}
 
@@ -186,6 +279,15 @@ func (s *Server) Run(ctx context.Context, opts RunOptions) error {
 
 	s.wireCompleter(s.completer, reg, client)
 	deps := s.buildDeps(client, reg)
+	profilerCloser, ok := deps.Profiler.(io.Closer)
+	if !ok {
+		return fmt.Errorf("profiler backend does not expose its cache lifecycle")
+	}
+	defer func() {
+		if closeErr := profilerCloser.Close(); closeErr != nil {
+			s.logger.Warn("failed to close profiler cache", "err", closeErr)
+		}
+	}()
 
 	if opts.VariantID != "" {
 		srv, buildErr := s.buildSingleVariantServer(VariantID(opts.VariantID), client, deps, s.completer)
@@ -193,18 +295,12 @@ func (s *Server) Run(ctx context.Context, opts RunOptions) error {
 			return fmt.Errorf("building variant server: %w", buildErr)
 		}
 		s.logger.Info("Starting with forced variant", "variant", opts.VariantID)
-		if opts.Transport == TransportHTTP {
-			return s.runMCPHTTP(ctx, srv, opts.HTTPAddr)
-		}
 		return s.runStdio(ctx, srv)
 	}
 
 	vs, err := s.buildVariantsServer(client, deps, s.completer)
 	if err != nil {
 		return fmt.Errorf("building variants server: %w", err)
-	}
-	if opts.Transport == TransportHTTP {
-		return s.runHTTP(ctx, vs, opts.HTTPAddr)
 	}
 	return s.runStdio(ctx, vs)
 }
@@ -213,15 +309,13 @@ func (s *Server) Run(ctx context.Context, opts RunOptions) error {
 // builders clone it and set Mode per spec.
 func (s *Server) buildDeps(client *gcpclient.Client, reg *metrics.Registry) tools.Deps {
 	return tools.Deps{
-		Logs:           gcpdata.NewLoggingQuerier(client.LoggingClient()),
-		Errors:         gcpdata.NewErrorReportingQuerier(client.ErrorsClient()),
-		Traces:         gcpdata.NewCloudTraceQuerier(client.TraceClient()),
-		Profiler:       gcpdata.NewCloudProfilerQuerier(client.ProfilerService(), profileCacheSize),
-		Querier:        gcpdata.NewMonitoringQuerier(client.MonitoringClient()),
-		Registry:       reg,
-		DefaultProject: client.Config().DefaultProject,
-		LogsMaxLimit:   s.cfg.LogsMaxLimit,
-		ErrorsMaxLimit: s.cfg.ErrorsMaxLimit,
+		Logs:     gcpdata.NewLoggingQuerier(client.LoggingClient()),
+		Errors:   gcpdata.NewErrorReportingQuerier(client.ErrorsClient()),
+		Traces:   gcpdata.NewCloudTraceQuerier(client.TraceClient()),
+		Profiler: gcpdata.NewCloudProfilerQuerier(client.ProfilerService()),
+		Querier:  gcpdata.NewMonitoringQuerier(client.MonitoringClient()),
+		Registry: reg,
+		Project:  s.project,
 	}
 }
 
@@ -231,13 +325,7 @@ func (s *Server) buildDeps(client *gcpclient.Client, reg *metrics.Registry) tool
 // forced) variant server(s).
 func (s *Server) userAssemblyBuilder(reg *metrics.Registry, variantID string) userHandlerBuilder {
 	return func(ctx context.Context, user *authsrv.UserIdentity, ts oauth2.TokenSource) (http.Handler, io.Closer, error) {
-		// The grant may be bound to a user-chosen project (project-choice
-		// mode); it becomes this assembly's default project. With a pinned
-		// project the two values coincide.
 		cfg := *s.cfg
-		if user.Project != "" {
-			cfg.DefaultProject = user.Project
-		}
 		client, err := gcpclient.NewWithTokenSource(ctx, &cfg, ts)
 		if err != nil {
 			return nil, nil, fmt.Errorf("creating per-user GCP client: %w", err)
@@ -245,21 +333,25 @@ func (s *Server) userAssemblyBuilder(reg *metrics.Registry, variantID string) us
 		completer := &promptCompleter{}
 		s.wireCompleter(completer, reg, client)
 		deps := s.buildDeps(client, reg)
+		profilerCloser, ok := deps.Profiler.(io.Closer)
+		if !ok {
+			return nil, nil, errors.Join(fmt.Errorf("profiler backend does not expose its cache lifecycle"), client.Close())
+		}
 
 		if variantID != "" {
 			srv, buildErr := s.buildSingleVariantServer(VariantID(variantID), client, deps, completer)
 			if buildErr != nil {
-				return nil, nil, errors.Join(fmt.Errorf("building variant server: %w", buildErr), client.Close())
+				return nil, nil, errors.Join(fmt.Errorf("building variant server: %w", buildErr), profilerCloser.Close(), client.Close())
 			}
-			handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil)
-			return handler, client, nil
+			handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, &mcp.StreamableHTTPOptions{Stateless: true})
+			return handler, multiCloser{profilerCloser, client}, nil
 		}
 
 		vs, buildErr := s.buildVariantsServer(client, deps, completer)
 		if buildErr != nil {
-			return nil, nil, errors.Join(fmt.Errorf("building variants server: %w", buildErr), client.Close())
+			return nil, nil, errors.Join(fmt.Errorf("building variants server: %w", buildErr), profilerCloser.Close(), client.Close())
 		}
-		return variants.NewStreamableHTTPHandler(vs, nil), multiCloser{vs, client}, nil
+		return variants.NewStreamableHTTPHandler(vs, &mcp.StreamableHTTPOptions{Stateless: true}), multiCloser{vs, profilerCloser, client}, nil
 	}
 }
 
@@ -267,11 +359,14 @@ func (s *Server) userAssemblyBuilder(reg *metrics.Registry, variantID string) us
 // service-list cache lives inside the closure, so each completer (one per
 // user in HTTP auth mode) caches independently.
 func (s *Server) wireCompleter(c *promptCompleter, reg *metrics.Registry, client *gcpclient.Client) {
-	defaultProject := client.Config().DefaultProject
 	c.registry = reg
-	c.defaultProject = defaultProject
+	c.project = s.project
+	if !s.project.Pinned() {
+		c.loadServices = nil
+		return
+	}
 	c.loadServices = newCachedServiceLister(func(ctx context.Context) (*gcpdata.ServiceList, error) {
-		return gcpdata.ListServices(ctx, client.LoggingClient(), defaultProject, "")
+		return gcpdata.ListServices(ctx, client.LoggingClient(), s.project.Project(), "")
 	}, s.logger)
 }
 

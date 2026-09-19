@@ -13,7 +13,7 @@ func RegisterLogsSummary(s *mcp.Server, d Deps) {
 	requireLogs(d.Logs)
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "logs_summary",
-		Description: applyMode(d.Mode, "Get an aggregated summary of logs (based on up to 1000 sampled entries): severity distribution, top services, top errors, and sample entries. "+
+		Description: applyMode(d.Mode, "Get an aggregated summary of logs (based on up to 200 sampled entries): severity distribution, top services, top errors, and sample entries. "+
 			"Useful for initial triage before drilling down with logs_query or logs_k8s. "+
 			"Does NOT return full log entries — use logs_query for that."),
 		Annotations: &mcp.ToolAnnotations{
@@ -21,9 +21,10 @@ func RegisterLogsSummary(s *mcp.Server, d Deps) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
+		InputSchema:  projectInputSchema[LogsSummaryInput](d.Project),
 		OutputSchema: outputSchemaFor[gcpdata.LogsSummary](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsSummaryInput) (*mcp.CallToolResult, *gcpdata.LogsSummary, error) {
-		project, err := resolveProject(in.ProjectID, d.DefaultProject)
+		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -35,7 +36,7 @@ func RegisterLogsSummary(s *mcp.Server, d Deps) {
 		}
 		filter = gcpdata.AppendFilter(filter, timeFilter)
 
-		sendProgress(ctx, req, 0, 1000, "Scanning log entries")
+		sendProgress(ctx, req, 0, LogsHardLimit, "Scanning log entries")
 
 		result, err := d.Logs.SummarizeLogs(ctx, project, filter,
 			func(scanned, total int) {
@@ -47,7 +48,7 @@ func RegisterLogsSummary(s *mcp.Server, d Deps) {
 			return errResult(fmt.Sprintf("Failed to summarize logs: %v. Verify the project_id and filter syntax.", err)), nil, nil
 		}
 
-		sendProgress(ctx, req, 1000, 1000, "Aggregating results")
+		sendProgress(ctx, req, LogsHardLimit, LogsHardLimit, "Aggregating results")
 
 		return nil, result, nil
 	})

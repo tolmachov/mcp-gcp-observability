@@ -25,12 +25,12 @@ func RegisterProfilerList(s *mcp.Server, d Deps) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
-		InputSchema: inputSchemaWithEnums[ProfilerListInput](
+		InputSchema: projectInputSchema[ProfilerListInput](d.Project,
 			enumPatch{"profile_type", enumProfileType},
 		),
 		OutputSchema: outputSchemaFor[gcpdata.ProfileListResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerListInput) (*mcp.CallToolResult, *gcpdata.ProfileListResult, error) {
-		project, err := resolveProject(in.ProjectID, d.DefaultProject)
+		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}

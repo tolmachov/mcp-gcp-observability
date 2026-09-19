@@ -22,17 +22,17 @@ func RegisterLogsK8s(s *mcp.Server, d Deps) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
-		InputSchema: inputSchemaWithEnums[LogsK8sInput](
+		InputSchema: projectInputSchema[LogsK8sInput](d.Project,
 			enumPatch{"severity", enumSeverity},
 			enumPatch{"order", enumSortOrder},
 		),
 		OutputSchema: outputSchemaFor[gcpdata.LogQueryResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsK8sInput) (*mcp.CallToolResult, *gcpdata.LogQueryResult, error) {
-		project, err := resolveProject(in.ProjectID, d.DefaultProject)
+		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
-		limit := clampLimit(in.Limit, 100, d.LogsMaxLimit)
+		limit := clampLimit(in.Limit, 100, LogsHardLimit)
 
 		// Build K8s-specific filter
 		parts := []string{`resource.type="k8s_container"`}

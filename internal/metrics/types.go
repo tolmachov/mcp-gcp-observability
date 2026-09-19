@@ -3,6 +3,7 @@ package metrics
 import (
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -240,11 +241,11 @@ func (m MetricMeta) Validate(name string) error {
 	if !m.BetterDirection.IsValid() {
 		errs = append(errs, fmt.Errorf("metric %q: invalid better_direction %q", name, m.BetterDirection))
 	}
-	if m.SLOThreshold != nil && *m.SLOThreshold < 0 {
-		errs = append(errs, fmt.Errorf("metric %q: slo_threshold must be non-negative", name))
+	if m.SLOThreshold != nil && (math.IsNaN(*m.SLOThreshold) || math.IsInf(*m.SLOThreshold, 0) || *m.SLOThreshold < 0) {
+		errs = append(errs, fmt.Errorf("metric %q: slo_threshold must be finite and non-negative", name))
 	}
-	if m.SaturationCap != nil && *m.SaturationCap <= 0 {
-		errs = append(errs, fmt.Errorf("metric %q: saturation_cap must be positive", name))
+	if m.SaturationCap != nil && (math.IsNaN(*m.SaturationCap) || math.IsInf(*m.SaturationCap, 0) || *m.SaturationCap <= 0) {
+		errs = append(errs, fmt.Errorf("metric %q: saturation_cap must be finite and positive", name))
 	}
 	if m.Thresholds != nil {
 		if err := m.Thresholds.Validate(); err != nil {
@@ -267,6 +268,12 @@ type ClassificationThresholds struct {
 }
 
 func (t ClassificationThresholds) Validate() error {
+	if math.IsNaN(t.SignificantDeltaPct) || math.IsInf(t.SignificantDeltaPct, 0) ||
+		math.IsNaN(t.BreachRatioForRegress) || math.IsInf(t.BreachRatioForRegress, 0) ||
+		math.IsNaN(t.CVForNoisy) || math.IsInf(t.CVForNoisy, 0) ||
+		math.IsNaN(t.SpikeZScore) || math.IsInf(t.SpikeZScore, 0) {
+		return fmt.Errorf("all thresholds must be finite")
+	}
 	if t.SignificantDeltaPct <= 0 {
 		return fmt.Errorf("significant_delta_pct must be positive, got %v", t.SignificantDeltaPct)
 	}
@@ -432,11 +439,12 @@ type SignalFeatures struct {
 }
 
 type DataQuality struct {
-	ExpectedPoints int  `json:"expected_points"`
-	ActualPoints   int  `json:"actual_points"`
-	GapCount       int  `json:"gap_count"`
-	MaxGapSeconds  int  `json:"max_gap_seconds"`
-	Reliable       bool `json:"reliable"`
+	ExpectedPoints  int  `json:"expected_points"`
+	ActualPoints    int  `json:"actual_points"`
+	GapCount        int  `json:"gap_count"`
+	MaxGapSeconds   int  `json:"max_gap_seconds"`
+	NonFinitePoints int  `json:"non_finite_points"`
+	Reliable        bool `json:"reliable"`
 	// WindowChecked is true when reliability was judged against the requested
 	// window (leading/trailing dead regions detectable) and false when it fell
 	// back to the observed point span — either because the window was unknown

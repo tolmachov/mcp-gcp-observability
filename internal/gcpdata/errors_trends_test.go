@@ -101,10 +101,10 @@ func TestAnalyzeTrendStats(t *testing.T) {
 		group("gone", 6, timedCount(base, 0, 6)),                             // older 6, recent 0 -> disappeared
 	}
 
-	res := analyzeTrendStats(stats, 4)
+	res := analyzeTrendStats(stats, ErrorWindow6H)
 	require.NotNil(t, res)
 	assert.Equal(t, 4, res.Count)
-	assert.Equal(t, 4, res.WindowHours)
+	assert.Equal(t, ErrorWindow6H, res.Window)
 	assert.Equal(t, map[string]int{TrendFlatCount: 1, TrendNew: 1, TrendGrowing: 1, TrendDisappeared: 1}, res.Summary)
 
 	// Sorted by delta desc: new (delta 10), growing (delta 4), flat (0), gone (-6).
@@ -122,7 +122,7 @@ func TestAnalyzeTrendStats_NoBuckets(t *testing.T) {
 	stats := []*errorreportingpb.ErrorGroupStats{
 		{Group: &errorreportingpb.ErrorGroup{GroupId: "a"}, Count: 5},
 	}
-	res := analyzeTrendStats(stats, 24)
+	res := analyzeTrendStats(stats, ErrorWindow24H)
 	require.Len(t, res.Trends, 1)
 	assert.Equal(t, TrendFlatCount, res.Trends[0].Trend)
 	assert.Equal(t, int64(5), res.Trends[0].TotalCount)

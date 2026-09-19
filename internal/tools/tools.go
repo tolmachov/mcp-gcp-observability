@@ -85,12 +85,15 @@ type Deps struct {
 	Profiler gcpdata.ProfilerQuerier
 	Querier  gcpdata.MetricsQuerier
 
-	Registry       *metrics.Registry
-	DefaultProject string
-	LogsMaxLimit   int
-	ErrorsMaxLimit int
-	Mode           RegistrationMode
+	Registry *metrics.Registry
+	Project  ProjectPolicy
+	Mode     RegistrationMode
 }
+
+const (
+	LogsHardLimit   = gcpdata.LogsHardLimit
+	ErrorsHardLimit = 100
+)
 
 // WithMode returns a copy of d with Mode set to m. Variant builders use it to
 // derive a per-variant Deps from the shared base, expressing "clone then set
@@ -230,6 +233,11 @@ func aggregationWarningMessages(metricType, windowLabel string, warnings gcpdata
 		return nil
 	}
 	var msgs []string
+	if warnings.NonFinitePoints > 0 {
+		msgs = append(msgs, fmt.Sprintf(
+			"metric %q (%s): discarded %d non-finite point(s) (NaN or infinity); no public numeric field contains a non-finite value.",
+			metricType, windowLabel, warnings.NonFinitePoints))
+	}
 	if warnings.TruncatedSeries {
 		msgs = append(msgs, fmt.Sprintf(
 			"metric %q (%s): query hit the server-side time-series cap (%d series) and the result is truncated; aggregates are computed from a partial set of series only. Narrow the filter or group cardinality before trusting the numbers.",
@@ -334,6 +342,18 @@ func reportUnsupportedPoints(ctx context.Context, req *mcp.CallToolRequest, tool
 	return total
 }
 
+func reportNonFinitePoints(ctx context.Context, req *mcp.CallToolRequest, tool, metricType, window string, series []gcpdata.MetricTimeSeries) int {
+	total := 0
+	for _, s := range series {
+		total += s.NonFiniteCount
+	}
+	if total > 0 {
+		mcpLog(ctx, req, logLevelWarning, tool,
+			fmt.Sprintf("metric %q (%s): discarded %d non-finite point(s) (NaN or infinity)", metricType, window, total))
+	}
+	return total
+}
+
 // errResult creates a tool error result.
 func errResult(msg string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
@@ -425,17 +445,6 @@ func requireRegistry(r *metrics.Registry) {
 	if r == nil {
 		panic("nil metrics Registry")
 	}
-}
-
-// resolveProject returns the project ID, falling back to defaultProject.
-func resolveProject(projectID, defaultProject string) (string, error) {
-	if projectID != "" {
-		return projectID, nil
-	}
-	if defaultProject != "" {
-		return defaultProject, nil
-	}
-	return "", fmt.Errorf("project_id must not be empty: either omit it to use the default project, or provide a valid project ID")
 }
 
 // clampLimit returns limit clamped to [1, maxLimit], falling back to fallback

@@ -8,17 +8,63 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+func (s *Server) projectPromptArguments(args ...*mcp.PromptArgument) []*mcp.PromptArgument {
+	if !s.project.Pinned() {
+		args = append([]*mcp.PromptArgument{{
+			Name:        "project_id",
+			Description: "GCP project ID to use for every project-scoped tool call",
+			Required:    true,
+		}}, args...)
+	}
+	return args
+}
+
+func (s *Server) promptProject(request *mcp.GetPromptRequest, promptArgs ...string) (string, error) {
+	requested := ""
+	allowed := make(map[string]bool, len(promptArgs)+1)
+	for _, name := range promptArgs {
+		allowed[name] = true
+	}
+	if !s.project.Pinned() {
+		allowed["project_id"] = true
+	}
+	if request != nil && request.Params != nil {
+		requested = request.Params.Arguments["project_id"]
+		for name := range request.Params.Arguments {
+			if !allowed[name] {
+				return "", fmt.Errorf("unknown prompt argument %q", name)
+			}
+		}
+	}
+	project, err := s.project.Resolve(requested)
+	if err != nil {
+		return "", fmt.Errorf("project policy: %w", err)
+	}
+	return project, nil
+}
+
+func (s *Server) promptProjectHeader(project string) string {
+	if s.project.Pinned() {
+		return fmt.Sprintf("GCP PROJECT: %s (server-pinned)\nDo not send project_id; pinned tool schemas reject it.\n\n", project)
+	}
+	return fmt.Sprintf("GCP PROJECT: %s\nPass this exact project_id to every project-scoped tool.\n\n", project)
+}
+
 // registerPrompts adds MCP prompts for common observability workflows to srv.
 func (s *Server) registerPrompts(srv *mcp.Server) {
 	srv.AddPrompt(&mcp.Prompt{
 		Name:        "investigate-errors",
 		Description: "Investigate top errors: list error groups, get details for the worst one, and find related logs",
-		Arguments: []*mcp.PromptArgument{
-			{Name: "service", Description: "Optional service name to filter errors"},
-		},
+		Arguments: s.projectPromptArguments(
+			&mcp.PromptArgument{Name: "service", Description: "Optional service name to filter errors"},
+		),
 	}, func(_ context.Context, request *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+		project, err := s.promptProject(request, "service")
+		if err != nil {
+			return nil, err
+		}
 		service := request.Params.Arguments["service"]
-		msg := "Investigate the top errors in the project:\n" +
+		msg := s.promptProjectHeader(project) + "Investigate the top errors in the project:\n" +
 			"1. Use errors_list to find the most frequent error groups"
 		if service != "" {
 			msg += fmt.Sprintf(" (filter by service: %s)", service)
@@ -37,12 +83,16 @@ func (s *Server) registerPrompts(srv *mcp.Server) {
 	srv.AddPrompt(&mcp.Prompt{
 		Name:        "trace-request",
 		Description: "Trace a specific HTTP request end-to-end: find it by URL, follow its trace, and analyze spans",
-		Arguments: []*mcp.PromptArgument{
-			{Name: "url_pattern", Description: "URL pattern to search for (e.g. '/api/users')", Required: true},
-		},
+		Arguments: s.projectPromptArguments(
+			&mcp.PromptArgument{Name: "url_pattern", Description: "URL pattern to search for (e.g. '/api/users')", Required: true},
+		),
 	}, func(_ context.Context, request *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+		project, err := s.promptProject(request, "url_pattern")
+		if err != nil {
+			return nil, err
+		}
 		urlPattern := request.Params.Arguments["url_pattern"]
-		msg := fmt.Sprintf("Trace a request matching URL pattern %q:\n", urlPattern) +
+		msg := s.promptProjectHeader(project) + fmt.Sprintf("Trace a request matching URL pattern %q:\n", urlPattern) +
 			"1. Use logs_find_requests to find matching HTTP requests with their trace IDs\n" +
 			"2. Pick the most interesting request (e.g. slowest or with an error status)\n" +
 			"3. Use trace_get to see the full span tree and identify slow spans\n" +
@@ -58,14 +108,18 @@ func (s *Server) registerPrompts(srv *mcp.Server) {
 	srv.AddPrompt(&mcp.Prompt{
 		Name:        "investigate-metrics",
 		Description: "Investigate a metric anomaly: discover metrics, get snapshot, drill down by dimension, check related signals",
-		Arguments: []*mcp.PromptArgument{
-			{Name: "metric_type", Description: "Metric type to investigate (e.g. 'compute.googleapis.com/instance/cpu/utilization')"},
-			{Name: "service", Description: "Optional service or resource filter"},
-		},
+		Arguments: s.projectPromptArguments(
+			&mcp.PromptArgument{Name: "metric_type", Description: "Metric type to investigate (e.g. 'compute.googleapis.com/instance/cpu/utilization')"},
+			&mcp.PromptArgument{Name: "service", Description: "Optional service or resource filter"},
+		),
 	}, func(_ context.Context, request *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+		project, err := s.promptProject(request, "metric_type", "service")
+		if err != nil {
+			return nil, err
+		}
 		metricType := request.Params.Arguments["metric_type"]
 		service := request.Params.Arguments["service"]
-		msg := "Investigate a metric anomaly:\n"
+		msg := s.promptProjectHeader(project) + "Investigate a metric anomaly:\n"
 		if metricType == "" {
 			msg += "1. Use metrics_list to discover available metrics"
 			if service != "" {
@@ -89,8 +143,13 @@ func (s *Server) registerPrompts(srv *mcp.Server) {
 	srv.AddPrompt(&mcp.Prompt{
 		Name:        "service-health",
 		Description: "Check the health of services: discover services, summarize logs, and identify issues",
-	}, func(_ context.Context, _ *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-		msg := "Check the health of services in the project:\n" +
+		Arguments:   s.projectPromptArguments(),
+	}, func(_ context.Context, request *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+		project, err := s.promptProject(request)
+		if err != nil {
+			return nil, err
+		}
+		msg := s.promptProjectHeader(project) + "Check the health of services in the project:\n" +
 			"1. Use logs_services to discover all available services\n" +
 			"2. Use logs_summary to get an overview of severity distribution and top errors\n" +
 			"3. Use errors_list to see the most frequent error groups\n" +
@@ -106,14 +165,18 @@ func (s *Server) registerPrompts(srv *mcp.Server) {
 	srv.AddPrompt(&mcp.Prompt{
 		Name:        "investigate-profile",
 		Description: "Investigate performance hotspots using Cloud Profiler: list profiles, find top functions, and drill into call paths",
-		Arguments: []*mcp.PromptArgument{
-			{Name: "service", Description: "Service/target name to investigate"},
-			{Name: "profile_type", Description: "Profile type (CPU, HEAP, WALL, CONTENTION, etc.)"},
-		},
+		Arguments: s.projectPromptArguments(
+			&mcp.PromptArgument{Name: "service", Description: "Service/target name to investigate"},
+			&mcp.PromptArgument{Name: "profile_type", Description: "Profile type (CPU, HEAP, WALL, CONTENTION, etc.)"},
+		),
 	}, func(_ context.Context, request *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+		project, err := s.promptProject(request, "service", "profile_type")
+		if err != nil {
+			return nil, err
+		}
 		service := request.Params.Arguments["service"]
 		profileType := request.Params.Arguments["profile_type"]
-		msg := "Investigate performance hotspots using Cloud Profiler:\n" +
+		msg := s.promptProjectHeader(project) + "Investigate performance hotspots using Cloud Profiler:\n" +
 			"1. Use profiler_list to discover available profiles"
 		if service != "" {
 			msg += fmt.Sprintf(" (filter by target: %s)", service)

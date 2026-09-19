@@ -20,13 +20,11 @@ type stateClaims struct {
 	ClientState   string `json:"st,omitempty"`
 	CodeChallenge string `json:"cc"`
 	Resource      string `json:"res,omitempty"`
-	Project       string `json:"prj,omitempty"`
 	IssuedAt      int64  `json:"iat"`
 }
 
-// codeClaims is the sealed authorization code handed to the client's
-// redirect URI. It embeds the freshly obtained Google tokens so /token can
-// mint our tokens without any lookup.
+// codeClaims is encrypted inside the server-side opaque-code record. It binds
+// the client and redirect URI and carries the delegated Google credentials.
 type codeClaims struct {
 	Subject            string   `json:"sub"`
 	Email              string   `json:"eml"`
@@ -35,7 +33,6 @@ type codeClaims struct {
 	RedirectURI        string   `json:"ru"`
 	CodeChallenge      string   `json:"cc"`
 	Resource           string   `json:"res,omitempty"`
-	Project            string   `json:"prj,omitempty"`
 	Scopes             []string `json:"scp,omitempty"`
 	GoogleAccessToken  string   `json:"gat"`
 	GoogleExpiry       int64    `json:"gexp"`
@@ -53,7 +50,7 @@ type accessClaims struct {
 	Domain            string   `json:"hd"`
 	ClientID          string   `json:"cid"`
 	Resource          string   `json:"res,omitempty"`
-	Project           string   `json:"prj,omitempty"`
+	FamilyID          string   `json:"fid"`
 	Scopes            []string `json:"scp,omitempty"`
 	GoogleAccessToken string   `json:"gat"`
 	GoogleExpiry      int64    `json:"gexp"`
@@ -70,7 +67,6 @@ type refreshClaims struct {
 	Domain             string   `json:"hd"`
 	ClientID           string   `json:"cid"`
 	Resource           string   `json:"res,omitempty"`
-	Project            string   `json:"prj,omitempty"`
 	Scopes             []string `json:"scp,omitempty"`
 	GoogleRefreshToken string   `json:"grt"`
 	IssuedAt           int64    `json:"iat"`

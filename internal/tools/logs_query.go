@@ -22,19 +22,19 @@ func RegisterLogsQuery(s *mcp.Server, d Deps) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
-		InputSchema: inputSchemaWithEnums[LogsQueryInput](
+		InputSchema: projectInputSchema[LogsQueryInput](d.Project,
 			enumPatch{"order", enumSortOrder},
 		),
 		OutputSchema: outputSchemaFor[gcpdata.LogQueryResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsQueryInput) (*mcp.CallToolResult, *gcpdata.LogQueryResult, error) {
-		project, err := resolveProject(in.ProjectID, d.DefaultProject)
+		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
 		if in.Filter == "" {
 			return errResult("filter is required"), nil, nil
 		}
-		limit := clampLimit(in.Limit, 100, d.LogsMaxLimit)
+		limit := clampLimit(in.Limit, 100, LogsHardLimit)
 		order := in.Order
 		if order == "" {
 			order = "desc"

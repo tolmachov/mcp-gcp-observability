@@ -17,12 +17,13 @@ func RegisterProfilerPeek(s *mcp.Server, d Deps) {
 			"Navigates the call graph: who calls this function, and what does it call? "+
 			"Use function names from profiler_top results. Substring matching is used. "+
 			"If the name is ambiguous, the error will list matching candidates — use a more specific name. "+
-			"Works with both regular profile_id and diff_id from profiler_compare."),
+			"Add base_profile_id to inspect a request-local diff."),
 		Annotations: &mcp.ToolAnnotations{
 			ReadOnlyHint:   true,
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
+		InputSchema:  projectInputSchema[ProfilerPeekInput](d.Project),
 		OutputSchema: outputSchemaFor[gcpdata.ProfilePeekResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerPeekInput) (*mcp.CallToolResult, *gcpdata.ProfilePeekResult, error) {
 		if in.ProfileID == "" {
@@ -34,7 +35,7 @@ func RegisterProfilerPeek(s *mcp.Server, d Deps) {
 		if in.FunctionName == "" {
 			return errResult("function_name is required"), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, d.DefaultProject)
+		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -44,7 +45,7 @@ func RegisterProfilerPeek(s *mcp.Server, d Deps) {
 		// Fetching an uncached profile scans the Export API and can run long on
 		// large projects; heartbeat progress keeps the client request alive.
 		stopHeartbeat := startProgressHeartbeat(ctx, req, "Downloading profile…")
-		p, meta, err := d.Profiler.GetOrFetchProfile(ctx, project, in.ProfileID)
+		p, meta, err := d.Profiler.GetProfileOrDiff(ctx, project, in.ProfileID, in.BaseProfileID)
 		stopHeartbeat()
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "profiler_peek", fmt.Sprintf("fetch profile failed: %v", err))

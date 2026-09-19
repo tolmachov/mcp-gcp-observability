@@ -18,6 +18,9 @@ type LogEntry struct {
 	SpanID                 string            `json:"span_id,omitempty"`
 	Labels                 map[string]string `json:"labels,omitempty"`
 	Operation              *OperationInfo    `json:"operation,omitempty"`
+	EntryTruncated         bool              `json:"entry_truncated,omitempty"`
+	OmittedBytes           int               `json:"omitted_bytes,omitempty"`
+	TruncatedFields        []string          `json:"truncated_fields,omitempty"`
 }
 
 // ResourceInfo describes the monitored resource that produced a log entry.
@@ -113,6 +116,8 @@ type ErrorGroup struct {
 type ErrorGroupList struct {
 	Count          int          `json:"count"`
 	Groups         []ErrorGroup `json:"groups"`
+	Window         ErrorWindow  `json:"window"`
+	TimeRangeBegin string       `json:"time_range_begin"`
 	Truncated      bool         `json:"truncated,omitempty"`
 	TruncationHint string       `json:"truncation_hint,omitempty"`
 }
@@ -139,7 +144,8 @@ type ErrorTrend struct {
 // schema (see ProfileSummary in profiler_types.go).
 type ErrorTrendList struct {
 	Count          int            `json:"count"`
-	WindowHours    int            `json:"window_hours"`
+	Window         ErrorWindow    `json:"window"`
+	TimeRangeBegin string         `json:"time_range_begin"`
 	Summary        map[string]int `json:"summary,omitempty"`
 	Trends         []ErrorTrend   `json:"trends"`
 	Truncated      bool           `json:"truncated,omitempty"`

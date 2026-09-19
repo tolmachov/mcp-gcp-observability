@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"google.golang.org/api/iterator"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -17,7 +18,11 @@ import (
 	logtypepb "google.golang.org/genproto/googleapis/logging/type"
 )
 
+const LogsHardLimit = 200
+
 const logQueryTimeout = 30 * time.Second
+
+const maxNormalizedLogEntryBytes = 8 << 10
 
 var requestIDFieldPaths = []string{
 	"jsonPayload.request_id",
@@ -110,6 +115,9 @@ func FindRequests(ctx context.Context, client *logging.Client, params FindReques
 	defer cancel()
 
 	project, limit := params.Project, params.Limit
+	if limit > LogsHardLimit {
+		limit = LogsHardLimit
+	}
 
 	parts := []string{
 		fmt.Sprintf(`httpRequest.requestUrl:"%s"`, EscapeFilterValue(params.URLPattern)),
@@ -128,8 +136,8 @@ func FindRequests(ctx context.Context, client *logging.Client, params FindReques
 
 	// Request more entries than limit to account for entries without httpRequest
 	pageSize := limit * 3
-	if pageSize > 1000 {
-		pageSize = 1000
+	if pageSize > LogsHardLimit {
+		pageSize = LogsHardLimit
 	}
 
 	req := &loggingpb.ListLogEntriesRequest{
@@ -143,7 +151,8 @@ func FindRequests(ctx context.Context, client *logging.Client, params FindReques
 
 	var requests []RequestInfo
 	truncated := false
-	for len(requests) <= limit {
+	scanned := 0
+	for len(requests) <= limit && scanned < LogsHardLimit {
 		entry, err := it.Next()
 		if errors.Is(err, iterator.Done) {
 			break
@@ -151,6 +160,7 @@ func FindRequests(ctx context.Context, client *logging.Client, params FindReques
 		if err != nil {
 			return nil, fmt.Errorf("iterating log entries: %w", err)
 		}
+		scanned++
 
 		if entry.HttpRequest == nil {
 			continue
@@ -185,6 +195,9 @@ func FindRequests(ctx context.Context, client *logging.Client, params FindReques
 			break
 		}
 		requests = append(requests, ri)
+	}
+	if scanned >= LogsHardLimit {
+		truncated = true
 	}
 	result := &RequestList{
 		Count:    len(requests),
@@ -231,6 +244,10 @@ func extractRequestID(entry *loggingpb.LogEntry) string {
 
 // fetchLogEntries is a shared helper for querying log entries.
 func fetchLogEntries(ctx context.Context, client *logging.Client, req *loggingpb.ListLogEntriesRequest, limit int) (*LogQueryResult, error) {
+	if limit > LogsHardLimit {
+		limit = LogsHardLimit
+	}
+	req.PageSize = safeInt32(limit)
 	it := client.ListLogEntries(ctx, req)
 
 	var entries []LogEntry
@@ -242,7 +259,7 @@ func fetchLogEntries(ctx context.Context, client *logging.Client, req *loggingpb
 		if err != nil {
 			return nil, fmt.Errorf("iterating log entries: %w", err)
 		}
-		entries = append(entries, convertLogEntry(entry))
+		entries = append(entries, boundLogEntry(convertLogEntry(entry)))
 	}
 
 	result := &LogQueryResult{
@@ -262,7 +279,7 @@ func ListServices(ctx context.Context, client *logging.Client, project, timeFilt
 	ctx, cancel := context.WithTimeout(ctx, logQueryTimeout)
 	defer cancel()
 
-	const maxServicesScan = 1000
+	const maxServicesScan = LogsHardLimit
 
 	filter := AppendFilter(
 		`(resource.type="k8s_container" OR resource.type="cloud_run_revision" OR resource.type="cloud_function" OR resource.type="gae_app" OR resource.type="gce_instance")`,
@@ -376,12 +393,12 @@ func ListServices(ctx context.Context, client *logging.Client, project, timeFilt
 type ProgressFunc func(scanned, total int)
 
 // SummarizeLogs aggregates log statistics by scanning up to maxScan recent entries matching the filter.
-// If onProgress is non-nil, it is invoked every 100 scanned entries with (scanned, maxScan).
+// If onProgress is non-nil, it is invoked every 20 scanned entries with (scanned, maxScan).
 func SummarizeLogs(ctx context.Context, client *logging.Client, project, filter string, onProgress ProgressFunc) (*LogsSummary, error) {
 	ctx, cancel := context.WithTimeout(ctx, logQueryTimeout)
 	defer cancel()
 
-	const maxScan = 1000
+	const maxScan = LogsHardLimit
 
 	req := &loggingpb.ListLogEntriesRequest{
 		ResourceNames: []string{fmt.Sprintf("projects/%s", project)},
@@ -428,11 +445,11 @@ func SummarizeLogs(ctx context.Context, client *logging.Client, project, filter 
 
 		// Collect up to 5 samples
 		if len(samples) < 5 {
-			samples = append(samples, convertLogEntry(entry))
+			samples = append(samples, boundLogEntry(convertLogEntry(entry)))
 		}
 
-		// Throttled progress reporting: every 100 entries.
-		if onProgress != nil && total%100 == 0 {
+		// Throttled progress reporting: every 20 entries.
+		if onProgress != nil && total%20 == 0 {
 			onProgress(total, maxScan)
 		}
 	}
@@ -574,4 +591,117 @@ func convertLogEntry(entry *loggingpb.LogEntry) LogEntry {
 	}
 
 	return le
+}
+
+// boundLogEntry enforces the public 8 KiB per-entry budget. Fields are reduced
+// in a stable order so the same source entry always yields identical output.
+func boundLogEntry(le LogEntry) LogEntry {
+	original, _ := json.Marshal(le)
+	if len(original) <= maxNormalizedLogEntryBytes {
+		return le
+	}
+	fields := make([]string, 0, 8)
+	mark := func(name string) { fields = append(fields, name) }
+	if le.JSONPayload != nil {
+		raw, _ := json.Marshal(le.JSONPayload)
+		le.JSONPayload = nil
+		le.TextPayload = truncateUTF8(string(raw), 4096)
+		mark("json_payload")
+	} else if len(le.TextPayload) > 4096 {
+		le.TextPayload = truncateUTF8(le.TextPayload, 4096)
+		mark("text_payload")
+	}
+	if le.HTTPRequest != nil {
+		if len(le.HTTPRequest.URL) > 512 {
+			le.HTTPRequest.URL = truncateUTF8(le.HTTPRequest.URL, 512)
+			mark("http_request.url")
+		}
+		if len(le.HTTPRequest.UserAgent) > 256 {
+			le.HTTPRequest.UserAgent = truncateUTF8(le.HTTPRequest.UserAgent, 256)
+			mark("http_request.user_agent")
+		}
+	}
+	var changed bool
+	le.Labels, changed = boundStringMap(le.Labels, 24, 128)
+	if changed {
+		mark("labels")
+	}
+	if le.Resource != nil {
+		le.Resource.Labels, changed = boundStringMap(le.Resource.Labels, 24, 128)
+		if changed {
+			mark("resource.labels")
+		}
+	}
+	if encoded, _ := json.Marshal(le); len(encoded) > maxNormalizedLogEntryBytes {
+		le.Labels = nil
+		mark("labels")
+	}
+	if encoded, _ := json.Marshal(le); len(encoded) > maxNormalizedLogEntryBytes && le.Resource != nil {
+		le.Resource.Labels = nil
+		mark("resource.labels")
+	}
+	if encoded, _ := json.Marshal(le); len(encoded) > maxNormalizedLogEntryBytes {
+		le.HTTPRequest = nil
+		mark("http_request")
+	}
+	if encoded, _ := json.Marshal(le); len(encoded) > maxNormalizedLogEntryBytes {
+		le.TextPayload = truncateUTF8(le.TextPayload, 1024)
+		mark("payload")
+	}
+	le.EntryTruncated = true
+	le.TruncatedFields = fields
+	current, _ := json.Marshal(le)
+	le.OmittedBytes = max(0, len(original)-len(current))
+	if encoded, _ := json.Marshal(le); len(encoded) > maxNormalizedLogEntryBytes {
+		// Fall back to a small routing-only record. This makes the 8 KiB limit
+		// unconditional even if an upstream identity or error field is huge.
+		fields = append(fields, "oversized_metadata")
+		le = LogEntry{
+			Timestamp:       truncateUTF8(le.Timestamp, 64),
+			Severity:        truncateUTF8(le.Severity, 32),
+			LogName:         truncateUTF8(le.LogName, 256),
+			InsertID:        truncateUTF8(le.InsertID, 128),
+			Trace:           truncateUTF8(le.Trace, 256),
+			SpanID:          truncateUTF8(le.SpanID, 64),
+			EntryTruncated:  true,
+			TruncatedFields: fields,
+		}
+		current, _ = json.Marshal(le)
+		le.OmittedBytes = max(0, len(original)-len(current))
+	}
+	return le
+}
+
+func truncateUTF8(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.ValidString(s[:cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
+func boundStringMap(in map[string]string, maxEntries, maxValueBytes int) (map[string]string, bool) {
+	if len(in) == 0 {
+		return nil, false
+	}
+	keys := make([]string, 0, len(in))
+	for k := range in {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	if len(keys) > maxEntries {
+		keys = keys[:maxEntries]
+	}
+	out := make(map[string]string, len(keys))
+	changed := len(keys) != len(in)
+	for _, k := range keys {
+		boundedKey := truncateUTF8(k, 128)
+		boundedValue := truncateUTF8(in[k], maxValueBytes)
+		changed = changed || boundedKey != k || boundedValue != in[k]
+		out[boundedKey] = boundedValue
+	}
+	return out, changed
 }

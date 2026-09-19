@@ -21,7 +21,7 @@ const (
 	// userPoolIdleTTL is how long a user's assembly (MCP servers + GCP
 	// clients) survives without requests before eviction. Sliding: every
 	// request resets it. Evicted users are rebuilt transparently on their
-	// next request (the client re-initializes its MCP session).
+	// next stateless request.
 	userPoolIdleTTL = 30 * time.Minute
 	// userPoolMaxUsers caps concurrent per-user assemblies. Each holds a
 	// full set of GCP API clients; the cap bounds memory and connections.
@@ -78,6 +78,7 @@ type userEntry struct {
 	buildErr error
 	lastUsed atomic.Int64 // unix nanos
 	inflight atomic.Int64
+	calls    chan struct{}
 }
 
 // finish publishes a successful build. Field writes happen strictly before
@@ -111,10 +112,8 @@ func (e *userEntry) evictable() bool {
 	return e.done() && e.buildErr == nil && e.inflight.Load() == 0
 }
 
-// userPool caches one HTTP assembly per authenticated user and target
-// project, keyed by the stable Google subject plus the grant's project (a
-// user who re-authorizes against a different project gets a separate
-// assembly). Builds are singleflighted; failed builds are not cached; idle
+// userPool caches one HTTP assembly per authenticated user, keyed by the
+// stable Google subject. Builds are singleflighted; failed builds are not cached; idle
 // entries are evicted (and their GCP clients closed) by the janitor.
 type userPool struct {
 	mu      sync.Mutex
@@ -168,18 +167,27 @@ func (p *userPool) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to initialize GCP clients", http.StatusServiceUnavailable)
 		return
 	}
+	select {
+	case entry.calls <- struct{}{}:
+		defer func() { <-entry.calls }()
+	default:
+		p.logger.Warn("user_tool_saturation", "user", user.Email, "limit", maxConcurrentUserCalls)
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "too many concurrent requests", http.StatusTooManyRequests)
+		return
+	}
 	entry.handler.ServeHTTP(w, r)
 }
+
+const maxConcurrentUserCalls = 4
 
 // entryFor returns the caller's entry with inflight already incremented (the
 // caller must release a non-nil entry), building the assembly on first use.
 // Waiting on a concurrent build is bounded by ctx (the request context): a
 // canceled caller stops waiting, while the build itself continues on the
 // pool's base context for the next request to reuse.
-// poolKey identifies one assembly: subject plus project (the same user may
-// hold grants for different projects concurrently).
 func poolKey(user *authsrv.UserIdentity) string {
-	return user.Subject + "\x00" + user.Project
+	return user.Subject
 }
 
 func (p *userPool) entryFor(ctx context.Context, user *authsrv.UserIdentity, ts oauth2.TokenSource) (*userEntry, error) {
@@ -210,7 +218,11 @@ func (p *userPool) entryFor(ctx context.Context, user *authsrv.UserIdentity, ts 
 			return nil, errPoolFull
 		}
 	}
-	e := &userEntry{ready: make(chan struct{}), ts: &swappableTokenSource{ts: ts}}
+	e := &userEntry{
+		ready: make(chan struct{}),
+		ts:    &swappableTokenSource{ts: ts},
+		calls: make(chan struct{}, maxConcurrentUserCalls),
+	}
 	e.inflight.Add(1)
 	e.lastUsed.Store(p.now().UnixNano())
 	p.entries[key] = e

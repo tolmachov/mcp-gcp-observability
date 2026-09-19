@@ -15,7 +15,7 @@ func RegisterProfilerTop(s *mcp.Server, d Deps) {
 		Name: "profiler_top",
 		Description: applyMode(d.Mode, "Show top functions from a profile ranked by resource consumption (like pprof top). "+
 			"Returns a flat ranking of functions by self or cumulative cost. "+
-			"Use profile_id from profiler_list results, or diff_id from profiler_compare. "+
+			"Use profile_id from profiler_list; add base_profile_id to analyze a request-local diff. "+
 			"Start here to identify hotspots, then use profiler_peek for caller/callee context. "+
 			"For multi-value profiles (e.g. HEAP with alloc_space and alloc_objects), check available_values in the response."),
 		Annotations: &mcp.ToolAnnotations{
@@ -23,7 +23,7 @@ func RegisterProfilerTop(s *mcp.Server, d Deps) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
-		InputSchema: inputSchemaWithEnums[ProfilerTopInput](
+		InputSchema: projectInputSchema[ProfilerTopInput](d.Project,
 			enumPatch{"sort_by", enumSortBy},
 		),
 		OutputSchema: outputSchemaFor[gcpdata.ProfileTopResult](),
@@ -34,7 +34,7 @@ func RegisterProfilerTop(s *mcp.Server, d Deps) {
 		if in.ValueIndex < 0 {
 			return errResult("value_index must be non-negative"), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, d.DefaultProject)
+		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -44,7 +44,7 @@ func RegisterProfilerTop(s *mcp.Server, d Deps) {
 		// Fetching an uncached profile scans the Export API and can run long on
 		// large projects; heartbeat progress keeps the client request alive.
 		stopHeartbeat := startProgressHeartbeat(ctx, req, "Downloading profile…")
-		p, meta, err := d.Profiler.GetOrFetchProfile(ctx, project, in.ProfileID)
+		p, meta, err := d.Profiler.GetProfileOrDiff(ctx, project, in.ProfileID, in.BaseProfileID)
 		stopHeartbeat()
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "profiler_top", fmt.Sprintf("fetch profile failed: %v", err))

@@ -29,12 +29,12 @@ func RegisterMetricsList(s *mcp.Server, d Deps) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
-		InputSchema: inputSchemaWithEnums[MetricsListInput](
+		InputSchema: projectInputSchema[MetricsListInput](d.Project,
 			enumPatch{"kind", toAny(metrics.ValidMetricKindsForInput())},
 		),
 		OutputSchema: outputSchemaFor[MetricsListResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsListInput) (*mcp.CallToolResult, *MetricsListResult, error) {
-		project, err := resolveProject(in.ProjectID, d.DefaultProject)
+		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}

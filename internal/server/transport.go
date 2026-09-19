@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,7 +10,6 @@ import (
 	"runtime/debug"
 	"time"
 
-	"github.com/modelcontextprotocol/experimental-ext-variants/go/sdk/variants"
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -70,9 +70,10 @@ func (s *Server) serveHTTP(ctx context.Context, handler http.Handler, addr strin
 	s.logger.Info("Starting streamable HTTP server", "addr", addr)
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: withCrossOriginProtection(handler, corsBypass...),
+		Handler: withCrossOriginProtection(limitRequestBody(handler), corsBypass...),
 		// Bound the header-read phase to blunt Slowloris-style slow-header attacks.
 		ReadHeaderTimeout: 10 * time.Second,
+		MaxHeaderBytes:    64 << 10,
 	}
 	shutdownDone := make(chan error, 1)
 	serverExited := make(chan struct{})
@@ -111,24 +112,32 @@ func (s *Server) serveHTTP(ctx context.Context, handler http.Handler, addr strin
 	return nil
 }
 
-// runHTTP starts a streamable HTTP server for the variants.Server.
-// Closes vs on return; the deferred recover wraps the whole method, so
-// panics from variants.NewStreamableHTTPHandler or HTTP setup are converted
-// to errors with a logged stack trace.
-func (s *Server) runHTTP(ctx context.Context, vs *variants.Server, addr string) (retErr error) {
-	defer func() {
-		if err := vs.Close(); err != nil {
-			s.logger.Warn("failed to close variants server", "err", err)
+const maxMCPRequestBytes = 1 << 20
+
+func limitRequestBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ContentLength > maxMCPRequestBytes {
+			http.Error(w, "request body exceeds 1 MiB", http.StatusRequestEntityTooLarge)
+			return
 		}
-	}()
-	defer func() {
-		if r := recover(); r != nil {
-			stack := debug.Stack()
-			s.logger.Error("variants HTTP init panic", "panic", r, "stack", string(stack))
-			retErr = fmt.Errorf("variants HTTP init panic: %v", r)
+		if r.Body == nil {
+			next.ServeHTTP(w, r)
+			return
 		}
-	}()
-	return s.serveHTTP(ctx, variants.NewStreamableHTTPHandler(vs, nil), addr)
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxMCPRequestBytes+1))
+		_ = r.Body.Close()
+		if err != nil {
+			http.Error(w, "failed to read request body", http.StatusBadRequest)
+			return
+		}
+		if len(body) > maxMCPRequestBytes {
+			http.Error(w, "request body exceeds 1 MiB", http.StatusRequestEntityTooLarge)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		r.ContentLength = int64(len(body))
+		next.ServeHTTP(w, r)
+	})
 }
 
 // authCORSBypassPaths are the OAuth endpoints exempted from cross-origin
@@ -152,7 +161,20 @@ func buildAuthMux(as *authsrv.AuthServer, issuerURL string, mcpHandler http.Hand
 	requireBearer := auth.RequireBearerToken(as.Verifier(), &auth.RequireBearerTokenOptions{
 		ResourceMetadataURL: issuerURL + authsrv.ProtectedResourceMetadataPath,
 	})
-	mux.Handle("/", requireBearer(mcpHandler))
+	ready := as.RequireStoreAvailable(requireBearer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := as.CheckStore(r.Context()); err != nil {
+			http.Error(w, "OAuth state store unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ready"))
+	})))
+	mux.Handle("GET /readyz", ready)
+	// Cloud Armor and the load balancer route this path to the no-traffic
+	// revision's tagged serverless NEG. It has exactly the same bearer and
+	// Firestore checks as the normal readiness endpoint.
+	mux.Handle("GET /__candidate/readyz", ready)
+	mux.Handle("/", as.RequireStoreAvailable(requireBearer(mcpHandler)))
 	return mux
 }
 
@@ -170,10 +192,15 @@ func (s *Server) runHTTPWithAuth(ctx context.Context, reg *metrics.Registry, opt
 		}
 	}()
 
-	as, err := authsrv.New(opts.Auth, s.logger)
+	as, err := authsrv.New(ctx, opts.Auth, s.logger)
 	if err != nil {
 		return fmt.Errorf("building auth server: %w", err)
 	}
+	defer func() {
+		if closeErr := as.Close(); closeErr != nil {
+			s.logger.Warn("failed to close auth server", "err", closeErr)
+		}
+	}()
 
 	pool := newUserPool(ctx, s.userAssemblyBuilder(reg, opts.VariantID), s.logger)
 	defer func() {
@@ -186,22 +213,4 @@ func (s *Server) runHTTPWithAuth(ctx context.Context, reg *metrics.Registry, opt
 	s.logger.Info("Starting with per-user authentication", "issuer", opts.Auth.IssuerURL)
 	mux := buildAuthMux(as, opts.Auth.IssuerURL, pool)
 	return s.serveHTTP(ctx, mux, opts.HTTPAddr, authCORSBypassPaths...)
-}
-
-// runMCPHTTP serves a single *mcp.Server over streamable HTTP (used when
-// the variants protocol is bypassed via --variant). The deferred recover
-// mirrors runHTTP for symmetry — same panic risk surface.
-func (s *Server) runMCPHTTP(ctx context.Context, srv *mcp.Server, addr string) (retErr error) {
-	defer func() {
-		if r := recover(); r != nil {
-			stack := debug.Stack()
-			s.logger.Error("MCP HTTP init panic", "panic", r, "stack", string(stack))
-			retErr = fmt.Errorf("MCP HTTP init panic: %v", r)
-		}
-	}()
-	handler := mcp.NewStreamableHTTPHandler(
-		func(_ *http.Request) *mcp.Server { return srv },
-		nil,
-	)
-	return s.serveHTTP(ctx, handler, addr)
 }

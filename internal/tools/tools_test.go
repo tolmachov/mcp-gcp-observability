@@ -126,29 +126,19 @@ func TestRequireBackendGuards(t *testing.T) {
 	}
 }
 
-func TestResolveProject(t *testing.T) {
-	tests := []struct {
-		name           string
-		projectID      string
-		defaultProject string
-		wantProject    string
-		wantErr        bool
-	}{
-		{"from request", "req-project", "default-project", "req-project", false},
-		{"from default", "", "default-project", "default-project", false},
-		{"both empty", "", "", "", true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			project, err := resolveProject(tt.projectID, tt.defaultProject)
-			if tt.wantErr {
-				assert.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, tt.wantProject, project)
-		})
-	}
+func TestProjectPolicy(t *testing.T) {
+	pinned := MustProjectPolicy("default-project")
+	project, err := pinned.Resolve("")
+	require.NoError(t, err)
+	assert.Equal(t, "default-project", project)
+	_, err = pinned.Resolve("other-project")
+	assert.Error(t, err)
+	unpinned := MustProjectPolicy("")
+	project, err = unpinned.Resolve("request-project")
+	require.NoError(t, err)
+	assert.Equal(t, "request-project", project)
+	_, err = unpinned.Resolve("")
+	assert.Error(t, err)
 }
 
 func TestBuildTimeFilter(t *testing.T) {
@@ -208,31 +198,26 @@ func TestBuildTimeFilter(t *testing.T) {
 	})
 }
 
-func TestResolveErrorsTimeRange(t *testing.T) {
+func TestResolveErrorsWindow(t *testing.T) {
 	tests := []struct {
 		name    string
-		input   ErrorsListInput
+		input   string
 		wantErr bool
-		want    int
+		want    gcpdata.ErrorWindow
 	}{
-		{"default 24h", ErrorsListInput{}, false, 24},
-		{"time_range_hours explicit", ErrorsListInput{TimeRangeHours: 48}, false, 48},
-		{"time_range_hours at max", ErrorsListInput{TimeRangeHours: 720}, false, 720},
-		{"time_range_hours too small — negative", ErrorsListInput{TimeRangeHours: -1}, true, 0},
-		{"time_range_hours too large", ErrorsListInput{TimeRangeHours: 721}, true, 0},
+		{"default 24h", "", false, gcpdata.ErrorWindow24H},
+		{"7d", "7d", false, gcpdata.ErrorWindow7D},
+		{"arbitrary rejected", "48h", true, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := resolveErrorsTimeRange(tt.input)
+			got, err := resolveErrorsWindow(tt.input)
 			if tt.wantErr {
 				assert.Error(t, err)
 				return
 			}
 			require.NoError(t, err)
-			if tt.want != 0 {
-				assert.Equal(t, tt.want, got)
-			}
-			assert.GreaterOrEqual(t, got, 1)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -352,7 +337,7 @@ func TestRegisterCoreToolCount(t *testing.T) {
 	// their methods are never invoked because this test only lists tools.
 	deps := allFakeBackends()
 	deps.Registry = metrics.NewRegistry()
-	deps.DefaultProject = "test-project"
+	deps.Project = MustProjectPolicy("test-project")
 	deps.Mode = ModeStandard
 	RegisterCore(ts.server, deps)
 

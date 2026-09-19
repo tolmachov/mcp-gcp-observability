@@ -23,16 +23,17 @@ func RegisterLogsByRequestID(s *mcp.Server, d Deps) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
+		InputSchema:  projectInputSchema[LogsByRequestIDInput](d.Project),
 		OutputSchema: outputSchemaFor[gcpdata.LogQueryResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsByRequestIDInput) (*mcp.CallToolResult, *gcpdata.LogQueryResult, error) {
 		if in.RequestID == "" {
 			return errResult("request_id is required"), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, d.DefaultProject)
+		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
-		limit := clampLimit(in.Limit, 100, d.LogsMaxLimit)
+		limit := clampLimit(in.Limit, 100, LogsHardLimit)
 
 		timeFilter, err := buildTimeFilter(in.TimeFilterInput)
 		if err != nil {

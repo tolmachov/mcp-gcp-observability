@@ -20,7 +20,7 @@ func RegisterLogsFindRequests(s *mcp.Server, d Deps) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
-		InputSchema: inputSchemaWithEnums[LogsFindRequestsInput](
+		InputSchema: projectInputSchema[LogsFindRequestsInput](d.Project,
 			enumPatch{"method", enumHTTPMethod},
 		),
 		OutputSchema: outputSchemaFor[gcpdata.RequestList](),
@@ -35,11 +35,11 @@ func RegisterLogsFindRequests(s *mcp.Server, d Deps) {
 		if in.Method != "" && !validMethods[in.Method] {
 			return errResult(fmt.Sprintf("invalid method %q: must be one of GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS", in.Method)), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, d.DefaultProject)
+		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
-		limit := clampLimit(in.Limit, 20, d.LogsMaxLimit)
+		limit := clampLimit(in.Limit, 20, LogsHardLimit)
 
 		timeFilter, err := buildTimeFilter(in.TimeFilterInput)
 		if err != nil {

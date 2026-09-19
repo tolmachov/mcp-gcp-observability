@@ -1,21 +1,17 @@
 package authsrv
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"sync"
 
 	"golang.org/x/oauth2"
 )
-
-// projectIDRe is the GCP project ID format: 6-30 chars, lowercase letters,
-// digits and hyphens, starting with a letter, not ending with a hyphen.
-var projectIDRe = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`)
 
 // handleAuthorize validates the client's authorization request and renders
 // the consent interstitial. Failures in client_id / redirect_uri validation
@@ -54,7 +50,7 @@ func (a *AuthServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	blob, err := sealBlob(a.sealer, stateBlob, stateClaims{
+	claims, err := sealBlob(a.sealer, stateBlob, stateClaims{
 		ClientID:      q.Get("client_id"),
 		RedirectURI:   redirectURI,
 		ClientState:   state,
@@ -67,17 +63,29 @@ func (a *AuthServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		redirectError(w, r, redirectURI, state, "server_error", "internal error")
 		return
 	}
-
-	if a.cfg.SkipConsent {
-		a.redirectToGoogle(w, r, blob)
+	stateSecret, err := randomOpaque(32)
+	if err != nil {
+		redirectError(w, r, redirectURI, state, "server_error", "internal error")
 		return
 	}
-	a.renderConsent(w, client, redirectURI, blob)
+	stateToken := prefixState + stateSecret
+	if err := a.store.PutAuthorizationState(r.Context(), tokenHash(stateToken), authorizationStateRecord{
+		Claims: claims, Status: "active", ExpiresAt: a.now().Add(stateTTL),
+	}); err != nil {
+		a.logger.Error("oauth_store_failure", "operation", "put_authorization_state", "err", err)
+		redirectError(w, r, redirectURI, state, "server_error", "authorization state store unavailable")
+		return
+	}
+
+	if a.cfg.SkipConsent {
+		a.redirectToGoogle(w, r, stateToken)
+		return
+	}
+	a.renderConsent(w, client, redirectURI, stateToken)
 }
 
-// handleAuthorizeConfirm receives the consent form. The sealed request blob
-// doubles as the CSRF token: it is unguessable, TTL-bound, and usable only
-// with this deployment's keys.
+// handleAuthorizeConfirm receives the consent form. The opaque request token
+// names encrypted, TTL-bound server-side state and doubles as the CSRF token.
 func (a *AuthServer) handleAuthorizeConfirm(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxFormBody)
 	if err := r.ParseForm(); err != nil {
@@ -85,40 +93,33 @@ func (a *AuthServer) handleAuthorizeConfirm(w http.ResponseWriter, r *http.Reque
 			"The request body could not be parsed. Start over from your MCP client.")
 		return
 	}
-	sc, err := openBlob(a.sealer, stateBlob, r.PostForm.Get("request"), a.now())
+	stateToken := r.PostForm.Get("request")
+	rec, err := a.loadAuthorizationState(r.Context(), stateToken, false)
 	switch {
 	case errors.Is(err, errBlobExpired):
 		a.renderErrorPage(w, "Request expired",
 			"The authorization request expired. Start over from your MCP client.")
+		return
+	case err != nil && !errors.Is(err, errStateNotFound) && !errors.Is(err, errStateReplay):
+		a.logger.Error("oauth_store_failure", "operation", "get_authorization_state", "err", err)
+		a.renderErrorPageStatus(w, http.StatusServiceUnavailable, "Service unavailable",
+			"The authorization state store is unavailable. Try again later.")
 		return
 	case err != nil:
 		a.renderErrorPage(w, "Invalid request",
 			"The authorization request is invalid or has been tampered with. Start over from your MCP client.")
 		return
 	}
-	blob := r.PostForm.Get("request")
-	if a.cfg.AllowProjectChoice {
-		// The chosen project rides inside the sealed state to /callback,
-		// where access to it is verified with the user's own Google token.
-		sc.Project = strings.TrimSpace(r.PostForm.Get("project"))
-		if !projectIDRe.MatchString(sc.Project) {
-			a.renderErrorPage(w, "Invalid project ID",
-				"Enter the GCP project ID (lowercase letters, digits and hyphens, e.g. my-project-123), not the project name or number.")
-			return
-		}
-		blob, err = sealBlob(a.sealer, stateBlob, sc)
-		if err != nil {
-			a.logger.Error("resealing authorize state failed", "err", err)
-			a.renderErrorPage(w, "Internal error", "Try again from your MCP client.")
-			return
-		}
+	if rec.Status != "active" {
+		a.renderErrorPage(w, "Invalid request", "The authorization request has already been used. Start over from your MCP client.")
+		return
 	}
-	a.redirectToGoogle(w, r, blob)
+	a.redirectToGoogle(w, r, stateToken)
 }
 
 // redirectToGoogle sends the user to the Google login page, carrying the
-// sealed request blob as the OAuth state.
-func (a *AuthServer) redirectToGoogle(w http.ResponseWriter, r *http.Request, stateBlob string) {
+// opaque Firestore-backed request token as the OAuth state.
+func (a *AuthServer) redirectToGoogle(w http.ResponseWriter, r *http.Request, stateToken string) {
 	opts := []oauth2.AuthCodeOption{
 		// offline + consent guarantee a refresh token on every login.
 		oauth2.AccessTypeOffline,
@@ -131,8 +132,25 @@ func (a *AuthServer) redirectToGoogle(w http.ResponseWriter, r *http.Request, st
 		opts = append(opts, oauth2.SetAuthURLParam("hd", a.cfg.AllowedDomains[0]))
 	}
 	// The target is Google's authorize endpoint from server configuration;
-	// request input only rides along as the (sealed) state parameter.
-	http.Redirect(w, r, a.idp.AuthCodeURL(stateBlob, opts...), http.StatusFound) //nolint:gosec // G710: fixed upstream host
+	// Request input never reaches Google; only the unguessable lookup token does.
+	http.Redirect(w, r, a.idp.AuthCodeURL(stateToken, opts...), http.StatusFound) //nolint:gosec // G710: fixed upstream host
+}
+
+func (a *AuthServer) loadAuthorizationState(ctx context.Context, raw string, consume bool) (authorizationStateRecord, error) {
+	if !strings.HasPrefix(raw, prefixState) {
+		return authorizationStateRecord{}, errStateNotFound
+	}
+	if consume {
+		return a.store.UseAuthorizationState(ctx, tokenHash(raw), a.now())
+	}
+	rec, err := a.store.GetAuthorizationState(ctx, tokenHash(raw))
+	if err != nil {
+		return authorizationStateRecord{}, err
+	}
+	if !a.now().Before(rec.ExpiresAt) {
+		return authorizationStateRecord{}, errBlobExpired
+	}
+	return rec, nil
 }
 
 // redirectError returns a protocol error to an already-validated redirect URI.
@@ -151,7 +169,7 @@ func redirectError(w http.ResponseWriter, r *http.Request, redirectURI, state, c
 	u.RawQuery = q.Encode()
 	// Callers pass only redirect URIs already validated against the
 	// client's registration and the redirect policy (see handleAuthorize)
-	// or recovered from the sealed state (see handleCallback).
+	// or recovered from encrypted server-side state (see handleCallback).
 	http.Redirect(w, r, u.String(), http.StatusFound) //nolint:gosec // G710: pre-validated redirect target
 }
 
@@ -168,20 +186,13 @@ code{background:#f0f1f4;border-radius:4px;padding:2px 6px;font-size:13px;word-br
 button{background:#1a73e8;color:#fff;border:0;border-radius:8px;padding:12px 24px;font-size:15px;cursor:pointer;margin-top:16px;width:100%}
 button:hover{background:#1765cc}
 .muted{color:#5f6368;font-size:13px}
-label{display:block;margin-top:16px;font-size:14px;font-weight:600}
-input[type=text]{width:100%;box-sizing:border-box;margin-top:6px;padding:10px 12px;font-size:15px;border:1px solid #c4c7cc;border-radius:8px}
 </style></head><body><main>
 <h1>{{.ClientName}} wants to access Google Cloud data as you</h1>
 <p>Signing in grants this MCP client access to Google Cloud on your behalf, <strong>bounded by your own IAM permissions</strong>. This server only reads observability data (Logging, Monitoring, Trace, Error Reporting, Profiler).</p>
 <p class="muted">After approval you will be redirected to:<br><code>{{.RedirectURI}}</code></p>
 <form method="post" action="/authorize/confirm">
 <input type="hidden" name="request" value="{{.Request}}">
-{{if .AskProject}}<label for="project">GCP project ID to work with</label>
-<input type="text" id="project" name="project" placeholder="my-project-123" required
- pattern="[a-z][a-z0-9-]{4,28}[a-z0-9]" autocomplete="off" spellcheck="false"
- title="Lowercase letters, digits and hyphens (the project ID, not its name or number)">
-<p class="muted">Your Google account must have access to this project.</p>
-{{end}}<button type="submit">Continue with Google</button>
+<button type="submit">Continue with Google</button>
 </form>
 </main></body></html>`))
 })
@@ -204,7 +215,6 @@ func (a *AuthServer) renderConsent(w http.ResponseWriter, client *clientIDClaims
 		"ClientName":  clientDisplayName(client),
 		"RedirectURI": redirectURI,
 		"Request":     blob,
-		"AskProject":  a.cfg.AllowProjectChoice,
 	})
 	if err != nil {
 		a.logger.Error("rendering consent page failed", "err", err)
@@ -214,8 +224,12 @@ func (a *AuthServer) renderConsent(w http.ResponseWriter, client *clientIDClaims
 // renderErrorPage shows a terminal 400 error page (used when redirecting
 // back to the client would be unsafe).
 func (a *AuthServer) renderErrorPage(w http.ResponseWriter, title, detail string) {
+	a.renderErrorPageStatus(w, http.StatusBadRequest, title, detail)
+}
+
+func (a *AuthServer) renderErrorPageStatus(w http.ResponseWriter, status int, title, detail string) {
 	setInterstitialHeaders(w)
-	w.WriteHeader(http.StatusBadRequest)
+	w.WriteHeader(status)
 	_, _ = fmt.Fprintf(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>%s</title></head>
 <body style="font-family:system-ui,sans-serif;padding:15vh 20px;text-align:center">
 <h1 style="font-size:20px">%s</h1><p style="color:#5f6368">%s</p></body></html>`,

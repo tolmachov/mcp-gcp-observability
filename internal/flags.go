@@ -4,20 +4,18 @@ import "github.com/urfave/cli/v3"
 
 const (
 	flagGCPDefaultProject = "gcp-default-project"
-	flagLogsMaxLimit      = "logs-max-limit"
-	flagErrorsMaxLimit    = "errors-max-limit"
 	flagDNSServer         = "dns-server"
 	flagMetricsRegistry   = "metrics-registry"
 	flagTransport         = "transport"
 	flagHTTPAddr          = "http-addr"
 	flagVariant           = "variant"
 
-	flagAuth                   = "auth"
 	flagAuthIssuerURL          = "auth-issuer-url"
 	flagAuthGoogleClientID     = "auth-google-client-id"
 	flagAuthGoogleClientSecret = "auth-google-client-secret" //nolint:gosec // flag name, not a credential
 	flagAuthAllowedDomains     = "auth-allowed-domains"
-	flagAuthRequireProject     = "auth-require-project-access"
+	flagAuthStateProject       = "auth-state-project"
+	flagAuthStateDatabase      = "auth-state-database"
 	flagAuthTokenKey           = "auth-token-key" //nolint:gosec // flag name, not a credential
 	flagAuthAllowedRedirects   = "auth-allowed-redirects"
 	flagAuthGoogleScopes       = "auth-google-scopes"
@@ -26,28 +24,9 @@ const (
 
 func gcpDefaultProjectFlag() *cli.StringFlag {
 	return &cli.StringFlag{
-		Name: flagGCPDefaultProject,
-		Usage: "Default GCP project ID. Required, except with --auth google: there, setting it pins the server " +
-			"to that project (login requires IAM access to it), while omitting it lets each user choose a project at login",
+		Name:    flagGCPDefaultProject,
+		Usage:   "Pin the public API to one GCP project. When omitted, every project-scoped tool requires project_id",
 		Sources: cli.EnvVars("GCP_DEFAULT_PROJECT"),
-	}
-}
-
-func logsMaxLimitFlag() *cli.IntFlag {
-	return &cli.IntFlag{
-		Name:    flagLogsMaxLimit,
-		Usage:   "Maximum number of log entries to return",
-		Sources: cli.EnvVars("LOGS_MAX_LIMIT"),
-		Value:   1000,
-	}
-}
-
-func errorsMaxLimitFlag() *cli.IntFlag {
-	return &cli.IntFlag{
-		Name:    flagErrorsMaxLimit,
-		Usage:   "Maximum number of error groups to return",
-		Sources: cli.EnvVars("ERRORS_MAX_LIMIT"),
-		Value:   100,
 	}
 }
 
@@ -93,19 +72,10 @@ func variantFlag() *cli.StringFlag {
 	}
 }
 
-func authFlag() *cli.StringFlag {
-	return &cli.StringFlag{
-		Name:    flagAuth,
-		Usage:   "Authentication mode for the http transport: 'none' (default) or 'google' (embedded OAuth 2.1 authorization server with Google Workspace login and per-user GCP access)",
-		Sources: cli.EnvVars("MCP_AUTH"),
-		Value:   "none",
-	}
-}
-
 func authIssuerURLFlag() *cli.StringFlag {
 	return &cli.StringFlag{
 		Name:    flagAuthIssuerURL,
-		Usage:   "Public base URL of this service (https, or http on localhost for development), e.g. https://mcp-obs-xyz.a.run.app; required for --auth google",
+		Usage:   "Public HTTPS base URL of this service; required for the HTTP transport",
 		Sources: cli.EnvVars("AUTH_ISSUER_URL"),
 	}
 }
@@ -113,7 +83,7 @@ func authIssuerURLFlag() *cli.StringFlag {
 func authGoogleClientIDFlag() *cli.StringFlag {
 	return &cli.StringFlag{
 		Name:    flagAuthGoogleClientID,
-		Usage:   "Google OAuth web client ID used for user login; required for --auth google",
+		Usage:   "Google OAuth web client ID used for mandatory HTTP authentication",
 		Sources: cli.EnvVars("AUTH_GOOGLE_CLIENT_ID"),
 	}
 }
@@ -121,7 +91,7 @@ func authGoogleClientIDFlag() *cli.StringFlag {
 func authGoogleClientSecretFlag() *cli.StringFlag {
 	return &cli.StringFlag{
 		Name:    flagAuthGoogleClientSecret,
-		Usage:   "Google OAuth web client secret; required for --auth google (pass via Secret Manager in production)",
+		Usage:   "Google OAuth web client secret for HTTP transport (pass via Secret Manager in production)",
 		Sources: cli.EnvVars("AUTH_GOOGLE_CLIENT_SECRET"),
 	}
 }
@@ -129,24 +99,32 @@ func authGoogleClientSecretFlag() *cli.StringFlag {
 func authAllowedDomainsFlag() *cli.StringSliceFlag {
 	return &cli.StringSliceFlag{
 		Name:    flagAuthAllowedDomains,
-		Usage:   "Google Workspace domains allowed to log in (comma-separated). At least one of this or --auth-require-project-access is required for --auth google",
+		Usage:   "Google Workspace domains allowed to log in (comma-separated); required for unpinned HTTP deployments",
 		Sources: cli.EnvVars("AUTH_ALLOWED_DOMAINS"),
 	}
 }
 
-func authRequireProjectFlag() *cli.StringFlag {
+func authStateProjectFlag() *cli.StringFlag {
 	return &cli.StringFlag{
-		Name: flagAuthRequireProject,
-		Usage: "GCP project ID: only Google accounts holding IAM access to it (resourcemanager.projects.get) may log in. " +
-			"Use instead of --auth-allowed-domains when the team has no Workspace domain; both may be combined",
-		Sources: cli.EnvVars("AUTH_REQUIRE_PROJECT_ACCESS"),
+		Name:    flagAuthStateProject,
+		Usage:   "GCP project containing the Firestore OAuth state database; required for HTTP",
+		Sources: cli.EnvVars("AUTH_STATE_PROJECT"),
+	}
+}
+
+func authStateDatabaseFlag() *cli.StringFlag {
+	return &cli.StringFlag{
+		Name:    flagAuthStateDatabase,
+		Usage:   "Firestore database used for OAuth state",
+		Sources: cli.EnvVars("AUTH_STATE_DATABASE"),
+		Value:   "(default)",
 	}
 }
 
 func authTokenKeyFlag() *cli.StringSliceFlag {
 	return &cli.StringSliceFlag{
 		Name:    flagAuthTokenKey,
-		Usage:   "Base64-encoded 32-byte token encryption keys (comma-separated; first encrypts, all decrypt); required for --auth google. Generate with: openssl rand -base64 32",
+		Usage:   "Base64-encoded 32-byte token encryption keys (comma-separated; first encrypts, all decrypt). Generate with: openssl rand -base64 32",
 		Sources: cli.EnvVars("AUTH_TOKEN_KEY"),
 	}
 }

@@ -15,6 +15,7 @@ import (
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
+	"github.com/tolmachov/mcp-gcp-observability/internal/tools"
 )
 
 // bearerRoundTripper injects a static bearer token into every request.
@@ -36,10 +37,12 @@ func (rt bearerRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) 
 func newAuthedMCPTestServer(t *testing.T, variantID string) (*httptest.Server, *userPool) {
 	t.Helper()
 	s := &Server{
-		cfg:       &gcpclient.Config{DefaultProject: "test-project", LogsMaxLimit: 1000, ErrorsMaxLimit: 100},
+		cfg:       &gcpclient.Config{DefaultProject: "test-project"},
 		completer: &promptCompleter{},
 		version:   "test",
 		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		project:   tools.MustProjectPolicy("test-project"),
+		profiler:  make(chan struct{}, 2),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)

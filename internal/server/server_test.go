@@ -178,7 +178,7 @@ func TestPromptCompleter_ServiceNoLoader(t *testing.T) {
 }
 
 func TestPromptCompleter_ResourceProject(t *testing.T) {
-	c := &promptCompleter{defaultProject: "my-project"}
+	c := &promptCompleter{project: tools.MustProjectPolicy("my-project")}
 	result, err := c.Handle(context.Background(), &mcp.CompleteRequest{
 		Params: &mcp.CompleteParams{
 			Ref:      &mcp.CompleteReference{Type: "ref/resource", Name: "gcp-logs://{project}/recent"},
@@ -237,29 +237,34 @@ func TestNewCachedServiceLister(t *testing.T) {
 	})
 }
 
-func TestProjectFromURI(t *testing.T) {
+func TestProjectFromResourceURI(t *testing.T) {
 	tests := []struct {
-		uri        string
-		defProject string
-		want       string
-		wantErr    bool
+		name    string
+		uri     string
+		scheme  string
+		path    string
+		policy  tools.ProjectPolicy
+		want    string
+		wantErr bool
 	}{
-		{uri: "gcp-logs://my-project/recent", defProject: "fallback", want: "my-project"},
-		{uri: "gcp-errors://proj-123/groups", defProject: "fallback", want: "proj-123"},
-		{uri: "gcp-traces://p/recent", defProject: "fallback", want: "p"},
-		{uri: "gcp-logs:///recent", defProject: "fallback", want: "fallback"},    // empty host → default
-		{uri: "::not a uri::", defProject: "fallback", wantErr: true},            // parse error → explicit error
-		{uri: "gcp-logs://only-host", defProject: "fallback", want: "only-host"}, // no path still yields host
-		{uri: "gcp-logs:///recent", defProject: "", want: ""},                    // empty host, no default
+		{name: "unpinned exact", uri: "gcp-logs://my-project/recent", scheme: "gcp-logs", path: "/recent", policy: tools.MustProjectPolicy(""), want: "my-project"},
+		{name: "pinned exact", uri: "gcp-errors://pinned-project/groups", scheme: "gcp-errors", path: "/groups", policy: tools.MustProjectPolicy("pinned-project"), want: "pinned-project"},
+		{name: "pinned escape", uri: "gcp-errors://other-project/groups", scheme: "gcp-errors", path: "/groups", policy: tools.MustProjectPolicy("pinned-project"), wantErr: true},
+		{name: "missing project", uri: "gcp-logs:///recent", scheme: "gcp-logs", path: "/recent", policy: tools.MustProjectPolicy(""), wantErr: true},
+		{name: "wrong path", uri: "gcp-logs://my-project/other", scheme: "gcp-logs", path: "/recent", policy: tools.MustProjectPolicy(""), wantErr: true},
+		{name: "query rejected", uri: "gcp-logs://my-project/recent?x=1", scheme: "gcp-logs", path: "/recent", policy: tools.MustProjectPolicy(""), wantErr: true},
+		{name: "invalid project", uri: "gcp-logs://bad/recent", scheme: "gcp-logs", path: "/recent", policy: tools.MustProjectPolicy(""), wantErr: true},
 	}
 	for _, tc := range tests {
-		got, err := projectFromURI(tc.uri, tc.defProject)
-		if tc.wantErr {
-			assert.Error(t, err, "uri=%s", tc.uri)
-			continue
-		}
-		require.NoError(t, err, "uri=%s", tc.uri)
-		assert.Equal(t, tc.want, got, "uri=%s", tc.uri)
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := projectFromResourceURI(tc.uri, tc.scheme, tc.path, tc.policy)
+			if tc.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
 	}
 }
 
@@ -337,14 +342,14 @@ func TestRegisterAllToolsCount(t *testing.T) {
 	s := testServer(t)
 	srv := s.newMCPInstance(s.completer)
 	registerAllTools(srv, tools.Deps{
-		Logs:           stubBackends{},
-		Errors:         stubBackends{},
-		Traces:         stubBackends{},
-		Profiler:       stubBackends{},
-		Querier:        stubBackends{},
-		Registry:       metrics.NewRegistry(),
-		DefaultProject: "test",
-		Mode:           tools.ModeStandard,
+		Logs:     stubBackends{},
+		Errors:   stubBackends{},
+		Traces:   stubBackends{},
+		Profiler: stubBackends{},
+		Querier:  stubBackends{},
+		Registry: metrics.NewRegistry(),
+		Project:  tools.MustProjectPolicy("test-project"),
+		Mode:     tools.ModeStandard,
 	})
 
 	tls := listToolsViaInMemory(t, srv)
@@ -404,13 +409,13 @@ func TestBuildVariantsServerHappyPath(t *testing.T) {
 	s := testServer(t)
 	client := gcpclient.NewForTesting(gcpclient.Config{DefaultProject: "test"})
 	deps := tools.Deps{
-		Logs:           stubBackends{},
-		Errors:         stubBackends{},
-		Traces:         stubBackends{},
-		Profiler:       stubBackends{},
-		Querier:        stubBackends{},
-		Registry:       metrics.NewRegistry(),
-		DefaultProject: "test",
+		Logs:     stubBackends{},
+		Errors:   stubBackends{},
+		Traces:   stubBackends{},
+		Profiler: stubBackends{},
+		Querier:  stubBackends{},
+		Registry: metrics.NewRegistry(),
+		Project:  tools.MustProjectPolicy("test-project"),
 	}
 	vs, err := s.buildVariantsServer(client, deps, s.completer)
 	require.NoError(t, err)
@@ -432,14 +437,14 @@ func TestCompactModeRealDescriptionsSane(t *testing.T) {
 	s := testServer(t)
 	srv := s.newMCPInstance(s.completer)
 	registerAllTools(srv, tools.Deps{
-		Logs:           stubBackends{},
-		Errors:         stubBackends{},
-		Traces:         stubBackends{},
-		Profiler:       stubBackends{},
-		Querier:        stubBackends{},
-		Registry:       metrics.NewRegistry(),
-		DefaultProject: "test",
-		Mode:           tools.ModeCompact,
+		Logs:     stubBackends{},
+		Errors:   stubBackends{},
+		Traces:   stubBackends{},
+		Profiler: stubBackends{},
+		Querier:  stubBackends{},
+		Registry: metrics.NewRegistry(),
+		Project:  tools.MustProjectPolicy("test-project"),
+		Mode:     tools.ModeCompact,
 	})
 
 	tls := listToolsViaInMemory(t, srv)

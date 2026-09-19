@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -41,20 +42,37 @@ type IdentityProvider interface {
 // AuthServer is the embedded OAuth 2.1 authorization server protecting the
 // MCP HTTP transport.
 type AuthServer struct {
-	cfg     *Config
-	sealer  *sealer
-	policy  *redirectPolicy
-	idp     IdentityProvider
-	access  AccessChecker // nil when RequireProjectAccess is unset
-	limiter *ipRateLimiter
-	logger  *slog.Logger
-	now     func() time.Time
+	cfg    *Config
+	sealer *sealer
+	policy *redirectPolicy
+	idp    IdentityProvider
+	access AccessChecker // present only for pinned-project admission checks
+	store  oauthStateStore
+	logger *slog.Logger
+	now    func() time.Time
 }
 
 // New validates cfg and builds the authorization server with Google as IdP.
-func New(cfg *Config, logger *slog.Logger) (*AuthServer, error) {
-	a, err := NewWithProvider(cfg, logger, nil)
+func New(ctx context.Context, cfg *Config, logger *slog.Logger) (*AuthServer, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("invalid auth config: auth config must not be nil")
+	}
+	cfgCopy := *cfg
+	cfgCopy.AllowedDomains = slices.Clone(cfg.AllowedDomains)
+	cfgCopy.TokenKeys = slices.Clone(cfg.TokenKeys)
+	cfgCopy.ExtraRedirects = slices.Clone(cfg.ExtraRedirects)
+	cfgCopy.Scopes = slices.Clone(cfg.Scopes)
+	if err := cfgCopy.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid auth config: %w", err)
+	}
+	store, err := newFirestoreStateStore(ctx, cfgCopy.StateProject, cfgCopy.StateDatabase)
 	if err != nil {
+		return nil, err
+	}
+	cfgCopy.stateStore = store
+	a, err := newAuthServer(&cfgCopy, logger, nil)
+	if err != nil {
+		_ = store.Close()
 		return nil, err
 	}
 	a.idp = &googleIdP{cfg: a.oauth2Config()}
@@ -65,9 +83,24 @@ func New(cfg *Config, logger *slog.Logger) (*AuthServer, error) {
 // tests (in this package and in the transport wiring) that substitute a fake
 // for Google.
 func NewWithProvider(cfg *Config, logger *slog.Logger, idp IdentityProvider) (*AuthServer, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("invalid auth config: auth config must not be nil")
+	}
+	cfgCopy := *cfg
+	if cfgCopy.stateStore == nil {
+		cfgCopy.stateStore = newMemoryStateStore()
+	}
+	return newAuthServer(&cfgCopy, logger, idp)
+}
+
+func newAuthServer(cfg *Config, logger *slog.Logger, idp IdentityProvider) (*AuthServer, error) {
 	// Work on a private copy: a caller mutating cfg after construction must
 	// not desynchronize the sealer's AAD from the metadata endpoints.
 	cfgCopy := *cfg
+	cfgCopy.AllowedDomains = slices.Clone(cfg.AllowedDomains)
+	cfgCopy.TokenKeys = slices.Clone(cfg.TokenKeys)
+	cfgCopy.ExtraRedirects = slices.Clone(cfg.ExtraRedirects)
+	cfgCopy.Scopes = slices.Clone(cfg.Scopes)
 	if err := cfgCopy.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid auth config: %w", err)
 	}
@@ -79,23 +112,28 @@ func NewWithProvider(cfg *Config, logger *slog.Logger, idp IdentityProvider) (*A
 		logger = slog.New(slog.DiscardHandler)
 	}
 	access := cfgCopy.accessChecker
-	if access == nil && (cfgCopy.RequireProjectAccess != "" || cfgCopy.AllowProjectChoice) {
+	if access == nil && cfgCopy.PinnedProject != "" {
 		access = newCRMAccessChecker()
 	}
 	return &AuthServer{
-		cfg:     &cfgCopy,
-		sealer:  newSealer(ring, cfgCopy.IssuerURL),
-		policy:  newRedirectPolicy(cfgCopy.ExtraRedirects),
-		idp:     idp,
-		access:  access,
-		limiter: newIPRateLimiter(rateLimitPerSecond, rateLimitBurst),
-		logger:  logger,
-		now:     time.Now,
+		cfg:    &cfgCopy,
+		sealer: newSealer(ring, cfgCopy.IssuerURL),
+		policy: newRedirectPolicy(cfgCopy.ExtraRedirects),
+		idp:    idp,
+		access: access,
+		store:  cfgCopy.stateStore,
+		logger: logger,
+		now:    time.Now,
 	}, nil
 }
 
-// checkProjectAccess applies the project-access gate (pinned or chosen
-// project). Trivially true when no gate is configured.
+func (a *AuthServer) Close() error { return a.store.Close() }
+
+func (a *AuthServer) CheckStore(ctx context.Context) error { return a.store.Health(ctx) }
+
+// checkProjectAccess applies the pinned-project admission gate. It is
+// trivially true for unpinned deployments, where delegated IAM is enforced by
+// every GCP RPC instead.
 func (a *AuthServer) checkProjectAccess(ctx context.Context, googleAccessToken, project string) (bool, error) {
 	if a.access == nil || project == "" {
 		return true, nil
@@ -117,19 +155,18 @@ func (a *AuthServer) oauth2Config() *oauth2.Config {
 // Routes mounts every auth endpoint on mux. The MCP handler itself is mounted
 // by the caller (wrapped in RequireBearerToken with this server's Verifier).
 func (a *AuthServer) Routes(mux *http.ServeMux) {
-	rl := a.limiter
 	mux.Handle("GET /.well-known/oauth-protected-resource", a.protectedResourceHandler())
 	mux.Handle("GET /.well-known/oauth-authorization-server", jsonMetadataHandler(a.authServerMetadata()))
 	// Some clients probe the OIDC discovery path as a fallback; serve the
 	// same document there.
 	mux.Handle("GET /.well-known/openid-configuration", jsonMetadataHandler(a.authServerMetadata()))
 	mux.Handle("GET /jwks.json", jsonMetadataHandler(emptyJWKS{}))
-	mux.Handle("POST /register", rl.wrap(http.HandlerFunc(a.handleRegister)))
-	mux.Handle("GET /authorize", rl.wrap(http.HandlerFunc(a.handleAuthorize)))
-	mux.Handle("POST /authorize/confirm", rl.wrap(http.HandlerFunc(a.handleAuthorizeConfirm)))
-	mux.Handle("GET /callback", rl.wrap(http.HandlerFunc(a.handleCallback)))
-	mux.Handle("POST /token", rl.wrap(http.HandlerFunc(a.handleToken)))
-	mux.Handle("POST /revoke", rl.wrap(http.HandlerFunc(a.handleRevoke)))
+	mux.HandleFunc("POST /register", a.handleRegister)
+	mux.HandleFunc("GET /authorize", a.handleAuthorize)
+	mux.HandleFunc("POST /authorize/confirm", a.handleAuthorizeConfirm)
+	mux.HandleFunc("GET /callback", a.handleCallback)
+	mux.HandleFunc("POST /token", a.handleToken)
+	mux.HandleFunc("POST /revoke", a.handleRevoke)
 }
 
 // googleIdP is the production IdentityProvider backed by accounts.google.com.

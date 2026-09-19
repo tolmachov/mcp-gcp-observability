@@ -18,20 +18,21 @@ import (
 type blobKind string
 
 const (
-	kindState    blobKind = "state"
-	kindCode     blobKind = "code"
-	kindAccess   blobKind = "access"
-	kindRefresh  blobKind = "refresh"
-	kindClientID blobKind = "client_id"
+	kindState       blobKind = "state_v2"
+	kindStoredCode  blobKind = "stored_code_v2"
+	kindAccess      blobKind = "access_v2"
+	kindStoredGrant blobKind = "stored_grant_v2"
+	kindClientID    blobKind = "client_id_v2"
 )
 
 // Public prefixes of the artifacts the server issues. They make token kinds
 // recognizable in logs and bug reports without decryption.
 const (
-	prefixCode     = "mcp_ac_"
-	prefixAccess   = "mcp_at_"
-	prefixRefresh  = "mcp_rt_"
-	prefixClientID = "mcp_cid_"
+	prefixCode     = "mcp_ac_v2_"
+	prefixState    = "mcp_state_v2_"
+	prefixAccess   = "mcp_at_v2_"
+	prefixRefresh  = "mcp_rt_v2_"
+	prefixClientID = "mcp_cid_v2_"
 )
 
 // Blob rejection reasons. errInvalidBlob is the umbrella every failure
@@ -59,10 +60,10 @@ type blobSpec[T issuedAtCarrier] struct {
 // The four sealed-blob specs. The DCR client_id is HMAC-signed, not sealed,
 // and has its own dedicated functions.
 var (
-	stateBlob   = blobSpec[stateClaims]{kind: kindState, prefix: "", ttl: stateTTL}
-	codeBlob    = blobSpec[codeClaims]{kind: kindCode, prefix: prefixCode, ttl: codeTTL}
-	accessBlob  = blobSpec[accessClaims]{kind: kindAccess, prefix: prefixAccess}
-	refreshBlob = blobSpec[refreshClaims]{kind: kindRefresh, prefix: prefixRefresh}
+	stateBlob       = blobSpec[stateClaims]{kind: kindState, prefix: "", ttl: stateTTL}
+	storedCodeBlob  = blobSpec[codeClaims]{kind: kindStoredCode}
+	accessBlob      = blobSpec[accessClaims]{kind: kindAccess, prefix: prefixAccess}
+	storedGrantBlob = blobSpec[refreshClaims]{kind: kindStoredGrant}
 )
 
 // sealer encrypts and signs the server's self-contained artifacts.

@@ -21,16 +21,17 @@ func RegisterErrorsGet(s *mcp.Server, d Deps) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
+		InputSchema:  projectInputSchema[ErrorsGetInput](d.Project),
 		OutputSchema: outputSchemaFor[gcpdata.ErrorGroupDetail](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ErrorsGetInput) (*mcp.CallToolResult, *gcpdata.ErrorGroupDetail, error) {
 		if in.GroupID == "" {
 			return errResult("group_id is required"), nil, nil
 		}
-		project, err := resolveProject(in.ProjectID, d.DefaultProject)
+		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
-		limit := clampLimit(in.Limit, 20, d.ErrorsMaxLimit)
+		limit := clampLimit(in.Limit, 20, ErrorsHardLimit)
 
 		sendProgress(ctx, req, 0, 1, "Fetching error group details...")
 
