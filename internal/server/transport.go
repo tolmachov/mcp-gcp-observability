@@ -14,6 +14,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/authsrv"
+	"github.com/tolmachov/mcp-gcp-observability/internal/httpdiag"
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
 
@@ -70,7 +71,7 @@ func (s *Server) serveHTTP(ctx context.Context, handler http.Handler, addr strin
 	s.logger.Info("Starting streamable HTTP server", "addr", addr)
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: withCrossOriginProtection(limitRequestBody(handler), corsBypass...),
+		Handler: httpdiag.Handler(s.logger, withCrossOriginProtection(limitRequestBody(handler), corsBypass...)),
 		// Bound the header-read phase to blunt Slowloris-style slow-header attacks.
 		ReadHeaderTimeout: 10 * time.Second,
 		MaxHeaderBytes:    64 << 10,
@@ -136,6 +137,7 @@ func limitRequestBody(next http.Handler) http.Handler {
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		r.ContentLength = int64(len(body))
+		httpdiag.ObserveBody(r, body)
 		next.ServeHTTP(w, r)
 	})
 }

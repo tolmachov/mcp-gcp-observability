@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+
+	"github.com/tolmachov/mcp-gcp-observability/internal/httpdiag"
 )
 
 type tokenResponse struct {
@@ -229,6 +231,9 @@ func verifyPKCE(verifier, challenge string) bool {
 }
 
 func (a *AuthServer) tokenError(w http.ResponseWriter, status int, code, description string) {
+	// These descriptions are application-owned constants, never submitted
+	// credentials or upstream error bodies.
+	httpdiag.Reject(w, code, description)
 	w.Header().Set("Cache-Control", "no-store")
 	a.writeJSON(w, status, &oauthErrorResponse{Error: code, ErrorDescription: description})
 }
