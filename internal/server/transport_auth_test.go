@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -21,6 +22,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/authsrv"
+	"github.com/tolmachov/mcp-gcp-observability/internal/httpdiag"
 )
 
 // fakeServerIdP is a minimal authsrv.IdentityProvider for wiring tests.
@@ -62,6 +64,11 @@ var wiringConsentRe = regexp.MustCompile(`name="request" value="([^"]+)"`)
 // the production bypass list — backed by a stub per-user pool.
 func newWiringServer(t *testing.T) (*httptest.Server, *countingBuilder) {
 	t.Helper()
+	return newWiringServerWithLogger(t, discardLogger())
+}
+
+func newWiringServerWithLogger(t *testing.T, logger *slog.Logger) (*httptest.Server, *countingBuilder) {
+	t.Helper()
 	key := make([]byte, 32)
 	_, err := rand.Read(key)
 	require.NoError(t, err)
@@ -83,9 +90,28 @@ func newWiringServer(t *testing.T) (*httptest.Server, *countingBuilder) {
 	pool := newUserPool(context.Background(), b.builder(), discardLogger())
 	t.Cleanup(func() { _ = pool.Close() })
 
-	handler := withCrossOriginProtection(buildAuthMux(as, cfg.IssuerURL, pool), authCORSBypassPaths...)
+	handler := httpdiag.Handler(logger, withCrossOriginProtection(limitRequestBody(buildAuthMux(as, cfg.IssuerURL, pool)), authCORSBypassPaths...))
 	ts.Config.Handler = handler
 	return ts, b
+}
+
+func TestOAuthRejectionDiagnostics(t *testing.T) {
+	var logs bytes.Buffer
+	ts, _ := newWiringServerWithLogger(t, slog.New(slog.NewJSONHandler(&logs, nil)))
+	resp, err := http.PostForm(ts.URL+"/token?secret=hidden-query", url.Values{
+		"grant_type": {"refresh_token"}, "refresh_token": {"legacy-hidden-refresh-token"},
+		"client_id": {"hidden-client-id"},
+	})
+	require.NoError(t, err)
+	defer resp.Body.Close() //nolint:errcheck // test cleanup
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	var event map[string]any
+	require.NoError(t, json.Unmarshal(logs.Bytes(), &event))
+	assert.Equal(t, "invalid_grant", event["oauth_error"])
+	assert.Equal(t, "invalid refresh token", event["reason"])
+	assert.Equal(t, "/token", event["route"])
+	assert.Equal(t, resp.Header.Get("X-Request-ID"), event["request_id"])
+	assert.NotContains(t, logs.String(), "hidden")
 }
 
 // obtainToken drives the complete OAuth flow over the production mux and

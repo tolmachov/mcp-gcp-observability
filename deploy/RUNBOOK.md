@@ -94,6 +94,23 @@ The revocation endpoint immediately marks the Firestore family revoked and attem
 
 ## Alert response
 
+For client `400`/`401` responses, inspect the matching application rejection:
+
+```bash
+gcloud logging read \
+  'resource.type="cloud_run_revision" AND resource.labels.service_name="mcp-gcp-observability" AND jsonPayload.msg="http_request_rejected"' \
+  --project "$GCP_PROJECT" --freshness=30m --limit=50 \
+  --format='table(timestamp,jsonPayload.client,jsonPayload.route,jsonPayload.status,jsonPayload.rpc_method,jsonPayload.reason,jsonPayload.protocol_version,jsonPayload.request_id)'
+```
+
+Use the client's response `X-Request-ID` or the event's `trace_id` to correlate
+requests. `accept_requires_json_and_sse`, `request_missing_id`, and
+`unsupported_protocol_version` identify transport failures before tool dispatch.
+On `/token`, `oauth_error=invalid_grant` plus `reason` distinguishes malformed or
+legacy refresh tokens from expired, revoked, or replayed grants. A `200` MCP
+response can still contain a JSON-RPC/tool error; HTTP rejection logs alone do
+not prove tool success.
+
 - `MCP: oauth store failures`: halt rollout; check Firestore availability, database ID, IAM, and quota.
 - `MCP: grant security events`: distinguish explicit revocation from replay; replay requires security investigation.
 - `MCP: response budget violations`: capture the tool name and input; do not raise limits before fixing normalization.
