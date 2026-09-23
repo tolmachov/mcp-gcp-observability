@@ -29,7 +29,7 @@ func RegisterTraceFindFromLogs(s *mcp.Server, d Deps) {
 
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 
 		scanLimit := clampLimit(in.ScanLimit, LogsHardLimit, LogsHardLimit)
@@ -37,7 +37,7 @@ func RegisterTraceFindFromLogs(s *mcp.Server, d Deps) {
 
 		timeFilter, err := buildTimeFilter(in.TimeFilterInput)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 
 		sendProgress(ctx, req, 0, 1, "Scanning logs for traces...")

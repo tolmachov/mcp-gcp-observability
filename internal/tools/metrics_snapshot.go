@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"google.golang.org/grpc/codes"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
@@ -153,19 +152,16 @@ func queryWithBaseline(ctx context.Context, tool string, current gcpdata.QueryTi
 // data and at least one query failed; failed windows alongside usable ones
 // yield a partial-failure note. The warnings of a multi-window mode are summed
 // into one note so a warning repeated in every window is reported once. The
-// returned note carries the partial-failure note and the warning note. When
-// a query panicked the error wraps the *panicError.
+// returned note carries the partial-failure note, with the guidance for the
+// failed queries, and the warning note.
 func collectBaseline(ctx context.Context, req *mcp.CallToolRequest, tool, metricType string, mode baselineMode, windows []baselineWindow, results []windowResult) (string, error) {
 	var warnings gcpdata.QueryWarnings
 	var errs []error
-	withData, panics := 0, 0
+	withData := 0
 	for i, r := range results {
 		warnings.Add(r.warnings)
 		if r.err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", windows[i].label, r.err))
-		}
-		if isPanic(r.err) {
-			panics++
 		}
 		if r.hasPoints() {
 			withData++
@@ -181,49 +177,32 @@ func collectBaseline(ctx context.Context, req *mcp.CallToolRequest, tool, metric
 	}
 	joined := errors.Join(errs...)
 	if withData == 0 {
-		if panics > 0 {
-			return "", fmt.Errorf("%d of %d baseline queries panicked (a bug, not a transient failure): %w", panics, len(windows), joined)
-		}
 		if len(errs) == len(windows) {
 			return "", fmt.Errorf("all %d baseline queries failed: %w", len(windows), joined)
 		}
 		return "", fmt.Errorf("%d of %d baseline queries failed and the rest returned no data: %w", len(errs), len(windows), joined)
 	}
-	var partial string
-	if panics > 0 {
-		mcpLog(ctx, req, logLevelError, tool,
-			fmt.Sprintf("baseline partial failure: UNEXPECTED PANICS in %d of %d queries; %v", panics, len(windows), joined))
-		partial = fmt.Sprintf("Baseline partial failure (%s): UNEXPECTED PANICS occurred in %d of %d baseline queries. This is a bug in the code, not a transient failure. Baseline computed from %d windows, but results may be unreliable. Please report this issue.",
-			mode, panics, len(windows), withData)
-	} else {
-		mcpLog(ctx, req, logLevelWarning, tool,
-			fmt.Sprintf("baseline partial failure: %d of %d queries failed (%v); using %d windows of data", len(errs), len(windows), joined, withData))
-		partial = fmt.Sprintf("Baseline partial failure (%s): %d of %d baseline windows could not be fetched; baseline computed from %d windows. Results may be less reliable.",
-			mode, len(errs), len(windows), withData)
-	}
-	return joinNote(partial, warningsNote), nil
+	mcpLog(ctx, req, logLevelWarning, tool,
+		fmt.Sprintf("baseline partial failure: %d of %d queries failed (%v); using %d windows of data", len(errs), len(windows), joined, withData))
+	partial := fmt.Sprintf("Baseline partial failure (%s): %d of %d baseline windows could not be fetched; baseline computed from %d windows. Results may be less reliable.",
+		mode, len(errs), len(windows), withData)
+	return joinNote(partial, baselineFailureAdvice(results), warningsNote), nil
 }
 
-// baselineCodeGuidance is the advice for baseline failures that retrying
-// cannot fix and that sharedCodeGuidance does not cover.
-var baselineCodeGuidance = []codeGuidance{
-	{codes.NotFound, "Cloud Monitoring found no such metric or project for the baseline window; retrying will not help."},
-	{codes.InvalidArgument, "Cloud Monitoring rejected the baseline query as invalid; retrying will not help."},
+// baselineFailureNote describes the baseline failure err that collectBaseline
+// returned for results, followed by the guidance for the failed queries.
+func baselineFailureNote(mode baselineMode, err error, results []windowResult) string {
+	return joinNote(fmt.Sprintf("Baseline query (%s) failed: %v.", mode, err), baselineFailureAdvice(results))
 }
 
-// baselineFailureAdvice tells whether retrying can fix err, the failure
-// collectBaseline returned for results: a panic is a bug; otherwise the
-// guidance for each distinct gRPC code among the failed queries, where codes
-// without specific guidance are worth a retry.
-func baselineFailureAdvice(err error, results []windowResult) string {
-	if isPanic(err) {
-		return "This is a bug in the code, not a transient failure; retrying will not help. Please report this issue."
-	}
+// baselineFailureAdvice returns the guidance for the failed queries among
+// the baseline results: whether retrying can help, per distinct failure.
+func baselineFailureAdvice(results []windowResult) string {
 	errs := make([]error, len(results))
 	for i, r := range results {
 		errs[i] = r.err
 	}
-	return errorGuidance(errs, "You can retry.", baselineCodeGuidance...)
+	return errorGuidance(errs, "")
 }
 
 // toChartPoints converts metric points to the compact chartPoint slice used by
@@ -247,7 +226,7 @@ func toChartPoints(pts []metrics.Point) []chartPoint {
 func chartCallResult[T any](result, llm *T, uri string) (*mcp.CallToolResult, *T) {
 	text, err := json.Marshal(llm)
 	if err != nil {
-		return errResult(fmt.Sprintf("internal error: failed to marshal result: %v", err)), nil
+		return ErrorResult(fmt.Sprintf("internal error: failed to marshal result: %v", err)), nil
 	}
 	return &mcp.CallToolResult{
 		Meta:    mcp.Meta{"ui": map[string]any{"resourceUri": uri}},
@@ -290,7 +269,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsSnapshotInput) (*mcp.CallToolResult, *MetricSnapshotResult, error) {
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 
 		stepSeconds := int64(in.StepSeconds)
@@ -298,17 +277,17 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 			stepSeconds = metrics.DefaultStepSeconds
 		}
 		if stepSeconds < 10 {
-			return errResult("step_seconds must be at least 10"), nil, nil
+			return ErrorResult("step_seconds must be at least 10"), nil, nil
 		}
 
 		windowStr, windowDur, err := parseWindow(in.Window)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 
 		baseline, err := parseBaseline(in.BaselineMode, in.EventTime)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 
 		meta := d.Registry.Lookup(in.MetricType)
@@ -348,13 +327,8 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 		currentWarningsNote := reportQueryWarnings(ctx, req, "metrics_snapshot", in.MetricType, "current", current.warnings)
 		if err := current.err; err != nil {
 			mcpLog(ctx, req, logLevelError, "metrics_snapshot", fmt.Sprintf("current window query failed: %v", err))
-			if invalidAggregationSpecError(err) {
-				return errResult(formatRegistryMisconfigError(in.MetricType, err)), nil, nil
-			}
-			if isInvalidFilterError(err) {
-				return errResult(enrichInvalidFilterError(ctx, req, d.Querier, project, in.MetricType, in.Filter, err)), nil, nil
-			}
-			return gcpErrorResult(fmt.Sprintf("Failed to query metric: %v", err), err, ""), nil, nil
+			return metricQueryErrorResult(ctx, req, d.Querier, project, in.MetricType, in.Filter,
+				fmt.Sprintf("Failed to query metric: %v", err), err), nil, nil
 		}
 
 		currentPoints := mergePoints(current.series)
@@ -392,8 +366,8 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 		var baselineStats metrics.BaselineStats
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "metrics_snapshot", fmt.Sprintf("baseline query failed: %v", err))
-			baselineErrNote = fmt.Sprintf("Baseline query (%s) failed: %v. %s Returning current-window snapshot with baseline_reliable=false; delta fields are not meaningful.",
-				baseline.mode, err, baselineFailureAdvice(err, baselineResults))
+			baselineErrNote = joinNote(baselineFailureNote(baseline.mode, err, baselineResults),
+				"Returning current-window snapshot with baseline_reliable=false; delta fields are not meaningful.")
 		} else {
 			buckets := make([][]metrics.Point, len(baselineResults))
 			for i, r := range baselineResults {

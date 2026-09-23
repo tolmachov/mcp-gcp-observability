@@ -28,7 +28,7 @@ func RegisterProfilerCompare(s *mcp.Server, d Deps) {
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerCompareInput) (*mcp.CallToolResult, *gcpdata.ProfileCompareResult, error) {
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 
 		// CompareProfiles fetches two profiles, each of which may scan the Export

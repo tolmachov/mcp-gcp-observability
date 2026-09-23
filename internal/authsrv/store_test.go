@@ -1,8 +1,10 @@
 package authsrv
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -101,6 +103,17 @@ func TestStoreChecksAbsoluteExpiry(t *testing.T) {
 	require.ErrorIs(t, store.RedeemCode(context.Background(), "expired", now, testGrant(now, "s")), errStateNotFound)
 	store.grants["expired"] = grantRecord{Status: "active", ActiveSecretHash: tokenHash("s"), ExpiresAt: now.Add(-time.Second)}
 	require.ErrorIs(t, store.RotateGrant(context.Background(), "expired", tokenHash("s"), grantRecord{}, now), errGrantInactive)
+}
+
+// TestCorruptGrantError pins that an undecodable grant is logged under the
+// event name the alert filter matches and reported as both a missing and a
+// corrupt grant.
+func TestCorruptGrantError(t *testing.T) {
+	var logs bytes.Buffer
+	err := corruptGrantError(slog.New(slog.NewTextHandler(&logs, nil)), "fam", errors.New("bad field"))
+	require.ErrorIs(t, err, errStateNotFound)
+	require.ErrorIs(t, err, errGrantCorrupt)
+	assert.Contains(t, logs.String(), "level=ERROR msg=oauth_grant_corrupt family_id=fam")
 }
 
 type failingStateStore struct {

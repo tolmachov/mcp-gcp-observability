@@ -53,6 +53,7 @@ type AuthServer struct {
 }
 
 // New validates cfg and builds the authorization server with Google as IdP.
+// logger must not be nil: the Firestore state store logs through it too.
 func New(ctx context.Context, cfg *Config, logger *slog.Logger) (*AuthServer, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("invalid auth config: auth config must not be nil")
@@ -65,7 +66,7 @@ func New(ctx context.Context, cfg *Config, logger *slog.Logger) (*AuthServer, er
 	if err := cfgCopy.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid auth config: %w", err)
 	}
-	store, err := newFirestoreStateStore(ctx, cfgCopy.StateProject, cfgCopy.StateDatabase)
+	store, err := newFirestoreStateStore(ctx, cfgCopy.StateProject, cfgCopy.StateDatabase, logger)
 	if err != nil {
 		return nil, err
 	}

@@ -112,7 +112,7 @@ func (a *AuthServer) tokenFromRefresh(w http.ResponseWriter, r *http.Request, fo
 		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "invalid refresh token")
 		return
 	}
-	rec, err := a.grant(r.Context(), familyID)
+	rec, err := a.store.GetGrant(r.Context(), familyID)
 	if err != nil {
 		a.storeTokenError(r.Context(), w, "get_grant", err)
 		return

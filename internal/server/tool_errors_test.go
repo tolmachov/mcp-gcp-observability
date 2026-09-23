@@ -8,119 +8,15 @@ import (
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
-	"github.com/google/pprof/profile"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 	"github.com/tolmachov/mcp-gcp-observability/internal/tools"
 )
-
-// failingBackends implements every gcpdata backend interface with methods
-// that all fail with err.
-type failingBackends struct{ err error }
-
-var (
-	_ gcpdata.LogsQuerier     = failingBackends{}
-	_ gcpdata.ErrorsQuerier   = failingBackends{}
-	_ gcpdata.TraceQuerier    = failingBackends{}
-	_ gcpdata.ProfilerQuerier = failingBackends{}
-	_ gcpdata.MetricsQuerier  = failingBackends{}
-)
-
-func (f failingBackends) QueryLogs(context.Context, string, string, int, string, string) (*gcpdata.LogQueryResult, error) {
-	return nil, f.err
-}
-
-func (f failingBackends) QueryLogsByTrace(context.Context, string, string, string, int, string) (*gcpdata.LogQueryResult, error) {
-	return nil, f.err
-}
-
-func (f failingBackends) QueryLogsByRequestID(context.Context, string, string, string, int, string) (*gcpdata.LogQueryResult, error) {
-	return nil, f.err
-}
-
-func (f failingBackends) FindRequests(context.Context, gcpdata.FindRequestsParams) (*gcpdata.RequestList, error) {
-	return nil, f.err
-}
-
-func (f failingBackends) ListServices(context.Context, string, string) (*gcpdata.ServiceList, error) {
-	return nil, f.err
-}
-
-func (f failingBackends) SummarizeLogs(context.Context, string, string, gcpdata.ProgressFunc) (*gcpdata.LogsSummary, error) {
-	return nil, f.err
-}
-
-func (f failingBackends) FindTracesFromLogs(context.Context, string, string, string, int, int) (*gcpdata.TraceFromLogsList, error) {
-	return nil, f.err
-}
-
-func (f failingBackends) ListErrors(context.Context, string, gcpdata.ErrorWindow, int, string, string) (*gcpdata.ErrorGroupList, error) {
-	return nil, f.err
-}
-
-func (f failingBackends) GetErrorGroup(context.Context, string, string, int, string) (*gcpdata.ErrorGroupDetail, error) {
-	return nil, f.err
-}
-
-func (f failingBackends) AnalyzeErrorTrends(context.Context, string, gcpdata.ErrorWindow, int, string, string) (*gcpdata.ErrorTrendList, error) {
-	return nil, f.err
-}
-
-func (f failingBackends) GetTrace(context.Context, string, string) (*gcpdata.TraceDetail, error) {
-	return nil, f.err
-}
-
-func (f failingBackends) ListTraces(context.Context, string, string, string, string, time.Time, time.Time, int, string) (*gcpdata.TraceListResult, error) {
-	return nil, f.err
-}
-
-func (f failingBackends) ListProfiles(context.Context, gcpdata.ListProfilesParams) (*gcpdata.ProfileListResult, error) {
-	return nil, f.err
-}
-
-func (f failingBackends) GetOrFetchProfile(context.Context, string, string) (*profile.Profile, gcpdata.ProfileMeta, error) {
-	return nil, gcpdata.ProfileMeta{}, f.err
-}
-
-func (f failingBackends) GetProfileOrDiff(context.Context, string, string, string) (*profile.Profile, gcpdata.ProfileMeta, error) {
-	return nil, gcpdata.ProfileMeta{}, f.err
-}
-
-func (f failingBackends) CompareProfiles(context.Context, string, string, string, int, int) (*gcpdata.ProfileCompareResult, error) {
-	return nil, f.err
-}
-
-func (f failingBackends) ComputeTrends(context.Context, gcpdata.ComputeTrendsParams, func(int, int, string)) (*gcpdata.ProfileTrendsResult, error) {
-	return nil, f.err
-}
-
-func (failingBackends) Close() error { return nil }
-
-func (f failingBackends) GetMetricDescriptor(context.Context, string, string) (gcpdata.MetricDescriptorBasic, error) {
-	return gcpdata.MetricDescriptorBasic{}, f.err
-}
-
-func (f failingBackends) ListMetricDescriptors(context.Context, string, string, int) ([]gcpdata.MetricDescriptorInfo, error) {
-	return nil, f.err
-}
-
-func (f failingBackends) QueryTimeSeries(context.Context, gcpdata.QueryTimeSeriesParams) ([]gcpdata.MetricTimeSeries, gcpdata.QueryWarnings, error) {
-	return nil, gcpdata.QueryWarnings{}, f.err
-}
-
-func (f failingBackends) QueryTimeSeriesAggregated(context.Context, gcpdata.QueryTimeSeriesParams, metrics.AggregationSpec) ([]gcpdata.MetricTimeSeries, gcpdata.QueryWarnings, error) {
-	return nil, gcpdata.QueryWarnings{}, f.err
-}
-
-func (f failingBackends) GetResourceLabels(context.Context, string, string) ([]string, error) {
-	return nil, f.err
-}
 
 // TestEveryToolSurfacesReauthHint pins that every tool turns rejected
 // credentials into the re-authentication hint rather than a bare error.
@@ -162,7 +58,7 @@ func TestEveryToolSurfacesReauthHint(t *testing.T) {
 		"profiler_compare":    {"profile_id": "p1", "base_profile_id": "p0"},
 		"profiler_trends":     {"profile_type": "CPU", "target": "svc"},
 	}
-	backends := failingBackends{err: status.Error(codes.Unauthenticated, "token expired")}
+	backends := stubBackends{err: status.Error(codes.Unauthenticated, "token expired")}
 	deps := tools.Deps{
 		Logs:     backends,
 		Errors:   backends,

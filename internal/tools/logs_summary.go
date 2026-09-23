@@ -22,13 +22,13 @@ func RegisterLogsSummary(s *mcp.Server, d Deps) {
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsSummaryInput) (*mcp.CallToolResult, *gcpdata.LogsSummary, error) {
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 		filter := in.Filter
 
 		timeFilter, err := buildTimeFilter(in.TimeFilterInput)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 		filter = gcpdata.AppendFilter(filter, timeFilter)
 

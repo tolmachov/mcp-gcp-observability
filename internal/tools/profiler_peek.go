@@ -38,7 +38,7 @@ func RegisterProfilerPeek(s *mcp.Server, d Deps) {
 		funcInfo, callers, callees, err := gcpdata.PeekFunction(p, in.FunctionName, in.ValueIndex, limit)
 		if err != nil {
 			mcpLog(ctx, req, logLevelWarning, "profiler_peek", fmt.Sprintf("analysis failed: %v", err))
-			return errResult(fmt.Sprintf("Failed to peek function: %v", err)), nil, nil
+			return ErrorResult(fmt.Sprintf("Failed to peek function: %v", err)), nil, nil
 		}
 
 		callersTrunc := len(callers) >= limit

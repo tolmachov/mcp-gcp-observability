@@ -27,7 +27,7 @@ func RegisterTraceList(s *mcp.Server, d Deps) {
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in TraceListInput) (*mcp.CallToolResult, *gcpdata.TraceListResult, error) {
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 
 		// Build filter: raw filter takes precedence over structured params.
@@ -35,13 +35,13 @@ func RegisterTraceList(s *mcp.Server, d Deps) {
 		if filter == "" {
 			filter, err = gcpdata.BuildTraceFilter(in.RootName, in.SpanName, in.MinLatency)
 			if err != nil {
-				return errResult(err.Error()), nil, nil
+				return ErrorResult(err.Error()), nil, nil
 			}
 		}
 
 		startTime, endTime, err := parseTimeRange(in.StartTime, in.EndTime, time.Hour)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 
 		pageSize := clampLimit(in.Limit, 50, 200)

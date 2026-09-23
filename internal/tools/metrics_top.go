@@ -37,7 +37,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsTopInput) (*mcp.CallToolResult, *TopContributorsResult, error) {
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 
 		limit := clampLimit(in.Limit, 5, 20)
@@ -45,16 +45,16 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 
 		windowStr, windowDur, err := parseWindow(in.Window)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 
 		baseline, err := parseBaseline(in.BaselineMode, in.EventTime)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 
 		if errMsg := validateTopContributorDimension(in.Dimension); errMsg != "" {
-			return errResult(errMsg), nil, nil
+			return ErrorResult(errMsg), nil, nil
 		}
 
 		meta := d.Registry.Lookup(in.MetricType)
@@ -103,10 +103,8 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 		currentWarningsNote := reportQueryWarnings(ctx, req, "metrics_top_contributors", in.MetricType, "current", current.warnings)
 		if err := current.err; err != nil {
 			mcpLog(ctx, req, logLevelError, "metrics_top_contributors", fmt.Sprintf("current window query failed: %v", err))
-			if isInvalidFilterError(err) {
-				return errResult(enrichInvalidFilterError(ctx, req, d.Querier, project, in.MetricType, in.Filter, err)), nil, nil
-			}
-			return gcpErrorResult(fmt.Sprintf("Failed to query metric: %v", err), err, ""), nil, nil
+			return metricQueryErrorResult(ctx, req, d.Querier, project, in.MetricType, in.Filter,
+				fmt.Sprintf("Failed to query metric: %v", err), err), nil, nil
 		}
 		currentSeries := current.series
 
@@ -134,8 +132,8 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 		baselineByLabel := map[string][][]metrics.Point{}
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "metrics_top_contributors", fmt.Sprintf("baseline query failed: %v", err))
-			baselineErrNote = fmt.Sprintf("Baseline query (%s) failed: %v. %s Returning current-window contributors only; delta_pct and share_of_anomaly are not meaningful.",
-				baseline.mode, err, baselineFailureAdvice(err, baselineResults))
+			baselineErrNote = joinNote(baselineFailureNote(baseline.mode, err, baselineResults),
+				"Returning current-window contributors only; delta_pct and share_of_anomaly are not meaningful.")
 			rankByCurrent = true
 		} else if !slices.ContainsFunc(baselineResults, windowResult.hasPoints) {
 			// Every baseline query succeeded but returned no data (e.g. a
@@ -180,7 +178,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 		}
 
 		if missingCount == totalSeries {
-			return errResult(fmt.Sprintf(
+			return ErrorResult(fmt.Sprintf(
 				"Dimension %q was not found in any series labels. Call metrics_snapshot on this metric_type and check `available_labels` for the valid keys (e.g. 'metric.labels.response_code' or 'resource.labels.instance_id').",
 				in.Dimension,
 			)), nil, nil

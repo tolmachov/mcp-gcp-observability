@@ -16,6 +16,15 @@ const (
 
 var processProfileCacheBytes atomic.Int64
 
+var (
+	// errWouldEvict rejects an insert that fits the per-user budget only by
+	// evicting an entry the caller asked to keep.
+	errWouldEvict = errors.New("the per-user profile cache is full of profiles this request still needs")
+	// errProcessCacheFull rejects an insert that would grow the process-wide
+	// usage past profileCacheProcessBytes.
+	errProcessCacheFull = fmt.Errorf("the process-wide profile cache budget of %d bytes is full", profileCacheProcessBytes)
+)
+
 func profileCacheKey(project, profileName string) string { return project + "/" + profileName }
 
 type profileCacheEntry struct {
@@ -49,10 +58,16 @@ func (c *ProfileCache) Get(key string) ([]byte, ProfileMeta, bool) {
 	return e.data, e.meta, true
 }
 
+// index returns the position of key's entry, or -1 when key is not cached.
+// c.mu must be held.
+func (c *ProfileCache) index(key string) int {
+	return slices.IndexFunc(c.entries, func(e profileCacheEntry) bool { return e.key == key })
+}
+
 // touch moves the entry for key to the most-recently-used end and returns its
 // new index, or -1 when key is not cached. c.mu must be held.
 func (c *ProfileCache) touch(key string) int {
-	i := slices.IndexFunc(c.entries, func(e profileCacheEntry) bool { return e.key == key })
+	i := c.index(key)
 	if i < 0 {
 		return -1
 	}
@@ -63,12 +78,15 @@ func (c *ProfileCache) touch(key string) int {
 
 // Put caches a copy of compressed data when both the per-user and process
 // budgets permit, evicting the key's previous value and least recently used
-// entries to fit the per-user budget. The process budget is reserved before
-// anything is evicted, so a rejected insert leaves the cache unchanged. The
-// returned error names why data was not cached: it is empty, larger than the
-// per-user budget on its own, the process budget is full, or the cache is
-// closed. Rejected data remains usable for the current request.
-func (c *ProfileCache) Put(key string, data []byte, meta ProfileMeta) error {
+// entries to fit the per-user budget. Entries whose keys are in keep are never
+// evicted: an insert that would need to evict one fails with errWouldEvict.
+// The process budget is reserved before anything is evicted, so a rejected
+// insert leaves the cache unchanged. The returned error names why data was
+// not cached: it is empty, larger than the per-user budget on its own, would
+// evict a kept entry (errWouldEvict), the process budget is full
+// (errProcessCacheFull), or the cache is closed. Rejected data remains usable
+// for the current request.
+func (c *ProfileCache) Put(key string, data []byte, meta ProfileMeta, keep map[string]bool) error {
 	size := int64(len(data))
 	if size == 0 {
 		return errors.New("empty profile")
@@ -81,21 +99,25 @@ func (c *ProfileCache) Put(key string, data []byte, meta ProfileMeta) error {
 	if c.closed {
 		return errors.New("profile cache is closed")
 	}
-	old := slices.IndexFunc(c.entries, func(e profileCacheEntry) bool { return e.key == key })
+	old := c.index(key)
 	var freed int64
 	if old >= 0 {
 		freed = int64(len(c.entries[old].data))
 	}
 	evict := 0 // entries [0, evict) are evicted; size <= maxBytes bounds it by len(entries)
 	for ; c.bytes-freed+size > c.maxBytes; evict++ {
-		if evict != old {
-			freed += int64(len(c.entries[evict].data))
+		if evict == old {
+			continue
 		}
+		if keep[c.entries[evict].key] {
+			return errWouldEvict
+		}
+		freed += int64(len(c.entries[evict].data))
 	}
 	delta := size - freed
 	if total := processProfileCacheBytes.Add(delta); delta > 0 && total > profileCacheProcessBytes {
 		processProfileCacheBytes.Add(-delta)
-		return fmt.Errorf("process-wide profile cache budget of %d bytes is full", profileCacheProcessBytes)
+		return errProcessCacheFull
 	}
 	kept := slices.Delete(c.entries, 0, evict)
 	if old >= evict {
@@ -110,7 +132,7 @@ func (c *ProfileCache) Put(key string, data []byte, meta ProfileMeta) error {
 func (c *ProfileCache) Delete(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	i := slices.IndexFunc(c.entries, func(e profileCacheEntry) bool { return e.key == key })
+	i := c.index(key)
 	if i < 0 {
 		return
 	}

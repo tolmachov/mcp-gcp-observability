@@ -78,7 +78,7 @@ func (a *AuthServer) verifyAccessToken(ctx context.Context, token string) (*auth
 		a.logger.Warn("access token rejected", "reason", err)
 		return nil, fmt.Errorf("%w: not a valid access token", auth.ErrInvalidToken)
 	}
-	grant, grantErr := a.grant(ctx, c.FamilyID)
+	grant, grantErr := a.store.GetGrant(ctx, c.FamilyID)
 	if grantErr != nil && !errors.Is(grantErr, errStateNotFound) {
 		a.logStoreFailure(ctx, "verify_grant", grantErr)
 		return nil, fmt.Errorf("%w: %w", errStoreUnavailable, grantErr)

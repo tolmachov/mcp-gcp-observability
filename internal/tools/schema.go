@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -33,24 +34,21 @@ type propPatch struct {
 // SDK fills in when the input omits the property, and is named in the
 // description too; handlers then never see the property empty.
 func enumProp[T ~string](property string, values []T, def T) propPatch {
-	enum := make([]any, len(values))
 	names := make([]string, len(values))
 	for i, v := range values {
-		enum[i] = string(v)
 		names[i] = string(v)
 	}
-	if def != "" && !slices.Contains(values, def) {
-		panic("enumProp: default " + string(def) + " of " + property + " is not one of its values")
-	}
-	defJSON, err := json.Marshal(def)
-	if err != nil {
-		panic("enumProp: " + err.Error())
-	}
 	return propPatch{property, func(s *jsonschema.Schema) {
-		s.Enum = enum
+		s.Enum = make([]any, len(names))
+		for i, name := range names {
+			s.Enum[i] = name
+		}
 		s.Description += ". One of: " + strings.Join(names, ", ")
 		if def != "" {
-			s.Default = defJSON
+			if !slices.Contains(values, def) {
+				panic("enumProp: default " + string(def) + " of " + property + " is not one of its values")
+			}
+			s.Default = json.RawMessage(strconv.Quote(string(def)))
 			s.Description += ". Default: " + string(def)
 		}
 	}}

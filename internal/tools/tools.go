@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -266,8 +267,22 @@ func formatRegistryMisconfigError(metricType string, err error) string {
 	return fmt.Sprintf("Registry misconfiguration for metric %q: %v. Fix the metric's aggregation block in the registry YAML — retrying will not help.", metricType, err)
 }
 
+// metricQueryErrorResult reports failed time-series queries of metricType as
+// a tool error: a registry misconfiguration names the YAML to fix, an invalid
+// label filter lists the labels the metric accepts, and any other failure is
+// msg followed by the guidance for errs. Nil errs are ignored.
+func metricQueryErrorResult(ctx context.Context, req *mcp.CallToolRequest, q gcpdata.MetricsQuerier, project, metricType, filter, msg string, errs ...error) *mcp.CallToolResult {
+	if slices.ContainsFunc(errs, invalidAggregationSpecError) {
+		return ErrorResult(formatRegistryMisconfigError(metricType, errors.Join(errs...)))
+	}
+	if slices.ContainsFunc(errs, isInvalidFilterError) {
+		return ErrorResult(enrichInvalidFilterError(ctx, req, q, project, metricType, filter, errors.Join(errs...)))
+	}
+	return gcpErrorsResult(msg, errs, "")
+}
+
 // lookupMetricDescriptor fetches the Cloud Monitoring descriptor for metricType,
-// logging and returning a ready-to-send errResult on failure. Shared by the
+// logging and returning a ready-to-send ErrorResult on failure. Shared by the
 // snapshot/top/compare handlers, which all need the descriptor's Kind and
 // ValueType to build a query. On success the returned *mcp.CallToolResult is
 // nil; callers forward a non-nil one as (errRes, nil, nil). tool names the
@@ -282,7 +297,7 @@ func lookupMetricDescriptor(ctx context.Context, req *mcp.CallToolRequest, q gcp
 }
 
 // resolveValidAggSpec resolves meta's aggregation strategy and validates it,
-// logging and returning a ready-to-send errResult on registry
+// logging and returning a ready-to-send ErrorResult on registry
 // misconfiguration. Shared by the snapshot/top/compare handlers; on success the
 // returned *mcp.CallToolResult is nil. metrics_related is intentionally not a
 // caller — it skips a misconfigured related metric rather than failing the
@@ -292,13 +307,13 @@ func resolveValidAggSpec(ctx context.Context, req *mcp.CallToolRequest, tool, me
 	if err := aggSpec.Validate(); err != nil {
 		mcpLog(ctx, req, logLevelError, tool,
 			fmt.Sprintf("registry misconfiguration for %s: %v", metricType, err))
-		return aggSpec, errResult(formatRegistryMisconfigError(metricType, err))
+		return aggSpec, ErrorResult(formatRegistryMisconfigError(metricType, err))
 	}
 	return aggSpec, nil
 }
 
-// errResult creates a tool error result.
-func errResult(msg string) *mcp.CallToolResult {
+// ErrorResult creates a tool error result.
+func ErrorResult(msg string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
 		IsError: true,
 		Content: []mcp.Content{&mcp.TextContent{Text: msg}},
@@ -393,7 +408,7 @@ func requireProfiler(q gcpdata.ProfilerQuerier) {
 func loadProfile(ctx context.Context, req *mcp.CallToolRequest, d Deps, tool, projectID, profileID, baseProfileID string) (*profile.Profile, gcpdata.ProfileMeta, *mcp.CallToolResult) {
 	project, err := d.Project.Resolve(projectID)
 	if err != nil {
-		return nil, gcpdata.ProfileMeta{}, errResult(err.Error())
+		return nil, gcpdata.ProfileMeta{}, ErrorResult(err.Error())
 	}
 	// Fetching an uncached profile scans the Export API and can run long on
 	// large projects; heartbeat progress keeps the client request alive.
@@ -438,9 +453,9 @@ func clampLimit(limit, fallback, maxLimit int) int {
 }
 
 // panicError wraps a value recovered from a panic in a runParallel task. It
-// exists so callers can distinguish a code bug (which no retry will fix) from
-// a transient fetch failure via errors.As, rather than substring-matching the
-// error text.
+// exists so a code bug (which no retry will fix) is told apart from a
+// transient fetch failure via errors.As (see causeGuidance), rather than by
+// substring-matching the error text.
 type panicError struct {
 	value any
 }
@@ -459,11 +474,11 @@ func isPanic(err error) bool {
 // tasks at a time (limit <= 0 means all at once), and returns the error of
 // each task by index (nil on success). Tasks should write only their own
 // result slot; any other shared state needs its own synchronization. A task
-// is not started once ctx is done — its slot gets ctx.Err() — but a running
-// task must observe cancellation itself. A panic is recovered, logged with
-// its stack (labeled with tool) to the server-side notifyErrLog, and recorded
-// as a *panicError (detectable via isPanic) rather than crashing the
-// server.
+// is not started once ctx is done — its slot gets a "not started" error
+// wrapping ctx.Err() — but a running task must observe cancellation itself. A
+// panic is recovered, logged with its stack (labeled with tool) to the
+// server-side notifyErrLog, and recorded as a *panicError (detectable via
+// isPanic) rather than crashing the server.
 func runParallel(ctx context.Context, tool string, n, limit int, task func(i int) error) []error {
 	if limit <= 0 {
 		limit = n
@@ -482,7 +497,7 @@ func runParallel(ctx context.Context, tool string, n, limit int, task func(i int
 				}
 			}()
 			if err := ctx.Err(); err != nil {
-				errs[i] = err
+				errs[i] = fmt.Errorf("not started: %w", err)
 				return
 			}
 			errs[i] = task(i)

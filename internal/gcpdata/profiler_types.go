@@ -167,18 +167,17 @@ type TrendsFunctionSeries struct {
 
 // ProfileTrendsResult is the response for profiler_trends.
 type ProfileTrendsResult struct {
-	Target            string                 `json:"target"`
-	ProfileType       string                 `json:"profile_type"`
-	ValueType         ValueTypeInfo          `json:"value_type"`
-	ProfileCount      int                    `json:"profile_count"`
-	AnalyzedCount     int                    `json:"analyzed_count"`
-	TimeRangeStart    string                 `json:"time_range_start,omitempty"`
-	TimeRangeEnd      string                 `json:"time_range_end,omitempty"`
-	Functions         []TrendsFunctionSeries `json:"functions"`
-	DownloadErrors    int                    `json:"download_errors,omitempty"`
-	LastDownloadError string                 `json:"last_download_error,omitempty"`
-	ParseErrors       int                    `json:"parse_errors,omitempty"`
-	Warning           string                 `json:"warning,omitempty"`
-	Truncated         bool                   `json:"truncated,omitempty"`
-	TruncationHint    string                 `json:"truncation_hint,omitempty"`
+	Target         string                 `json:"target"`
+	ProfileType    string                 `json:"profile_type"`
+	ValueType      ValueTypeInfo          `json:"value_type"`
+	ProfileCount   int                    `json:"profile_count"`
+	AnalyzedCount  int                    `json:"analyzed_count"`
+	TimeRangeStart string                 `json:"time_range_start,omitempty"`
+	TimeRangeEnd   string                 `json:"time_range_end,omitempty"`
+	Functions      []TrendsFunctionSeries `json:"functions"`
+	FailedProfiles int                    `json:"failed_profiles,omitempty"`
+	LastError      string                 `json:"last_error,omitempty"`
+	Warning        string                 `json:"warning,omitempty"`
+	Truncated      bool                   `json:"truncated,omitempty"`
+	TruncationHint string                 `json:"truncation_hint,omitempty"`
 }

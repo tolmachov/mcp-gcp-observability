@@ -32,7 +32,7 @@ func RegisterMetricsList(s *mcp.Server, d Deps) {
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsListInput) (*mcp.CallToolResult, *MetricsListResult, error) {
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 
 		kind := metrics.MetricKind(in.Kind)

@@ -65,7 +65,7 @@ func RegisterTraceGet(s *mcp.Server, d Deps) {
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in TraceGetInput) (*mcp.CallToolResult, *gcpdata.TraceDetail, error) {
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 
 		sendProgress(ctx, req, 0, 1, "Fetching trace...")

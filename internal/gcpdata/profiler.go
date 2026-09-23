@@ -24,14 +24,30 @@ import (
 	"google.golang.org/api/iterator"
 )
 
-// ProfilerScanTimeout bounds a single paginated scan of the Cloud Profiler
-// Export API. Because that API returns profile bytes inline and offers no
-// server-side filter (see ListProfiles), scans must page through and download
-// many profiles client-side and can legitimately run for minutes on large
-// projects. The tool layer keeps the MCP client's request alive across this
-// window with progress heartbeats, and maxScan still bounds the total work
-// examined. The server applies the same bound to every profiler_* tool call.
+// ProfilerScanTimeout is the time budget of one profiler_* tool call, which
+// the server applies to every such call once it holds a profiler slot. The
+// Cloud Profiler Export API returns profile bytes inline and offers no
+// server-side filter (see ListProfiles), so a call must page through and
+// download many profiles client-side and can legitimately run for minutes on
+// large projects. The tool layer keeps the MCP client's request alive across
+// this window with progress heartbeats, and maxScan still bounds the total
+// work examined.
 const ProfilerScanTimeout = 8 * time.Minute
+
+// ErrProfilerScanBudget is the cause the server gives a profiler tool call's
+// context when ProfilerScanTimeout runs out. Scans report it in their error
+// (see scanError). It wraps context.DeadlineExceeded.
+var ErrProfilerScanBudget = fmt.Errorf("profiler scan used up its %s time budget: %w", ProfilerScanTimeout, context.DeadlineExceeded)
+
+// scanError returns err from a profiler scan prefixed by the cause of ctx's
+// end when the caller gave one (such as ErrProfilerScanBudget), so callers
+// see why the scan stopped rather than a bare deadline error.
+func scanError(ctx context.Context, err error) error {
+	if cause := context.Cause(ctx); cause != nil && !errors.Is(ctx.Err(), cause) {
+		return fmt.Errorf("%w: %w", cause, err)
+	}
+	return err
+}
 
 const (
 	maxCompressedProfileBytes   = 16 << 20
@@ -100,8 +116,6 @@ func decodeProfileCursor(raw, fingerprint string) (profileCursor, error) {
 // found or the scan limit is reached. Its opaque cursor can resume inside an
 // API page and is bound to the exact filter set.
 func (q *CloudProfilerQuerier) ListProfiles(ctx context.Context, params ListProfilesParams) (*ProfileListResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, ProfilerScanTimeout)
-	defer cancel()
 	filter := newProfileFilter(params)
 	fingerprint := filter.fingerprint(params.Project)
 	cursor, err := decodeProfileCursor(params.PageToken, fingerprint)
@@ -121,7 +135,7 @@ func (q *CloudProfilerQuerier) ListProfiles(ctx context.Context, params ListProf
 		var page []*cloudprofilerpb.Profile
 		nextToken, pageErr := pager.NextPage(&page)
 		if pageErr != nil {
-			return nil, fmt.Errorf("listing profiles: %w", pageErr)
+			return nil, scanError(ctx, fmt.Errorf("listing profiles: %w", pageErr))
 		}
 		if offset > len(page) {
 			return nil, fmt.Errorf("invalid profiler cursor offset")
@@ -280,10 +294,6 @@ func (f profileFilter) match(meta ProfileMeta) (match, parseErr bool) {
 	return true, false
 }
 
-// errUndecodableProfile marks a profile whose bytes were retrieved but cannot
-// be parsed, as opposed to one that could not be downloaded.
-var errUndecodableProfile = errors.New("undecodable profile")
-
 // GetOrFetchProfile retrieves a parsed profile from cache or downloads it.
 // Cloud Profiler API v2 has no direct GET endpoint; profiles are found by
 // scanning list results. Prefetched bytes are parsed on first use here and
@@ -293,18 +303,26 @@ func (q *CloudProfilerQuerier) GetOrFetchProfile(
 	ctx context.Context,
 	project, profileName string,
 ) (*profile.Profile, ProfileMeta, error) {
+	return q.loadProfile(ctx, project, profileName, true)
+}
+
+// loadProfile is GetOrFetchProfile; cacheFetched says whether a downloaded
+// profile is cached. ComputeTrends passes false so that its downloads cannot
+// evict prefetched profiles it has yet to analyze.
+func (q *CloudProfilerQuerier) loadProfile(
+	ctx context.Context,
+	project, profileName string,
+	cacheFetched bool,
+) (*profile.Profile, ProfileMeta, error) {
 	key := profileCacheKey(project, profileName)
 	if data, meta, ok := q.cache.Get(key); ok {
 		p, err := parseSourceProfile(data)
 		if err != nil {
 			q.cache.Delete(key)
-			return nil, ProfileMeta{}, fmt.Errorf("%w: %w", errUndecodableProfile, err)
+			return nil, ProfileMeta{}, fmt.Errorf("decoding cached profile %q: %w", profileName, err)
 		}
 		return p, meta, nil
 	}
-
-	ctx, cancel := context.WithTimeout(ctx, ProfilerScanTimeout)
-	defer cancel()
 
 	// The profile name from the API is "projects/{project}/profiles/{id}".
 	// If the user provides just the ID, construct the full resource name.
@@ -331,10 +349,7 @@ func (q *CloudProfilerQuerier) GetOrFetchProfile(
 			break
 		}
 		if err != nil {
-			if ctx.Err() != nil {
-				return nil, ProfileMeta{}, fmt.Errorf("scanning profiles: timed out after %d profiles: %w", scanned, err)
-			}
-			return nil, ProfileMeta{}, fmt.Errorf("fetching profile: %w", err)
+			return nil, ProfileMeta{}, scanError(ctx, fmt.Errorf("scanning profiles after %d: %w", scanned, err))
 		}
 		scanned++
 		// Match by resource name (when the API populates it) or by the ID we
@@ -362,10 +377,13 @@ func (q *CloudProfilerQuerier) GetOrFetchProfile(
 
 	p, err := parseSourceProfile(found.ProfileBytes)
 	if err != nil {
-		return nil, ProfileMeta{}, fmt.Errorf("%w: %w", errUndecodableProfile, err)
+		return nil, ProfileMeta{}, fmt.Errorf("decoding profile %q: %w", profileName, err)
 	}
 
-	if err := q.cache.Put(key, found.ProfileBytes, foundMeta); err != nil {
+	if !cacheFetched {
+		return p, foundMeta, nil
+	}
+	if err := q.cache.Put(key, found.ProfileBytes, foundMeta, nil); err != nil {
 		q.logger.Warn("profile_not_cached", "project", project, "profile", foundMeta.ProfileID, "reason", err.Error())
 	}
 	return p, foundMeta, nil
@@ -402,6 +420,15 @@ func parseSourceProfile(data []byte) (*profile.Profile, error) {
 // filter is a substring matched against the function name or file.
 // Returns the ranked functions, the total value, whether results were truncated, and any error.
 func TopFunctions(p *profile.Profile, valueIndex, limit int, sortBy, filter string) ([]TopFunction, int64, bool, error) {
+	var rank func(TopFunction) int64
+	switch sortBy {
+	case "cumulative":
+		rank = func(f TopFunction) int64 { return absInt64(f.CumulativeValue) }
+	case "self":
+		rank = func(f TopFunction) int64 { return absInt64(f.SelfValue) }
+	default:
+		return nil, 0, false, fmt.Errorf("invalid sort_by %q: must be \"self\" or \"cumulative\"", sortBy)
+	}
 	costs, total, err := scanFunctionCosts(p, valueIndex, "", nil)
 	if err != nil {
 		return nil, 0, false, err
@@ -422,10 +449,6 @@ func TopFunctions(p *profile.Profile, valueIndex, limit int, sortBy, filter stri
 		})
 	}
 
-	rank := func(f TopFunction) int64 { return absInt64(f.CumulativeValue) }
-	if sortBy == "self" {
-		rank = func(f TopFunction) int64 { return absInt64(f.SelfValue) }
-	}
 	slices.SortFunc(result, func(a, b TopFunction) int {
 		return cmp.Or(cmp.Compare(rank(b), rank(a)), cmp.Compare(a.FunctionName, b.FunctionName))
 	})
@@ -804,8 +827,7 @@ type prefetchResult struct {
 	Cached   int   // wanted profiles in the cache when the prefetch ended
 	Skipped  int   // wanted profiles found but not cached
 	LastSkip error // why the last skipped profile was not cached
-	Full     bool  // stopped because more inserts would evict this run's profiles
-	Err      error // the list scan failed
+	Stopped  error // why the scan ended early: the list call failed or the cache is full
 }
 
 // prefetchProfiles does a single paginated scan of the List API with profileBytes
@@ -813,9 +835,9 @@ type prefetchResult struct {
 // wanted set. This avoids O(n) individual List scans when ComputeTrends needs many
 // profiles that were already discovered via a metadata-only ListProfiles call.
 // Profiles are not parsed here; GetOrFetchProfile parses them on first use and
-// drops undecodable ones from the cache. The prefetch stops once the next insert
-// would evict profiles this run already cached, since those would then have to be
-// fetched individually after all.
+// drops undecodable ones from the cache. Inserts never evict a wanted profile,
+// and the prefetch stops once the cache can take no more of them, since those
+// would then have to be fetched individually after all.
 func (q *CloudProfilerQuerier) prefetchProfiles(
 	ctx context.Context,
 	project string,
@@ -824,7 +846,10 @@ func (q *CloudProfilerQuerier) prefetchProfiles(
 	const maxScan = 20_000
 	var res prefetchResult
 	remaining := len(wanted)
-	var runBytes int64 // bytes of the wanted profiles this run found or put in the cache
+	keep := make(map[string]bool, len(wanted))
+	for id := range wanted {
+		keep[profileCacheKey(project, id)] = true
+	}
 
 	it := q.svc.ListProfiles(ctx, &cloudprofilerpb.ListProfilesRequest{
 		Parent:   "projects/" + project,
@@ -836,7 +861,7 @@ func (q *CloudProfilerQuerier) prefetchProfiles(
 			break
 		}
 		if err != nil {
-			res.Err = fmt.Errorf("list API call failed: %w", err)
+			res.Stopped = fmt.Errorf("list API call failed: %w", err)
 			return res
 		}
 		// Key on the ID surfaced by profiler_list (p.Name when non-empty,
@@ -849,26 +874,21 @@ func (q *CloudProfilerQuerier) prefetchProfiles(
 		}
 		remaining--
 		key := profileCacheKey(project, meta.ProfileID)
-		if data, _, ok := q.cache.Get(key); ok {
-			runBytes += int64(len(data))
+		if _, _, ok := q.cache.Get(key); ok {
 			res.Cached++
 			continue
 		}
-		// A profile over the per-user limit on its own is left to Put to
-		// reject; any other profile that does not fit next to this run's
-		// ones would evict them.
-		size := int64(len(p.ProfileBytes))
-		if size <= q.cache.maxBytes && runBytes+size > q.cache.maxBytes {
-			res.Full = true
+		err = q.cache.Put(key, p.ProfileBytes, meta, keep)
+		switch {
+		case err == nil:
+			res.Cached++
+		case errors.Is(err, errWouldEvict), errors.Is(err, errProcessCacheFull):
+			res.Stopped = err
 			return res
-		}
-		if err := q.cache.Put(key, p.ProfileBytes, meta); err != nil {
+		default:
 			res.Skipped++
 			res.LastSkip = fmt.Errorf("profile %s: %w", meta.ProfileID, err)
-			continue
 		}
-		runBytes += size
-		res.Cached++
 	}
 	return res
 }
@@ -877,14 +897,11 @@ func (q *CloudProfilerQuerier) prefetchProfiles(
 // returns "" when nothing went wrong. total is the number of wanted profiles.
 func (r prefetchResult) warning(total int) string {
 	var causes []string
-	if r.Err != nil {
-		causes = append(causes, r.Err.Error())
+	if r.Stopped != nil {
+		causes = append(causes, "stopped: "+r.Stopped.Error())
 	}
 	if r.Skipped > 0 {
 		causes = append(causes, fmt.Sprintf("%d not cached, last: %v", r.Skipped, r.LastSkip))
-	}
-	if r.Full {
-		causes = append(causes, "stopped at the per-user profile cache limit")
 	}
 	if len(causes) == 0 {
 		return ""
@@ -929,10 +946,6 @@ func (q *CloudProfilerQuerier) ComputeTrends(
 	project, profileType, target, functionFilter := params.Project, params.ProfileType, params.Target, params.FunctionFilter
 	valueIndex, maxProfiles, maxFunctions := params.ValueIndex, params.MaxProfiles, params.MaxFunctions
 
-	// Overall timeout to bound the total wall time when downloading many profiles.
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer cancel()
-
 	profiles, err := q.ListProfiles(ctx, ListProfilesParams{
 		Project:     project,
 		ProfileType: profileType,
@@ -972,27 +985,22 @@ func (q *CloudProfilerQuerier) ComputeTrends(
 	funcTimeline := make(map[string][]TrendsDataPoint)
 	funcMeta := make(map[string]*funcInfo)
 	var resolvedValueType *ValueTypeInfo
-	var downloadErrors, parseErrors int
-	var lastDownloadErr, lastParseErr error
+	var failed int
+	var lastErr error
 
 	total := len(profiles.Profiles)
 	for i, meta := range profiles.Profiles {
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("canceled after %d/%d profiles: %w", i, total, ctx.Err())
+			return nil, fmt.Errorf("stopped after %d/%d profiles: %w", i, total, context.Cause(ctx))
 		}
 		if progressFn != nil {
 			progressFn(i, total, fmt.Sprintf("Analyzing profile %d/%d...", i+1, total))
 		}
 
-		p, _, err := q.GetOrFetchProfile(ctx, project, meta.ProfileID)
-		if errors.Is(err, errUndecodableProfile) {
-			parseErrors++
-			lastParseErr = err
-			continue
-		}
+		p, _, err := q.loadProfile(ctx, project, meta.ProfileID, false)
 		if err != nil {
-			downloadErrors++
-			lastDownloadErr = err
+			failed++
+			lastErr = err
 			continue
 		}
 
@@ -1047,9 +1055,9 @@ func (q *CloudProfilerQuerier) ComputeTrends(
 		}
 	}
 
-	analyzed := total - downloadErrors - parseErrors
+	analyzed := total - failed
 	if analyzed == 0 {
-		return nil, fmt.Errorf("failed to analyze any of %d profiles: %d downloads failed, %d undecodable (last error: %w)", total, downloadErrors, parseErrors, cmp.Or(lastDownloadErr, lastParseErr))
+		return nil, fmt.Errorf("failed to fetch or decode any of %d profiles (last error: %w)", total, lastErr)
 	}
 
 	// Rank by peak cumulative, take top N.
@@ -1098,23 +1106,18 @@ func (q *CloudProfilerQuerier) ComputeTrends(
 		TimeRangeStart: timeRangeStart,
 		TimeRangeEnd:   timeRangeEnd,
 		Functions:      functions,
-		DownloadErrors: downloadErrors,
-		ParseErrors:    parseErrors,
+		FailedProfiles: failed,
 		Truncated:      truncated,
 	}
-	if lastDownloadErr != nil {
-		result.LastDownloadError = lastDownloadErr.Error()
+	if lastErr != nil {
+		result.LastError = lastErr.Error()
 	}
 	var warnings []string
 	if discover && len(targetFunctions) == 0 {
 		warnings = append(warnings, fmt.Sprintf("All %d analyzed profiles had no samples for value_index %d; there are no functions to track.", analyzed, valueIndex))
 	}
 	if analyzed < total {
-		msg := fmt.Sprintf("Only %d/%d profiles analyzed successfully (%d downloads failed, %d undecodable); trend data may be incomplete.", analyzed, total, downloadErrors, parseErrors)
-		if lastParseErr != nil {
-			msg += fmt.Sprintf(" Last decode error: %v.", lastParseErr)
-		}
-		warnings = append(warnings, msg)
+		warnings = append(warnings, fmt.Sprintf("Only %d/%d profiles analyzed successfully (%d could not be fetched or decoded, see last_error); trend data may be incomplete.", analyzed, total, failed))
 	}
 	if w := pf.warning(total); w != "" {
 		warnings = append(warnings, w)

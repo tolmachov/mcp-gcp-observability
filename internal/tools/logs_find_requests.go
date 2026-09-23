@@ -23,17 +23,17 @@ func RegisterLogsFindRequests(s *mcp.Server, d Deps) {
 		OutputSchema: outputSchemaFor[gcpdata.RequestList](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsFindRequestsInput) (*mcp.CallToolResult, *gcpdata.RequestList, error) {
 		if in.StatusCode != 0 && (in.StatusCode < 100 || in.StatusCode > 599) {
-			return errResult(fmt.Sprintf("invalid status_code %d: must be in range [100, 599]", in.StatusCode)), nil, nil
+			return ErrorResult(fmt.Sprintf("invalid status_code %d: must be in range [100, 599]", in.StatusCode)), nil, nil
 		}
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 		limit := clampLimit(in.Limit, 20, LogsHardLimit)
 
 		timeFilter, err := buildTimeFilter(in.TimeFilterInput)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 
 		sendProgress(ctx, req, 0, 1, "Finding requests...")

@@ -208,6 +208,6 @@ func TestCompareMixedCodesGuidance(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, result.IsError)
 	msg := textFromResult(t, result)
-	assert.Contains(t, msg, sharedCodeGuidance[codes.PermissionDenied])
-	assert.Contains(t, msg, sharedCodeGuidance[codes.Unavailable])
+	assert.Contains(t, msg, sharedCodes[codes.PermissionDenied].advice)
+	assert.Contains(t, msg, sharedCodes[codes.Unavailable].advice)
 }

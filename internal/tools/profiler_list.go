@@ -28,15 +28,15 @@ func RegisterProfilerList(s *mcp.Server, d Deps) {
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerListInput) (*mcp.CallToolResult, *gcpdata.ProfileListResult, error) {
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 		startTime, err := parseRFC3339Opt(in.StartTime, "start_time")
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 		endTime, err := parseRFC3339Opt(in.EndTime, "end_time")
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 
 		pageSize := clampLimit(in.Limit, 20, 100)

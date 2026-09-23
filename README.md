@@ -110,7 +110,7 @@ Built-in prompts are `investigate-errors`, `trace-request`, `investigate-metrics
 - Compressed source profile: 16 MiB; decompressed profile: 64 MiB.
 - Profiler cache: compressed sources only, 16 MiB per user and 64 MiB per process. Parsed graphs are request-local.
 - Four concurrent tool calls per user and two concurrent `profiler_*` calls per process. A diff (`base_profile_id` or `profiler_compare`) is one call and fetches its two source profiles one after the other. A call that times out waiting for a slot fails with an error saying so.
-- `profiler_*` calls have an internal eight-minute deadline that includes waiting for a profiler slot; Cloud Run has a ten-minute request timeout.
+- `profiler_*` calls have an eight-minute scan budget that starts once the call holds a profiler slot; a call that uses it up fails with advice to narrow the scan. Cloud Run has a ten-minute request timeout, which also counts the wait for a slot.
 
 Monitoring ingestion and aggregation discard non-finite values, count them in `non_finite_points`, and emit data-quality warnings. Public JSON never contains `NaN` or infinity. Registry validation rejects non-finite thresholds, SLOs, and saturation values.
 

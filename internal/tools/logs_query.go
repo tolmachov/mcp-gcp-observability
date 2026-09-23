@@ -26,13 +26,13 @@ func RegisterLogsQuery(s *mcp.Server, d Deps) {
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsQueryInput) (*mcp.CallToolResult, *gcpdata.LogQueryResult, error) {
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 		limit := clampLimit(in.Limit, 100, LogsHardLimit)
 
 		timeFilter, err := buildTimeFilter(in.TimeFilterInput)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 		filter := gcpdata.AppendFilter(in.Filter, timeFilter)
 

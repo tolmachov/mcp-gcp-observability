@@ -3,6 +3,7 @@ package authsrv
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"sync"
 	"testing"
@@ -19,7 +20,7 @@ func TestFirestoreStoreEmulator(t *testing.T) {
 		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
 	}
 	ctx := context.Background()
-	store, err := newFirestoreStateStore(ctx, "mcp-observability-ci", "(default)")
+	store, err := newFirestoreStateStore(ctx, "mcp-observability-ci", "(default)", slog.New(slog.DiscardHandler))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	now := time.Now().UTC()

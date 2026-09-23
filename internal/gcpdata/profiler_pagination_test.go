@@ -59,21 +59,33 @@ func newPagedProfilerQuerier(t *testing.T) (*CloudProfilerQuerier, *pagedProfile
 	return newFakeProfilerQuerier(t, service, slog.New(slog.DiscardHandler)), service
 }
 
+// bufconnClientConn starts an in-memory gRPC server with the services that
+// register adds and returns a client connection to it. Both are closed when
+// the test ends.
+func bufconnClientConn(t *testing.T, register func(*grpc.Server), opts ...grpc.DialOption) *grpc.ClientConn {
+	t.Helper()
+	listener := bufconn.Listen(1 << 20)
+	grpcServer := grpc.NewServer()
+	register(grpcServer)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+	opts = append([]grpc.DialOption{
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	}, opts...)
+	conn, err := grpc.NewClient("passthrough:///bufnet", opts...)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn
+}
+
 // newFakeProfilerQuerier serves service over an in-memory gRPC connection and
 // returns a CloudProfilerQuerier backed by it.
 func newFakeProfilerQuerier(t *testing.T, service cloudprofilerpb.ExportServiceServer, logger *slog.Logger) *CloudProfilerQuerier {
 	t.Helper()
-	listener := bufconn.Listen(1 << 20)
-	grpcServer := grpc.NewServer()
-	cloudprofilerpb.RegisterExportServiceServer(grpcServer, service)
-	go func() { _ = grpcServer.Serve(listener) }()
-	t.Cleanup(grpcServer.Stop)
-	conn, err := grpc.NewClient("passthrough:///bufnet",
-		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	conn := bufconnClientConn(t,
+		func(s *grpc.Server) { cloudprofilerpb.RegisterExportServiceServer(s, service) },
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(2*maxCompressedProfileBytes)))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
 	client, err := cloudprofiler.NewExportClient(context.Background(), option.WithGRPCConn(conn))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = client.Close() })

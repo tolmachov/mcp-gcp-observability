@@ -29,15 +29,7 @@ func projectContractSession(t *testing.T, pinned string) *mcp.ClientSession {
 		Project:  s.project,
 	})
 	s.registerPrompts(srv)
-	ct, st := mcp.NewInMemoryTransports()
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go func() { _ = srv.Run(ctx, st) }()
-	mcpClient := mcp.NewClient(&mcp.Implementation{Name: "contract", Version: "1"}, nil)
-	session, err := mcpClient.Connect(ctx, ct, nil)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = session.Close() })
-	return session
+	return connectInMemory(t, srv)
 }
 
 func TestPinnedResourcesAreExactAndUnpinnedResourcesAreTemplates(t *testing.T) {

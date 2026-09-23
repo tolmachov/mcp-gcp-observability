@@ -25,13 +25,13 @@ func RegisterLogsByTrace(s *mcp.Server, d Deps) {
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsByTraceInput) (*mcp.CallToolResult, *gcpdata.LogQueryResult, error) {
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 		limit := clampLimit(in.Limit, 100, LogsHardLimit)
 
 		timeFilter, err := buildTimeFilter(in.TimeFilterInput)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 
 		sendProgress(ctx, req, 0, 1, "Querying logs by trace...")

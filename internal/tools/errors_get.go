@@ -24,7 +24,7 @@ func RegisterErrorsGet(s *mcp.Server, d Deps) {
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ErrorsGetInput) (*mcp.CallToolResult, *gcpdata.ErrorGroupDetail, error) {
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 		limit := clampLimit(in.Limit, 20, ErrorsHardLimit)
 

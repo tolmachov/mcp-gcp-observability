@@ -3,6 +3,7 @@ package gcpdata
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"testing"
@@ -96,8 +97,7 @@ func TestGetOrFetchProfile_RejectsEmptyAndOversizedBytes(t *testing.T) {
 	assert.ErrorContains(t, err, "has no profile bytes")
 
 	_, _, err = q.GetOrFetchProfile(context.Background(), stockProject, "huge")
-	assert.ErrorIs(t, err, errUndecodableProfile)
-	assert.ErrorContains(t, err, "compressed profile is")
+	assert.ErrorContains(t, err, `decoding profile "huge": compressed profile is`)
 
 	assert.Equal(t, 0, q.cache.Len(), "rejected profiles are not cached")
 }
@@ -170,10 +170,11 @@ func TestComputeTrends_AllProfilesEmptyWarns(t *testing.T) {
 	assert.Contains(t, res.Warning, "All 2 analyzed profiles had no samples for value_index 0")
 }
 
-// TestComputeTrends_UndecodableProfileCountsAsParseError pins that bytes the
-// prefetch cached but that do not parse are reported as undecodable rather than
-// as a download failure, dropped from the cache, and not downloaded again.
-func TestComputeTrends_UndecodableProfileCountsAsParseError(t *testing.T) {
+// TestComputeTrends_UndecodableProfileIsAFailedProfile pins that bytes the
+// prefetch cached but that do not parse count as a failed profile whose error
+// says they did not decode, are dropped from the cache, and are not
+// downloaded again.
+func TestComputeTrends_UndecodableProfileIsAFailedProfile(t *testing.T) {
 	q, srv := newStockProfilerQuerier(t,
 		stockProfile("good", 1, encodeProfile(t, buildTestProfile())),
 		stockProfile("bad", 2, []byte("not a profile")),
@@ -182,10 +183,10 @@ func TestComputeTrends_UndecodableProfileCountsAsParseError(t *testing.T) {
 	res, err := q.ComputeTrends(context.Background(), trendsParams(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, res.AnalyzedCount)
-	assert.Equal(t, 1, res.ParseErrors)
-	assert.Zero(t, res.DownloadErrors)
+	assert.Equal(t, 1, res.FailedProfiles)
+	assert.Contains(t, res.LastError, "decoding cached profile")
 	assert.NotEmpty(t, res.Functions)
-	assert.Contains(t, res.Warning, "1 undecodable")
+	assert.Contains(t, res.Warning, "1 could not be fetched or decoded")
 	assert.False(t, q.cache.contains(profileCacheKey(stockProject, stockName("bad"))))
 	assert.Equal(t, 2, srv.listCalls(), "one metadata listing and one prefetch scan")
 }
@@ -198,10 +199,54 @@ func TestPrefetchProfiles_StopsBeforeEvictingOwnEntries(t *testing.T) {
 	wanted := map[string]bool{stockName("a"): true, stockName("b"): true, stockName("c"): true}
 	res := q.prefetchProfiles(context.Background(), stockProject, wanted)
 	assert.Equal(t, 2, res.Cached)
-	assert.True(t, res.Full)
+	assert.ErrorIs(t, res.Stopped, errWouldEvict)
 	assert.True(t, q.cache.contains(profileCacheKey(stockProject, stockName("a"))), "the run's first profile is not evicted")
 	assert.Contains(t, res.warning(3), "cached 2/3 profiles")
-	assert.Contains(t, res.warning(3), "per-user profile cache limit")
+	assert.Contains(t, res.warning(3), "stopped: the per-user profile cache is full")
+}
+
+func TestPrefetchProfiles_EvictsProfilesOfEarlierRequests(t *testing.T) {
+	data := encodeProfile(t, buildTestProfile())
+	q, _ := newStockProfilerQuerier(t, stockProfile("a", 1, data), stockProfile("b", 2, data))
+	q.cache.maxBytes = int64(2*len(data) + 1)
+	require.NoError(t, q.cache.Put(profileCacheKey(stockProject, "earlier"), data, ProfileMeta{}, nil))
+
+	wanted := map[string]bool{stockName("a"): true, stockName("b"): true}
+	res := q.prefetchProfiles(context.Background(), stockProject, wanted)
+	assert.Equal(t, 2, res.Cached)
+	assert.NoError(t, res.Stopped)
+	assert.False(t, q.cache.contains(profileCacheKey(stockProject, "earlier")))
+}
+
+func TestPrefetchProfiles_StopsWhenProcessBudgetIsFull(t *testing.T) {
+	data := encodeProfile(t, buildTestProfile())
+	q, _ := newStockProfilerQuerier(t, stockProfile("a", 1, data), stockProfile("b", 2, data))
+	reserved := profileCacheProcessBytes - processProfileCacheBytes.Load()
+	processProfileCacheBytes.Add(reserved)
+	t.Cleanup(func() { processProfileCacheBytes.Add(-reserved) })
+
+	wanted := map[string]bool{stockName("a"): true, stockName("b"): true}
+	res := q.prefetchProfiles(context.Background(), stockProject, wanted)
+	assert.Zero(t, res.Cached)
+	assert.Zero(t, res.Skipped, "the scan stops instead of skipping every remaining profile")
+	assert.ErrorIs(t, res.Stopped, errProcessCacheFull)
+}
+
+// TestComputeTrends_IndividualFetchesAreNotCached pins that profiles the
+// prefetch could not cache are downloaded without caching, so they cannot
+// evict prefetched profiles that are still to be analyzed.
+func TestComputeTrends_IndividualFetchesAreNotCached(t *testing.T) {
+	data := encodeProfile(t, buildTestProfile())
+	q, srv := newStockProfilerQuerier(t, stockProfile("a", 1, data), stockProfile("b", 2, data), stockProfile("c", 3, data))
+	q.cache.maxBytes = int64(2*len(data) + 1)
+
+	res, err := q.ComputeTrends(context.Background(), trendsParams(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, 3, res.AnalyzedCount)
+	assert.Contains(t, res.Warning, "cached 2/3 profiles")
+	assert.Equal(t, 3, srv.listCalls(), "metadata listing, prefetch scan, one individual fetch")
+	assert.False(t, q.cache.contains(profileCacheKey(stockProject, stockName("c"))))
+	assert.Equal(t, 2, q.cache.Len())
 }
 
 func TestPrefetchProfiles_OversizedProfileIsSkippedWithCause(t *testing.T) {
@@ -215,6 +260,27 @@ func TestPrefetchProfiles_OversizedProfileIsSkippedWithCause(t *testing.T) {
 	res := q.prefetchProfiles(context.Background(), stockProject, wanted)
 	assert.Equal(t, 2, res.Cached)
 	assert.Equal(t, 1, res.Skipped)
-	assert.False(t, res.Full)
+	assert.NoError(t, res.Stopped)
 	assert.ErrorContains(t, res.LastSkip, "per-user cache limit")
+}
+
+// TestProfilerScanReportsBudgetCause pins that a scan cut short by the
+// server's per-call budget says so in its error, while a plain cancellation
+// is left as is.
+func TestProfilerScanReportsBudgetCause(t *testing.T) {
+	q, _ := newStockProfilerQuerier(t, stockProfile("a", 1, encodeProfile(t, buildTestProfile())))
+	ctx, cancel := context.WithTimeoutCause(context.Background(), 0, ErrProfilerScanBudget)
+	defer cancel()
+
+	_, err := q.ListProfiles(ctx, ListProfilesParams{Project: stockProject, PageSize: 10})
+	require.ErrorIs(t, err, ErrProfilerScanBudget)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	_, _, err = q.GetOrFetchProfile(ctx, stockProject, "a")
+	require.ErrorIs(t, err, ErrProfilerScanBudget)
+
+	canceled, cancelNow := context.WithCancel(context.Background())
+	cancelNow()
+	base := errors.New("rpc failed")
+	assert.Equal(t, base, scanError(canceled, base))
+	assert.Equal(t, base, scanError(context.Background(), base))
 }

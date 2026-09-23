@@ -38,7 +38,7 @@ func RegisterProfilerTop(s *mcp.Server, d Deps) {
 		topFuncs, total, truncated, err := gcpdata.TopFunctions(p, in.ValueIndex, limit, in.SortBy, in.Filter)
 		if err != nil {
 			mcpLog(ctx, req, logLevelWarning, "profiler_top", fmt.Sprintf("analysis failed: %v", err))
-			return errResult(fmt.Sprintf("Failed to analyze profile: %v", err)), nil, nil
+			return ErrorResult(fmt.Sprintf("Failed to analyze profile: %v", err)), nil, nil
 		}
 		// TopFunctions validated in.ValueIndex against the profile's value types.
 		vt := gcpdata.ProfileValueTypes(p)

@@ -320,17 +320,7 @@ func testServer(_ *testing.T) *Server {
 // of srv.
 func listToolsViaInMemory(t *testing.T, srv *mcp.Server) []*mcp.Tool {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-
-	ct, st := mcp.NewInMemoryTransports()
-	go func() { _ = srv.Run(ctx, st) }()
-
-	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0.0.0"}, nil)
-	session, err := client.Connect(ctx, ct, nil)
-	require.NoError(t, err)
-
-	result, err := session.ListTools(ctx, nil)
+	result, err := connectInMemory(t, srv).ListTools(context.Background(), nil)
 	require.NoError(t, err)
 	return result.Tools
 }

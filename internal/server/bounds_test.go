@@ -115,7 +115,9 @@ func TestToolResultBudgetErrorReachesClient(t *testing.T) {
 
 func TestToolSlotWaitTimeoutNamesTheTool(t *testing.T) {
 	const wait = 20 * time.Millisecond
-	callTool := func(t *testing.T, userCalls, profilerCalls chan struct{}, tool string) (called bool, logs *bytes.Buffer, err error) {
+	// callTool returns the text of the tool error result, or "" when the call
+	// ran.
+	callTool := func(t *testing.T, userCalls, profilerCalls chan struct{}, tool string) (called bool, logs *bytes.Buffer, toolErr string) {
 		t.Helper()
 		logs = &bytes.Buffer{}
 		logger := slog.New(slog.NewTextHandler(logs, nil))
@@ -125,17 +127,26 @@ func TestToolSlotWaitTimeoutNamesTheTool(t *testing.T) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), wait)
 		defer cancel()
-		_, err = toolLimitsMiddleware(userCalls, profilerCalls, logger)(next)(
+		res, err := toolLimitsMiddleware(userCalls, profilerCalls, logger)(next)(
 			ctx, "tools/call", &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Name: tool}})
-		return called, logs, err
+		require.NoError(t, err)
+		call, ok := res.(*mcp.CallToolResult)
+		require.True(t, ok)
+		if !call.IsError {
+			return called, logs, ""
+		}
+		require.Len(t, call.Content, 1)
+		text, ok := call.Content[0].(*mcp.TextContent)
+		require.True(t, ok)
+		return called, logs, text.Text
 	}
 
 	t.Run("per-user limit", func(t *testing.T) {
 		userCalls := make(chan struct{}, 1)
 		userCalls <- struct{}{}
-		called, logs, err := callTool(t, userCalls, make(chan struct{}, 2), "logs_query")
-		require.ErrorIs(t, err, context.DeadlineExceeded)
-		assert.ErrorContains(t, err, "tool logs_query never got a concurrent-call slot (limit 1) after waiting")
+		called, logs, toolErr := callTool(t, userCalls, make(chan struct{}, 2), "logs_query")
+		assert.Contains(t, toolErr, "tool logs_query never got a concurrent-call slot (limit 1) after waiting")
+		assert.Contains(t, toolErr, context.DeadlineExceeded.Error())
 		assert.False(t, called)
 		assert.Contains(t, logs.String(), "msg=tool_slot_wait_aborted tool=logs_query slot=concurrent-call limit=1 waited=")
 	})
@@ -143,9 +154,9 @@ func TestToolSlotWaitTimeoutNamesTheTool(t *testing.T) {
 		userCalls := make(chan struct{}, 4)
 		profilerCalls := make(chan struct{}, 1)
 		profilerCalls <- struct{}{}
-		called, logs, err := callTool(t, userCalls, profilerCalls, "profiler_top")
-		require.ErrorIs(t, err, context.DeadlineExceeded)
-		assert.ErrorContains(t, err, "tool profiler_top never got a profiler slot (limit 1) after waiting")
+		called, logs, toolErr := callTool(t, userCalls, profilerCalls, "profiler_top")
+		assert.Contains(t, toolErr, "tool profiler_top never got a profiler slot (limit 1) after waiting")
+		assert.Contains(t, toolErr, context.DeadlineExceeded.Error())
 		assert.False(t, called)
 		assert.Contains(t, logs.String(), "msg=profiler_saturation limit=1 tool=profiler_top")
 		assert.Contains(t, logs.String(), "msg=tool_slot_wait_aborted tool=profiler_top slot=profiler limit=1 waited=")
@@ -154,8 +165,8 @@ func TestToolSlotWaitTimeoutNamesTheTool(t *testing.T) {
 	t.Run("full profiler limit does not block other tools", func(t *testing.T) {
 		profilerCalls := make(chan struct{}, 1)
 		profilerCalls <- struct{}{}
-		called, _, err := callTool(t, make(chan struct{}, 4), profilerCalls, "logs_query")
-		require.NoError(t, err)
+		called, _, toolErr := callTool(t, make(chan struct{}, 4), profilerCalls, "logs_query")
+		assert.Empty(t, toolErr)
 		assert.True(t, called)
 	})
 }

@@ -110,20 +110,13 @@ func parseRefreshToken(raw string) (familyID, secret string, err error) {
 	return familyID, secret, nil
 }
 
-// grant reads a grant family. A record that no longer decodes can never
-// authorize anything again, so it is logged and reported as errStateNotFound
-// (the token is rejected) rather than as a store outage, which would answer
-// 503 on every retry.
-func (a *AuthServer) grant(ctx context.Context, familyID string) (grantRecord, error) {
-	rec, err := a.store.GetGrant(ctx, familyID)
-	if errors.Is(err, errGrantCorrupt) {
-		a.logger.Error("oauth_grant_corrupt", "family_id", familyID, "err", err)
-		return grantRecord{}, fmt.Errorf("%w: %w", errStateNotFound, err)
-	}
-	if err != nil {
-		return grantRecord{}, fmt.Errorf("reading grant family: %w", err)
-	}
-	return rec, nil
+// corruptGrantError logs a grant record that no longer decodes and returns
+// the error GetGrant reports for it. Such a record can never authorize
+// anything again, so the error is errStateNotFound (the token is rejected)
+// rather than a store outage, which would answer 503 on every retry.
+func corruptGrantError(logger *slog.Logger, familyID string, err error) error {
+	logger.Error("oauth_grant_corrupt", "family_id", familyID, "err", err)
+	return fmt.Errorf("%w: %w: %w", errStateNotFound, errGrantCorrupt, err)
 }
 
 // logStoreFailure logs a failed OAuth state store call. A call that failed

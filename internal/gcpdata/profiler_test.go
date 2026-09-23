@@ -130,6 +130,14 @@ func TestTopFunctions_InvalidValueIndex(t *testing.T) {
 	assert.Contains(t, err.Error(), "value_index 5 out of range")
 }
 
+func TestTopFunctions_InvalidSortBy(t *testing.T) {
+	p := buildTestProfile()
+	for _, sortBy := range []string{"", "total"} {
+		_, _, _, err := TopFunctions(p, 0, 10, sortBy, "")
+		assert.ErrorContains(t, err, "invalid sort_by", sortBy)
+	}
+}
+
 func TestPeekFunction(t *testing.T) {
 	p := buildTestProfile()
 	funcInfo, callers, callees, err := PeekFunction(p, "myapp/handler.Handle", 0, 10)

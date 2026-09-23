@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -117,10 +116,9 @@ func TestRequireBearerToken(t *testing.T) {
 	})
 	t.Run("corrupt grant is 401, not 503", func(t *testing.T) {
 		logs := captureLogs(t, a)
-		failStore(t, a, fmt.Errorf("%w: bad field", errGrantCorrupt))
+		failStore(t, a, corruptGrantError(slog.New(slog.DiscardHandler), "f", errors.New("bad field")))
 		rec, _, called := serve(t, tr.AccessToken)
 		assertUnauthorized(t, rec, called)
-		assert.Contains(t, logs.String(), "level=ERROR msg=oauth_grant_corrupt")
 		assert.NotContains(t, logs.String(), "oauth_store_failure")
 	})
 }
@@ -130,7 +128,7 @@ func TestRequireBearerToken(t *testing.T) {
 // a store outage the client should retry.
 func TestCorruptGrantIsRejectedEverywhere(t *testing.T) {
 	a, ts, tr, clientID := issuedTokens(t)
-	failStore(t, a, fmt.Errorf("%w: bad field", errGrantCorrupt))
+	failStore(t, a, corruptGrantError(slog.New(slog.DiscardHandler), "f", errors.New("bad field")))
 
 	_, oe, status := refreshGrant(t, ts.URL, tr.RefreshToken, clientID)
 	assert.Equal(t, http.StatusBadRequest, status)

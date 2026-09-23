@@ -298,6 +298,9 @@ func TestGCPErrorResult(t *testing.T) {
 		{"context deadline", fmt.Errorf("query: %w", context.DeadlineExceeded), "did not respond in time"},
 		{"context canceled", context.Canceled, "was canceled"},
 		{"fallback", errors.New("boom"), "Failed: boom. Verify the project_id."},
+		{"tool fallback replaces shared input advice", status.Error(codes.InvalidArgument, "bad filter"), "bad filter. Verify the project_id."},
+		{"panic", fmt.Errorf("task: %w", &panicError{value: "bug"}), "This is a bug in the server"},
+		{"profiler scan budget", fmt.Errorf("scan: %w", gcpdata.ErrProfilerScanBudget), "per-call time budget"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -306,6 +309,10 @@ func TestGCPErrorResult(t *testing.T) {
 			assert.Contains(t, res.Content[0].(*mcp.TextContent).Text, tt.want)
 		})
 	}
+	t.Run("shared input advice without a tool fallback", func(t *testing.T) {
+		res := gcpErrorResult("Failed", status.Error(codes.InvalidArgument, "bad"), "")
+		assert.Equal(t, "Failed. "+sharedCodes[codes.InvalidArgument].advice, res.Content[0].(*mcp.TextContent).Text)
+	})
 	t.Run("no guidance", func(t *testing.T) {
 		res := gcpErrorResult("Failed: boom", errors.New("boom"), "")
 		assert.Equal(t, "Failed: boom", res.Content[0].(*mcp.TextContent).Text)
@@ -328,10 +335,10 @@ func TestGCPErrorsResult(t *testing.T) {
 		want     string
 	}{
 		{"one guidance per distinct code, in order", []error{denied, nil, unavailable, denied}, "",
-			"Failed. " + sharedCodeGuidance[codes.PermissionDenied] + " " + sharedCodeGuidance[codes.Unavailable]},
-		{"codes sharing guidance give it once", []error{unavailable, exhausted}, "", "Failed. " + sharedCodeGuidance[codes.Unavailable]},
+			"Failed. " + sharedCodes[codes.PermissionDenied].advice + " " + sharedCodes[codes.Unavailable].advice},
+		{"codes sharing guidance give it once", []error{unavailable, exhausted}, "", "Failed. " + sharedCodes[codes.Unavailable].advice},
 		{"fallback for codes without guidance", []error{errors.New("boom"), denied}, "Retry.",
-			"Failed. Retry. " + sharedCodeGuidance[codes.PermissionDenied]},
+			"Failed. Retry. " + sharedCodes[codes.PermissionDenied].advice},
 		{"no errors", []error{nil, nil}, "Retry.", "Failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -487,6 +494,8 @@ func TestRunParallel(t *testing.T) {
 		assert.Zero(t, calls.Load())
 		for _, err := range errs {
 			assert.ErrorIs(t, err, context.Canceled)
+			assert.ErrorContains(t, err, "not started")
+			assert.False(t, isPanic(err))
 		}
 	})
 }

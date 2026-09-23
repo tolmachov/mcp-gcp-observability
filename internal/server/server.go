@@ -144,11 +144,11 @@ const structuredResultContentNotice = "The complete result is available in struc
 
 // toolLimitsMiddleware bounds tools/call: at most cap(userCalls) concurrent
 // calls per server instance, profiler-scanning tools (profileScanTools) share
-// the process-wide cap(profilerCalls) limit and run under
-// gcpdata.ProfilerScanTimeout (which includes the wait for a profiler slot),
-// and every result must encode within maxEncodedToolResultBytes. An
-// over-budget result is replaced by a tool error asking the model to narrow
-// the request.
+// the process-wide cap(profilerCalls) limit and, once they hold a profiler
+// slot, run under gcpdata.ProfilerScanTimeout with gcpdata.ErrProfilerScanBudget
+// as the cause, and every result must encode within maxEncodedToolResultBytes.
+// A call that never gets a slot and an over-budget result are both reported
+// as tool errors.
 func toolLimitsMiddleware(userCalls, profilerCalls chan struct{}, logger *slog.Logger) func(mcp.MethodHandler) mcp.MethodHandler {
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
@@ -160,20 +160,20 @@ func toolLimitsMiddleware(userCalls, profilerCalls chan struct{}, logger *slog.L
 				tool = call.Params.Name
 			}
 			if err := acquireToolSlot(ctx, userCalls, "concurrent-call", tool, logger); err != nil {
-				return nil, err
+				return tools.ErrorResult(err.Error()), nil
 			}
 			defer func() { <-userCalls }()
 			if profileScanTools[tool] {
-				profilerCtx, cancel := context.WithTimeout(ctx, gcpdata.ProfilerScanTimeout)
-				defer cancel()
-				ctx = profilerCtx
 				if len(profilerCalls) == cap(profilerCalls) {
 					logger.Warn("profiler_saturation", "limit", cap(profilerCalls), "tool", tool)
 				}
 				if err := acquireToolSlot(ctx, profilerCalls, "profiler", tool, logger); err != nil {
-					return nil, err
+					return tools.ErrorResult(err.Error()), nil
 				}
 				defer func() { <-profilerCalls }()
+				budgetCtx, cancel := context.WithTimeoutCause(ctx, gcpdata.ProfilerScanTimeout, gcpdata.ErrProfilerScanBudget)
+				defer cancel()
+				ctx = budgetCtx
 			}
 			result, err := next(ctx, method, req)
 			if err != nil || result == nil {
@@ -197,13 +197,10 @@ func toolLimitsMiddleware(userCalls, profilerCalls chan struct{}, logger *slog.L
 			}
 			if size > maxEncodedToolResultBytes {
 				logger.Error("response_budget_violation", "tool", tool, "bytes", size, "limit", maxEncodedToolResultBytes)
-				return &mcp.CallToolResult{
-					IsError: true,
-					Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf(
-						"The %s result is %d bytes, over the %d-byte response budget. "+
-							"Narrow the request: use a shorter time window, a lower limit, or a more specific filter.",
-						tool, size, maxEncodedToolResultBytes)}},
-				}, nil
+				return tools.ErrorResult(fmt.Sprintf(
+					"The %s result is %d bytes, over the %d-byte response budget. "+
+						"Narrow the request: use a shorter time window, a lower limit, or a more specific filter.",
+					tool, size, maxEncodedToolResultBytes)), nil
 			}
 			return result, nil
 		}

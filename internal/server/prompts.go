@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -61,15 +62,16 @@ var promptSpecs = []promptSpec{
 			{name: "service", description: "Optional service name to filter errors", complete: completeServices},
 		},
 		render: func(_ *Server, args map[string]string) string {
-			msg := "Investigate the top errors in the project:\n" +
-				"1. Use errors_list to find the most frequent error groups"
+			list := "Use errors_list to find the most frequent error groups"
 			if service := args["service"]; service != "" {
-				msg += fmt.Sprintf(" (filter by service: %s)", service)
+				list += fmt.Sprintf(" (filter by service: %s)", service)
 			}
-			return msg + "\n2. Use errors_get on the top error group to see stack traces and individual events" +
-				"\n3. Use logs_query or logs_k8s to find related logs around the same time" +
-				"\n4. If trace IDs are available, use logs_by_trace to follow the request flow" +
-				"\n5. Summarize the root cause and suggest next steps"
+			return numberedSteps("Investigate the top errors in the project:",
+				list,
+				"Use errors_get on the top error group to see stack traces and individual events",
+				"Use logs_query or logs_k8s to find related logs around the same time",
+				"If trace IDs are available, use logs_by_trace to follow the request flow",
+				"Summarize the root cause and suggest next steps")
 		},
 	},
 	{
@@ -80,12 +82,12 @@ var promptSpecs = []promptSpec{
 			{name: "url_pattern", description: "URL pattern to search for (e.g. '/api/users')", required: true},
 		},
 		render: func(_ *Server, args map[string]string) string {
-			return fmt.Sprintf("Trace a request matching URL pattern %q:\n", args["url_pattern"]) +
-				"1. Use logs_find_requests to find matching HTTP requests with their trace IDs\n" +
-				"2. Pick the most interesting request (e.g. slowest or with an error status)\n" +
-				"3. Use trace_get to see the full span tree and identify slow spans\n" +
-				"4. Use logs_by_trace to see all logs associated with that trace\n" +
-				"5. Summarize the request flow, highlighting any issues or bottlenecks"
+			return numberedSteps(fmt.Sprintf("Trace a request matching URL pattern %q:", args["url_pattern"]),
+				"Use logs_find_requests to find matching HTTP requests with their trace IDs",
+				"Pick the most interesting request (e.g. slowest or with an error status)",
+				"Use trace_get to see the full span tree and identify slow spans",
+				"Use logs_by_trace to see all logs associated with that trace",
+				"Summarize the request flow, highlighting any issues or bottlenecks")
 		},
 	},
 	{
@@ -116,11 +118,7 @@ var promptSpecs = []promptSpec{
 				"If the classification shows a regression, use metrics_top_contributors to find which dimension contributes most",
 				"Use metrics_related to check correlated signals",
 				"Summarize the findings: what changed, when, likely cause, and recommended action")
-			msg := "Investigate a metric anomaly:"
-			for i, step := range steps {
-				msg += fmt.Sprintf("\n%d. %s", i+1, step)
-			}
-			return msg
+			return numberedSteps("Investigate a metric anomaly:", steps...)
 		},
 	},
 	{
@@ -128,12 +126,12 @@ var promptSpecs = []promptSpec{
 		description:   "Check the health of services: discover services, summarize logs, and identify issues",
 		projectScoped: true,
 		render: func(*Server, map[string]string) string {
-			return "Check the health of services in the project:\n" +
-				"1. Use logs_services to discover all available services\n" +
-				"2. Use logs_summary to get an overview of severity distribution and top errors\n" +
-				"3. Use errors_list to see the most frequent error groups\n" +
-				"4. For any concerning services, use logs_k8s or logs_query to investigate further\n" +
-				"5. Provide a health summary with any issues found and recommended actions"
+			return numberedSteps("Check the health of services in the project:",
+				"Use logs_services to discover all available services",
+				"Use logs_summary to get an overview of severity distribution and top errors",
+				"Use errors_list to see the most frequent error groups",
+				"For any concerning services, use logs_k8s or logs_query to investigate further",
+				"Provide a health summary with any issues found and recommended actions")
 		},
 	},
 	{
@@ -145,18 +143,19 @@ var promptSpecs = []promptSpec{
 			{name: "profile_type", description: "Profile type (CPU, HEAP, WALL, CONTENTION, etc.)", complete: completeProfileTypes},
 		},
 		render: func(_ *Server, args map[string]string) string {
-			msg := "Investigate performance hotspots using Cloud Profiler:\n" +
-				"1. Use profiler_list to discover available profiles"
+			list := "Use profiler_list to discover available profiles"
 			if service := args["service"]; service != "" {
-				msg += fmt.Sprintf(" (filter by target: %s)", service)
+				list += fmt.Sprintf(" (filter by target: %s)", service)
 			}
 			if profileType := args["profile_type"]; profileType != "" {
-				msg += fmt.Sprintf(" (filter by type: %s)", profileType)
+				list += fmt.Sprintf(" (filter by type: %s)", profileType)
 			}
-			return msg + "\n2. Use profiler_top on the most recent profile to identify the hottest functions" +
-				"\n3. Use profiler_peek on the top hotspot to understand who calls it and what it calls" +
-				"\n4. Use profiler_flamegraph to see the call subtree around the hotspot" +
-				"\n5. Summarize the findings: which functions consume the most resources, potential optimizations"
+			return numberedSteps("Investigate performance hotspots using Cloud Profiler:",
+				list,
+				"Use profiler_top on the most recent profile to identify the hottest functions",
+				"Use profiler_peek on the top hotspot to understand who calls it and what it calls",
+				"Use profiler_flamegraph to see the call subtree around the hotspot",
+				"Summarize the findings: which functions consume the most resources, potential optimizations")
 		},
 	},
 	{
@@ -228,6 +227,17 @@ STEP 5 — Validate: %s validate-registry <path>
 STEP 6 — Report results.`, projectPath, outputPath, outputPath, serverBinary)
 		},
 	},
+}
+
+// numberedSteps renders title followed by steps as a numbered list, one step
+// per line.
+func numberedSteps(title string, steps ...string) string {
+	var b strings.Builder
+	b.WriteString(title)
+	for i, step := range steps {
+		_, _ = fmt.Fprintf(&b, "\n%d. %s", i+1, step)
+	}
+	return b.String()
 }
 
 // findPromptSpec returns the spec named name, or false if unknown.

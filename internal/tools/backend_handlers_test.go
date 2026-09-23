@@ -164,14 +164,14 @@ func TestTraceGetHandler(t *testing.T) {
 	}
 }
 
-// TestProfilerTrendsDeadlineGuidance pins that a trends scan that ran out of
-// its time budget advises narrowing the scan instead of the shared "retry"
-// advice.
-func TestProfilerTrendsDeadlineGuidance(t *testing.T) {
+// TestProfilerScanBudgetGuidance pins that a profiler scan that used up the
+// per-call time budget advises narrowing the scan instead of the shared
+// "retry" advice for a deadline.
+func TestProfilerScanBudgetGuidance(t *testing.T) {
 	ctx := context.Background()
 	deps := Deps{
 		Profiler: fakeProfiler{computeTrend: func(context.Context, gcpdata.ComputeTrendsParams, func(int, int, string)) (*gcpdata.ProfileTrendsResult, error) {
-			return nil, fmt.Errorf("scanning profiles: %w", context.DeadlineExceeded)
+			return nil, fmt.Errorf("scanning profiles: %w", gcpdata.ErrProfilerScanBudget)
 		}},
 		Project: MustProjectPolicy("test-project"),
 	}
@@ -184,13 +184,13 @@ func TestProfilerTrendsDeadlineGuidance(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, res.IsError)
 	msg := textFromResult(t, res)
-	assert.Contains(t, msg, "lower max_profiles or pass function_filter")
-	assert.NotContains(t, msg, sharedCodeGuidance[codes.DeadlineExceeded])
+	assert.Contains(t, msg, "lower max_profiles")
+	assert.NotContains(t, msg, sharedCodes[codes.DeadlineExceeded].advice)
 }
 
 // TestErrorPathsSurviveOutputSchema pins the omitempty contract on map-typed
 // output fields: the SDK serializes the zero value of the output struct when a
-// handler returns errResult, and the generated schema rejects null for maps
+// handler returns ErrorResult, and the generated schema rejects null for maps
 // (unlike slices). Without omitempty these calls fail with a protocol-level
 // validation error instead of an IsError tool result.
 func TestErrorPathsSurviveOutputSchema(t *testing.T) {

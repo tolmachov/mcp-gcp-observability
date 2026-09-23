@@ -2,7 +2,6 @@ package gcpdata
 
 import (
 	"context"
-	"net"
 	"testing"
 	"time"
 
@@ -12,8 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -30,17 +27,8 @@ func (s *captureErrorStatsServer) ListGroupStats(_ context.Context, req *errorre
 
 func newCaptureErrorStatsQuerier(t *testing.T) (*ErrorReportingQuerier, *captureErrorStatsServer) {
 	t.Helper()
-	listener := bufconn.Listen(1 << 20)
-	grpcServer := grpc.NewServer()
 	service := &captureErrorStatsServer{begin: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)}
-	errorreportingpb.RegisterErrorStatsServiceServer(grpcServer, service)
-	go func() { _ = grpcServer.Serve(listener) }()
-	t.Cleanup(grpcServer.Stop)
-	conn, err := grpc.NewClient("passthrough:///bufnet",
-		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
+	conn := bufconnClientConn(t, func(s *grpc.Server) { errorreportingpb.RegisterErrorStatsServiceServer(s, service) })
 	client, err := errorreporting.NewErrorStatsClient(context.Background(), option.WithGRPCConn(conn))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = client.Close() })

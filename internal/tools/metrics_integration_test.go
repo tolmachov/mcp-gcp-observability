@@ -881,10 +881,8 @@ func TestSnapshotIntegration_SameWeekdayHour_PanicRecovered(t *testing.T) {
 	parseResult(t, result, &snap)
 	// The surviving week's data still produced a baseline.
 	assert.Greater(t, snap.Baseline, 0.0)
-	// A panic is a code bug, reported distinctly from a transient failure.
-	assert.Contains(t, snap.Note, "UNEXPECTED PANICS")
-	assert.NotContains(t, snap.Note, "could not be fetched",
-		"panic must not be worded as a transient fetch failure")
+	// A panic is a code bug, and the guidance says so.
+	assert.Contains(t, snap.Note, "This is a bug in the server")
 }
 
 // TestSnapshotIntegration_SameWeekdayHour_AllFail verifies the non-fatal
@@ -928,7 +926,6 @@ func TestSnapshotIntegration_SameWeekdayHour_AllFail(t *testing.T) {
 	assert.False(t, snap.BaselineReliable, "baseline_reliable must be false when all weekly baselines failed")
 	assert.Contains(t, snap.Note, "Baseline query (same_weekday_hour) failed: all 4 baseline queries failed: "+
 		"baseline (same_weekday_hour week -1): simulated auth failure")
-	assert.Contains(t, snap.Note, "You can retry.")
 	// The I1 non-fatal contract: current-window stats must still be present
 	// even when every baseline query failed. A refactor that zeroed the
 	// current window on the way to building the result would regress this.
@@ -1468,7 +1465,7 @@ func TestTopContributorsIntegration_SameWeekdayHour_PanicRecovered(t *testing.T)
 	if len(top.Contributors) == 0 {
 		t.Fatal("expected at least one contributor")
 	}
-	assert.Contains(t, top.Note, "UNEXPECTED PANICS")
+	assert.Contains(t, top.Note, "This is a bug in the server")
 }
 
 // TestTopContributorsIntegration_SameWeekdayHour_EmptyBaseline verifies that
@@ -1717,12 +1714,11 @@ func TestRelatedIntegration_PartialWithRPCFailures(t *testing.T) {
 	// The Note field must carry a human-readable summary of the RPC failures
 	// so that an operator (or LLM) reading the result doesn't need to parse
 	// every Skipped entry to understand why correlation coverage is partial.
-	assert.Contains(t, related.Note, "2 RPC failure(s)")
+	assert.Contains(t, related.Note, "2 query failure(s)")
 }
 
 // TestRelatedIntegration_PanicIsInternalError pins that a panic inside a
-// related signal's query is reported as an internal error, counted apart
-// from the RPC failures, rather than as a GCP failure.
+// related signal's query is reported as a bug rather than as a GCP failure.
 func TestRelatedIntegration_PanicIsInternalError(t *testing.T) {
 	reg := loadTestRegistry(t, relatedTestRegistryYAML)
 	fq := newFakeQuerier()
@@ -1754,11 +1750,13 @@ func TestRelatedIntegration_PanicIsInternalError(t *testing.T) {
 	var related RelatedSignalsResult
 	parseResult(t, result, &related)
 	assert.True(t, related.Partial)
-	assert.Contains(t, related.Note, "1 RPC failure(s), 1 internal error(s) (a bug, not a transient failure; please report it)")
+	assert.Contains(t, related.Note, "2 query failure(s)")
+	assert.Contains(t, related.Note, "This is a bug in the server")
+	assert.Contains(t, related.Note, sharedCodes[codes.PermissionDenied].advice)
 	// Skipped is read back from JSON, which does not carry the cause.
 	assert.Contains(t, related.Skipped, SkippedSignal{
 		MetricType: "compute.googleapis.com/instance/disk/read_bytes_count",
-		Reason:     "internal error: simulated bug",
+		Reason:     "query failed: panic: simulated bug",
 	})
 }
 
@@ -1792,9 +1790,9 @@ func TestRelatedIntegration_MixedCodesGuidance(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, result.IsError)
 	msg := textFromResult(t, result)
-	assert.Contains(t, msg, "3 RPC failure(s)")
-	assert.Contains(t, msg, sharedCodeGuidance[codes.Unauthenticated])
-	assert.Equal(t, 1, strings.Count(msg, sharedCodeGuidance[codes.PermissionDenied]), "each distinct code's guidance appears once")
+	assert.Contains(t, msg, "3 query failure(s)")
+	assert.Contains(t, msg, sharedCodes[codes.Unauthenticated].advice)
+	assert.Equal(t, 1, strings.Count(msg, sharedCodes[codes.PermissionDenied].advice), "each distinct code's guidance appears once")
 }
 
 // TestRelatedIntegration_AllRPCFailures_ToolError verifies the all-failed
@@ -1828,7 +1826,7 @@ func TestRelatedIntegration_AllRPCFailures_ToolError(t *testing.T) {
 // TestRelatedIntegration_BenignSkipsDoNotMarkPartial verifies the contract
 // that "no data in window" for every related signal is NOT a failure: the
 // result is a success with Partial=false, empty RelatedSignals, and
-// populated Skipped. A regression in classifyErr or the benign classification
+// populated Skipped. A regression in the benign classification
 // would flip Partial=true here.
 func TestRelatedIntegration_BenignSkipsDoNotMarkPartial(t *testing.T) {
 	reg := loadTestRegistry(t, relatedTestRegistryYAML)
@@ -1904,44 +1902,28 @@ func TestRelatedIntegration_MixedBenignAndRealFailures(t *testing.T) {
 	assert.NotContains(t, msg, "no events")
 }
 
-// TestClassifyErr is a unit table test for the benign-vs-real classifier
-// introduced in R2-C1. Regression guard: swapping the errors.Is checks or
-// dropping the "deadline exceeded → real failure" branch would flip
-// Partial / all-failed semantics site-wide.
-func TestClassifyErr(t *testing.T) {
+// TestIsBenign is a unit table test for the benign-vs-real classifier.
+// Regression guard: treating a deadline as benign, or a cancellation as a
+// failure, would flip Partial / all-failed semantics site-wide.
+func TestIsBenign(t *testing.T) {
 	cases := []struct {
-		name       string
-		err        error
-		wantReason string
-		wantBenign bool
+		name string
+		err  error
+		want bool
 	}{
-		{"nil", nil, "", true},
-		{"client canceled", context.Canceled, "canceled", true},
-		{"deadline exceeded", context.DeadlineExceeded, "deadline exceeded: context deadline exceeded", false},
-		{"wrapped deadline exceeded",
-			fmt.Errorf("outer: %w", context.DeadlineExceeded),
-			"deadline exceeded: outer: context deadline exceeded", false},
-		{"wrapped canceled",
-			fmt.Errorf("query: %w", context.Canceled),
-			"canceled", true},
-		{"generic RPC error", errors.New("permission denied"), "permission denied", false},
-		{"grpc canceled", status.Error(codes.Canceled, "rpc canceled"), "canceled", true},
-		{"grpc deadline exceeded",
-			status.Error(codes.DeadlineExceeded, "rpc timed out"),
-			"deadline exceeded: rpc error: code = DeadlineExceeded desc = rpc timed out", false},
-		{"grpc not found",
-			status.Error(codes.NotFound, "metric not found"),
-			"metric type not found in project — check the registry entry is correct: rpc error: code = NotFound desc = metric not found", false},
+		{"client canceled", context.Canceled, true},
+		{"wrapped canceled", fmt.Errorf("query: %w", context.Canceled), true},
+		{"grpc canceled", status.Error(codes.Canceled, "rpc canceled"), true},
+		{"deadline exceeded", context.DeadlineExceeded, false},
+		{"wrapped deadline exceeded", fmt.Errorf("outer: %w", context.DeadlineExceeded), false},
+		{"grpc deadline exceeded", status.Error(codes.DeadlineExceeded, "rpc timed out"), false},
+		{"generic RPC error", errors.New("permission denied"), false},
+		{"grpc not found", status.Error(codes.NotFound, "metric not found"), false},
+		{"panic", &panicError{value: "bug"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			reason, benign := classifyErr(tc.err)
-			if reason != tc.wantReason {
-				assert.Equal(t, tc.wantReason, reason)
-			}
-			if benign != tc.wantBenign {
-				assert.Equal(t, tc.wantBenign, benign)
-			}
+			assert.Equal(t, tc.want, isBenign(tc.err))
 		})
 	}
 }
@@ -2453,6 +2435,35 @@ func TestSnapshotRegistryMisconfigError(t *testing.T) {
 	if len(fq.aggregatedSpecs) != 0 {
 		assert.Empty(t, fq.aggregatedSpecs)
 	}
+}
+
+// TestComparePanicIsReportedAsBug pins that a panicking window query fails
+// metrics_compare with the shared bug guidance, not retry advice.
+func TestComparePanicIsReportedAsBug(t *testing.T) {
+	metricType := "compute.googleapis.com/instance/cpu/utilization"
+	fq := newFakeQuerier()
+	fq.metricKinds[metricType] = "GAUGE"
+	fq.queryFn = func(gcpdata.QueryTimeSeriesParams) ([]gcpdata.MetricTimeSeries, error) {
+		panic("simulated bug")
+	}
+
+	now := time.Now().UTC()
+	ctx := context.Background()
+	ts := newTestToolServer(t)
+	ts.registerMetricsCompare(fq, loadTestRegistry(t, testRegistryYAML), "test-project")
+	ts.connect(ctx)
+	defer ts.close()
+
+	result, err := ts.callTool(ctx, "metrics_compare", map[string]any{
+		"metric_type":   metricType,
+		"window_a_from": now.Add(-2 * time.Hour).Format(time.RFC3339),
+		"window_a_to":   now.Add(-time.Hour).Format(time.RFC3339),
+		"window_b_from": now.Add(-time.Hour).Format(time.RFC3339),
+		"window_b_to":   now.Format(time.RFC3339),
+	})
+	require.NoError(t, err)
+	expectError(t, result, "panic: simulated bug")
+	expectError(t, result, "This is a bug in the server")
 }
 
 func TestCompareRegistryMisconfigError(t *testing.T) {

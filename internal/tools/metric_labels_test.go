@@ -342,3 +342,30 @@ func textFromResult(t *testing.T, result *mcp.CallToolResult) string {
 	require.True(t, ok)
 	return tc.Text
 }
+
+// countingLabelsQuerier counts GetResourceLabels calls.
+type countingLabelsQuerier struct {
+	*fakeQuerier
+	calls int
+}
+
+func (q *countingLabelsQuerier) GetResourceLabels(ctx context.Context, project, resourceType string) ([]string, error) {
+	q.calls++
+	return q.fakeQuerier.GetResourceLabels(ctx, project, resourceType)
+}
+
+// TestAvailableLabelsStopsAfterResourceLabelsFailure pins that a failed
+// resource-label listing is not repeated for every remaining resource type:
+// the rest are reported incomplete straight away.
+func TestAvailableLabelsStopsAfterResourceLabelsFailure(t *testing.T) {
+	fq := newFakeQuerier()
+	fq.getResourceLabelsErr = errors.New("listing failed")
+	q := &countingLabelsQuerier{fakeQuerier: fq}
+	desc := gcpdata.MetricDescriptorBasic{MonitoredResourceTypes: []string{"a", "b", "c"}}
+
+	labels := availableLabelsFromDescriptor(context.Background(), nil, q, "p", "m", desc)
+
+	assert.Equal(t, 1, q.calls)
+	assert.Equal(t, []string{"a", "b", "c"}, labels.IncompleteTypes)
+	assert.Nil(t, labels.Resource)
+}

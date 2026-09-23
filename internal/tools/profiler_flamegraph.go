@@ -80,7 +80,7 @@ func RegisterProfilerFlamegraph(s *mcp.Server, d Deps) {
 		root, total, pruned, err := gcpdata.Flamegraph(p, in.RootFunction, in.ValueIndex, maxDepth, flamegraphMaxNodes, minPct)
 		if err != nil {
 			mcpLog(ctx, req, logLevelWarning, "profiler_flamegraph", fmt.Sprintf("analysis failed: %v", err))
-			return errResult(fmt.Sprintf("Failed to build flamegraph: %v", err)), nil, nil
+			return ErrorResult(fmt.Sprintf("Failed to build flamegraph: %v", err)), nil, nil
 		}
 
 		result := &gcpdata.ProfileFlamegraphResult{

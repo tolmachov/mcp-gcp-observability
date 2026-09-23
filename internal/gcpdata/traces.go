@@ -54,12 +54,16 @@ func (q *CloudTraceQuerier) ListTraces(
 	pageSize int,
 	pageToken string,
 ) (*TraceListResult, error) {
+	viewType, err := parseViewType(view)
+	if err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithTimeout(ctx, traceQueryTimeout)
 	defer cancel()
 
 	req := &tracepb.ListTracesRequest{
 		ProjectId: project,
-		View:      parseViewType(view),
+		View:      viewType,
 		PageSize:  safeInt32(pageSize),
 		StartTime: timestamppb.New(startTime),
 		EndTime:   timestamppb.New(endTime),
@@ -167,15 +171,19 @@ func parseLatencyToMs(s string) (int64, error) {
 	return ms, nil
 }
 
-func parseViewType(view string) tracepb.ListTracesRequest_ViewType {
-	switch strings.ToUpper(view) {
+// parseViewType maps a tool's view input to the API view type. The tool
+// schema supplies the default, so an empty view is rejected like any other
+// unknown value.
+func parseViewType(view string) (tracepb.ListTracesRequest_ViewType, error) {
+	switch view {
 	case "MINIMAL":
-		return tracepb.ListTracesRequest_MINIMAL
+		return tracepb.ListTracesRequest_MINIMAL, nil
+	case "ROOTSPAN":
+		return tracepb.ListTracesRequest_ROOTSPAN, nil
 	case "COMPLETE":
-		return tracepb.ListTracesRequest_COMPLETE
-	default:
-		return tracepb.ListTracesRequest_ROOTSPAN
+		return tracepb.ListTracesRequest_COMPLETE, nil
 	}
+	return 0, fmt.Errorf("invalid view %q: must be \"MINIMAL\", \"ROOTSPAN\" or \"COMPLETE\"", view)
 }
 
 func traceToSummary(t *tracepb.Trace) TraceSummary {

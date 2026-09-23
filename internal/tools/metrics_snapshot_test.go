@@ -243,9 +243,9 @@ func TestCollectBaseline(t *testing.T) {
 		require.EqualError(t, err, "2 of 4 baseline queries failed and the rest returned no data: "+
 			"baseline (same_weekday_hour week -1): boom\nbaseline (same_weekday_hour week -3): boom")
 	})
-	t.Run("panic without data is a distinct error", func(t *testing.T) {
+	t.Run("a panic without data wraps the panic", func(t *testing.T) {
 		_, err := collect(baselineSameWeekdayHour, weekly, failed, panicked, failed, failed)
-		require.EqualError(t, err, "1 of 4 baseline queries panicked (a bug, not a transient failure): "+
+		require.EqualError(t, err, "all 4 baseline queries failed: "+
 			"baseline (same_weekday_hour week -1): boom\nbaseline (same_weekday_hour week -2): panic: bug\n"+
 			"baseline (same_weekday_hour week -3): boom\nbaseline (same_weekday_hour week -4): boom")
 		var pe *panicError
@@ -255,6 +255,11 @@ func TestCollectBaseline(t *testing.T) {
 		note, err := collect(baselineSameWeekdayHour, weekly, data, failed, data, data)
 		require.NoError(t, err)
 		assert.Equal(t, "Baseline partial failure (same_weekday_hour): 1 of 4 baseline windows could not be fetched; baseline computed from 3 windows. Results may be less reliable.", note)
+	})
+	t.Run("a partial note carries the guidance of the failures", func(t *testing.T) {
+		note, err := collect(baselineSameWeekdayHour, weekly, data, panicked, data, data)
+		require.NoError(t, err)
+		assert.Contains(t, note, "This is a bug in the server")
 	})
 	t.Run("warnings of every window collapse into one note", func(t *testing.T) {
 		warned := data
@@ -266,9 +271,9 @@ func TestCollectBaseline(t *testing.T) {
 	})
 }
 
-// TestSnapshotBaselineFailureAdvice pins that the snapshot note tells a
-// panic from a retryable failure and words non-retryable gRPC codes with the
-// shared code guidance.
+// TestSnapshotBaselineFailureAdvice pins that the snapshot note words a
+// baseline failure with the shared guidance: a panic is a bug, and each gRPC
+// code gets its own advice.
 func TestSnapshotBaselineFailureAdvice(t *testing.T) {
 	const metricType = "compute.googleapis.com/instance/cpu/utilization"
 	for _, tc := range []struct {
@@ -277,11 +282,11 @@ func TestSnapshotBaselineFailureAdvice(t *testing.T) {
 		want     []string
 		notWant  []string
 	}{
-		{"panic", func() error { panic("bug") }, []string{"panicked", "This is a bug in the code"}, []string{"You can retry"}},
-		{"permission denied", func() error { return status.Error(codes.PermissionDenied, "denied") }, []string{"lacks IAM permission"}, []string{"You can retry"}},
-		{"not found", func() error { return status.Error(codes.NotFound, "gone") }, []string{"retrying will not help"}, []string{"You can retry"}},
-		{"invalid argument", func() error { return status.Error(codes.InvalidArgument, "bad") }, []string{"rejected the baseline query"}, []string{"You can retry"}},
-		{"unknown", func() error { return errors.New("flaky") }, []string{"You can retry"}, nil},
+		{"panic", func() error { panic("bug") }, []string{"panic: bug", "This is a bug in the server"}, []string{"retry shortly"}},
+		{"permission denied", func() error { return status.Error(codes.PermissionDenied, "denied") }, []string{"lacks IAM permission"}, []string{"retrying will not help"}},
+		{"not found", func() error { return status.Error(codes.NotFound, "gone") }, []string{"GCP found no such resource", "retrying will not help"}, nil},
+		{"invalid argument", func() error { return status.Error(codes.InvalidArgument, "bad") }, []string{"rejected the request as invalid"}, nil},
+		{"unavailable", func() error { return status.Error(codes.Unavailable, "down") }, []string{"retry shortly"}, []string{"retrying will not help"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fq := newFakeQuerier()

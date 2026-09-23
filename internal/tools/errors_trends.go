@@ -26,7 +26,7 @@ func RegisterErrorsTrends(s *mcp.Server, d Deps) {
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ErrorsListInput) (*mcp.CallToolResult, *gcpdata.ErrorTrendList, error) {
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 
 		window := gcpdata.ErrorWindow(in.Window)

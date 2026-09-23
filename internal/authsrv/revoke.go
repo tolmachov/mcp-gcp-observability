@@ -33,7 +33,7 @@ func (a *AuthServer) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		familyID, googleToken, email = ac.FamilyID, ac.GoogleAccessToken, ac.Email
 	} else if id, secret, err := parseRefreshToken(token); err == nil {
 		familyID = id
-		if rec, getErr := a.grant(r.Context(), id); getErr == nil {
+		if rec, getErr := a.store.GetGrant(r.Context(), id); getErr == nil {
 			// A family identifier is not proof of possession. Keep the hash
 			// after revocation so a valid token can retry upstream failures.
 			if !secretMatches(secret, rec.ActiveSecretHash) {

@@ -3,7 +3,6 @@ package gcpdata
 import (
 	"context"
 	"math"
-	"net"
 	"strconv"
 	"testing"
 	"time"
@@ -15,8 +14,6 @@ import (
 	"google.golang.org/api/option"
 	"google.golang.org/genproto/googleapis/api/metric"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
@@ -35,16 +32,9 @@ func (s *stockMetricServer) ListTimeSeries(context.Context, *monitoringpb.ListTi
 
 func newStockMonitoringQuerier(t *testing.T, series []*monitoringpb.TimeSeries) *MonitoringQuerier {
 	t.Helper()
-	listener := bufconn.Listen(1 << 20)
-	grpcServer := grpc.NewServer()
-	monitoringpb.RegisterMetricServiceServer(grpcServer, &stockMetricServer{series: series})
-	go func() { _ = grpcServer.Serve(listener) }()
-	t.Cleanup(grpcServer.Stop)
-	conn, err := grpc.NewClient("passthrough:///bufnet",
-		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
+	conn := bufconnClientConn(t, func(s *grpc.Server) {
+		monitoringpb.RegisterMetricServiceServer(s, &stockMetricServer{series: series})
+	})
 	client, err := monitoring.NewMetricClient(context.Background(), option.WithGRPCConn(conn))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = client.Close() })

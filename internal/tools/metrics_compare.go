@@ -2,7 +2,7 @@ package tools
 
 import (
 	"context"
-	"errors"
+
 	"fmt"
 	"strings"
 	"time"
@@ -48,7 +48,7 @@ func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsCompareInput) (*mcp.CallToolResult, *CompareResult, error) {
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 
 		windowALabel := in.WindowALabel
@@ -62,26 +62,26 @@ func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 
 		aFrom, err := parseRFC3339Opt(in.WindowAFrom, "window_a_from")
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 		aTo, err := parseRFC3339Opt(in.WindowATo, "window_a_to")
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 		bFrom, err := parseRFC3339Opt(in.WindowBFrom, "window_b_from")
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 		bTo, err := parseRFC3339Opt(in.WindowBTo, "window_b_to")
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 
 		if !aTo.After(aFrom) {
-			return errResult(fmt.Sprintf("window_a_to must be after window_a_from (got %s to %s)", aFrom.Format(time.RFC3339), aTo.Format(time.RFC3339))), nil, nil
+			return ErrorResult(fmt.Sprintf("window_a_to must be after window_a_from (got %s to %s)", aFrom.Format(time.RFC3339), aTo.Format(time.RFC3339))), nil, nil
 		}
 		if !bTo.After(bFrom) {
-			return errResult(fmt.Sprintf("window_b_to must be after window_b_from (got %s to %s)", bFrom.Format(time.RFC3339), bTo.Format(time.RFC3339))), nil, nil
+			return ErrorResult(fmt.Sprintf("window_b_to must be after window_b_from (got %s to %s)", bFrom.Format(time.RFC3339), bTo.Format(time.RFC3339))), nil, nil
 		}
 
 		meta := d.Registry.Lookup(in.MetricType)
@@ -137,13 +137,8 @@ func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 			}
 			msg := strings.Join(msgs, "; ")
 			mcpLog(ctx, req, logLevelError, "metrics_compare", msg)
-			if invalidAggregationSpecError(errA) || invalidAggregationSpecError(errB) {
-				return errResult(formatRegistryMisconfigError(in.MetricType, errors.Join(errA, errB))), nil, nil
-			}
-			if isInvalidFilterError(errA) || isInvalidFilterError(errB) {
-				return errResult(enrichInvalidFilterError(ctx, req, d.Querier, project, in.MetricType, in.Filter, errors.Join(errA, errB))), nil, nil
-			}
-			return gcpErrorsResult("Failed to query: "+msg, []error{errA, errB}, ""), nil, nil
+			return metricQueryErrorResult(ctx, req, d.Querier, project, in.MetricType, in.Filter,
+				"Failed to query: "+msg, errA, errB), nil, nil
 		}
 
 		pointsA := mergePoints(results[0].series)
