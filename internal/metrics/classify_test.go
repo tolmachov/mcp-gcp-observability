@@ -341,28 +341,6 @@ func TestClassifyFlapping(t *testing.T) {
 	})
 }
 
-func TestClassificationIsValid(t *testing.T) {
-	valid := []Classification{ClassStable, ClassNoisy, ClassSpike, ClassStepRegression, ClassSustainedRegression, ClassRecovery, ClassSaturation, ClassImprovement, ClassFlapping, ClassInsufficientData}
-	for _, c := range valid {
-		assert.True(t, c.IsValid())
-	}
-	invalid := []Classification{"", "garbage", "Stable", "STABLE"}
-	for _, c := range invalid {
-		assert.False(t, c.IsValid())
-	}
-}
-
-func TestTrendDirectionIsValid(t *testing.T) {
-	valid := []TrendDirection{TrendFlat, TrendUp, TrendDown}
-	for _, d := range valid {
-		assert.True(t, d.IsValid())
-	}
-	invalid := []TrendDirection{"", "sideways", "Flat", "UP"}
-	for _, d := range invalid {
-		assert.False(t, d.IsValid())
-	}
-}
-
 func TestClassificationThresholdsValidate(t *testing.T) {
 	tests := []struct {
 		name    string

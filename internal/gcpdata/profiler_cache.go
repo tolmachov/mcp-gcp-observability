@@ -79,18 +79,6 @@ func (c *ProfileCache) remove(i int) {
 	processProfileCacheBytes.Add(-size)
 }
 
-func (c *ProfileCache) Len() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.entries)
-}
-
-func (c *ProfileCache) Bytes() int64 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.bytes
-}
-
 func (c *ProfileCache) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()

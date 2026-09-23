@@ -16,11 +16,10 @@ import (
 )
 
 // registerResources adds MCP resources to srv.
-func (s *Server) registerResources(srv *mcp.Server, client *gcpclient.Client, reg *metrics.Registry) error {
-	cfg := client.Config()
+func (s *Server) registerResources(srv *mcp.Server, client *gcpclient.Client, reg *metrics.Registry) {
 	projectConfig := map[string]any{
 		"project_mode":           "required",
-		"metrics_registry_file":  cfg.MetricsRegistryFile,
+		"metrics_registry_file":  s.cfg.MetricsRegistryFile,
 		"metrics_registry_count": reg.Count(),
 		"logs_hard_limit":        tools.LogsHardLimit,
 		"errors_hard_limit":      tools.ErrorsHardLimit,
@@ -28,10 +27,6 @@ func (s *Server) registerResources(srv *mcp.Server, client *gcpclient.Client, re
 	if s.project.Pinned() {
 		projectConfig["project_mode"] = "pinned"
 		projectConfig["project"] = s.project.Project()
-	}
-	configJSON, err := json.Marshal(projectConfig)
-	if err != nil {
-		return fmt.Errorf("failed to marshal config resource during startup: %w", err)
 	}
 
 	srv.AddResource(
@@ -42,6 +37,10 @@ func (s *Server) registerResources(srv *mcp.Server, client *gcpclient.Client, re
 			MIMEType:    "application/json",
 		},
 		func(_ context.Context, _ *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+			configJSON, err := json.Marshal(projectConfig)
+			if err != nil {
+				return nil, fmt.Errorf("marshaling config resource: %w", err)
+			}
 			return &mcp.ReadResourceResult{
 				Contents: []*mcp.ResourceContents{{
 					URI:      "config://project",
@@ -52,10 +51,8 @@ func (s *Server) registerResources(srv *mcp.Server, client *gcpclient.Client, re
 		},
 	)
 
-	tools.RegisterMetricsChartStaticResource(srv)
-	tools.RegisterMetricsCompareChartStaticResource(srv)
+	tools.RegisterChartResources(srv)
 	s.registerProjectResources(srv, client)
-	return nil
 }
 
 // resourceTemplateTimeout bounds the GCP calls backing the navigable resource

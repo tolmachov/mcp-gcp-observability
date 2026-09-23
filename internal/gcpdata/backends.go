@@ -45,13 +45,15 @@ type TraceQuerier interface {
 
 // ProfilerQuerier abstracts Cloud Profiler operations used by tool handlers.
 // The profile cache is an implementation detail owned by the concrete querier;
-// handlers never see it.
+// handlers never see it. Close releases that cache and is called by the server
+// when the querier's client set is torn down.
 type ProfilerQuerier interface {
 	ListProfiles(ctx context.Context, params ListProfilesParams) (*ProfileListResult, error)
 	GetOrFetchProfile(ctx context.Context, project, profileName string) (*profile.Profile, ProfileMeta, error)
 	GetProfileOrDiff(ctx context.Context, project, profileName, baseProfileName string) (*profile.Profile, ProfileMeta, error)
 	CompareProfiles(ctx context.Context, project, currentID, baseID string, valueIndex, topN int) (*ProfileCompareResult, error)
 	ComputeTrends(ctx context.Context, params ComputeTrendsParams, progressFn func(current, total int, msg string)) (*ProfileTrendsResult, error)
+	Close() error
 }
 
 // LoggingQuerier implements LogsQuerier against a real Cloud Logging client.

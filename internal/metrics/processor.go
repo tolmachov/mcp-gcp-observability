@@ -249,24 +249,18 @@ func computeSpikes(f *SignalFeatures, values []float64, spikeZ float64) {
 		return
 	}
 
-	// Guard using Min/Max (already populated by the caller) rather than
-	// relying solely on stddev == 0. When all values are nearly (but not
-	// bitwise) identical, the accumulated squared residuals can produce a
-	// near-zero but non-zero s, yielding a spurious MaxZScore. The if s == 0
-	// check below handles the exact-equality case; this check handles the
-	// near-zero case by skipping spike detection entirely when Min == Max.
-	if f.Min == f.Max {
-		return
-	}
-
-	m := mean(values)
-	s := stddev(values, m)
-	if s == 0 {
+	// Mean, Stddev, Min and Max are already populated by the caller from the
+	// same values. Guard using Min/Max rather than relying solely on
+	// Stddev == 0: when all values are nearly (but not bitwise) identical, the
+	// accumulated squared residuals can produce a near-zero but non-zero
+	// Stddev, yielding a spurious MaxZScore. The Stddev == 0 check handles the
+	// exact-equality case; Min == Max handles the near-zero case.
+	if f.Min == f.Max || f.Stddev == 0 {
 		return
 	}
 
 	for _, v := range values {
-		z := math.Abs(v-m) / s
+		z := math.Abs(v-f.Mean) / f.Stddev
 		if z > f.MaxZScore {
 			f.MaxZScore = z
 		}

@@ -270,13 +270,6 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 			result.StepChangeAt = f.StepChangeAt.Format(time.RFC3339)
 		}
 
-		if baselineErrNote != "" {
-			// Zero out baseline-derived fields: they are computed relative to a
-			// zero baseline and would appear as a >100% regression even though
-			// no real data is available for comparison.
-			result.Baseline = 0
-			result.DeltaPct = 0
-		}
 		var unsupportedNote string
 		if unsupportedCount > 0 {
 			unsupportedNote = fmt.Sprintf("Dropped %d points with unsupported or malformed value types during decode (see server log).", unsupportedCount)

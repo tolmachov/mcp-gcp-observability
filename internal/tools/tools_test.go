@@ -319,12 +319,6 @@ func TestApplyMode(t *testing.T) {
 	})
 }
 
-func TestRegistrationModeString(t *testing.T) {
-	assert.Equal(t, "standard", ModeStandard.String())
-	assert.Equal(t, "compact", ModeCompact.String())
-	assert.Equal(t, "RegistrationMode(99)", RegistrationMode(99).String())
-}
-
 // TestRegisterCoreToolCount pins CoreToolsCount against the tools that
 // RegisterCore actually registers. The "monitoring" variant Description
 // interpolates CoreToolsCount, so this test is the choke point that keeps

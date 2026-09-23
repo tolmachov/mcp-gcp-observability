@@ -90,3 +90,15 @@ func TestProfileCache_RejectsOversizedEntryAndCloseReleasesProcessBudget(t *test
 	c.Close()
 	assert.Equal(t, before, processProfileCacheBytes.Load())
 }
+
+func (c *ProfileCache) Len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.entries)
+}
+
+func (c *ProfileCache) Bytes() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.bytes
+}

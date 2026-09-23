@@ -47,13 +47,6 @@ func projectInputSchema[T any](policy ProjectPolicy, patches ...enumPatch) *json
 	schema.AdditionalProperties = &jsonschema.Schema{Not: &jsonschema.Schema{}}
 	if policy.Pinned() {
 		delete(schema.Properties, "project_id")
-		required := schema.Required[:0]
-		for _, name := range schema.Required {
-			if name != "project_id" {
-				required = append(required, name)
-			}
-		}
-		schema.Required = required
 		return schema
 	}
 	prop, ok := schema.Properties["project_id"]
@@ -62,11 +55,7 @@ func projectInputSchema[T any](policy ProjectPolicy, patches ...enumPatch) *json
 	}
 	prop.Description = "GCP project ID; required by this unpinned deployment"
 	prop.Pattern = projectIDPattern.String()
-	for _, name := range schema.Required {
-		if name == "project_id" {
-			return schema
-		}
-	}
+	// ProjectInput.ProjectID is omitempty, so project_id is never already required.
 	schema.Required = append(schema.Required, "project_id")
 	return schema
 }

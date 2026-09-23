@@ -20,7 +20,7 @@ func projectContractSession(t *testing.T, pinned string) *mcp.ClientSession {
 	s.completer.project = s.project
 	srv := s.newMCPInstance(s.completer)
 	client := gcpclient.NewForTesting(gcpclient.Config{DefaultProject: pinned})
-	require.NoError(t, s.registerResources(srv, client, metrics.NewRegistry()))
+	s.registerResources(srv, client, metrics.NewRegistry())
 	s.registerPrompts(srv)
 	ct, st := mcp.NewInMemoryTransports()
 	ctx, cancel := context.WithCancel(context.Background())

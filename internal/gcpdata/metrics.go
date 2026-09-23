@@ -391,11 +391,6 @@ func (w AggregationWarnings) HasAny() bool {
 	return w.NonFinitePoints > 0 || w.SingleGroup || w.CarryForwardBuckets > 0 || w.DepartedGroupBuckets > 0 || w.DepartedSeries > 0 || w.TruncatedSeries
 }
 
-// RaggedBuckets returns legacy combined counter (carry-forward + departed-group).
-func (w AggregationWarnings) RaggedBuckets() int {
-	return w.CarryForwardBuckets + w.DepartedGroupBuckets
-}
-
 // buildAggregatedParams translates AggregationSpec to QueryTimeSeriesParams.
 // Single-stage: clears GroupByFields, sets Reducer from AcrossGroups.
 // Caller must validate spec first.

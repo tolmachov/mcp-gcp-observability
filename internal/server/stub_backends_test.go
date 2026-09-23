@@ -93,6 +93,8 @@ func (stubBackends) ComputeTrends(context.Context, gcpdata.ComputeTrendsParams, 
 	panic("stubBackends: handler not invoked in this test")
 }
 
+func (stubBackends) Close() error { return nil }
+
 func (stubBackends) GetMetricDescriptor(context.Context, string, string) (gcpdata.MetricDescriptorBasic, error) {
 	panic("stubBackends: handler not invoked in this test")
 }

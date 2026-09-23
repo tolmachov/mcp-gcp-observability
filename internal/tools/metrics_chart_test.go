@@ -12,9 +12,9 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
 
-// TestRenderChartHTML verifies that the embedded HTML template renders correctly.
-func TestRenderChartHTML(t *testing.T) {
-	html := renderChartHTML()
+// TestChartHTML verifies the embedded metrics chart widget HTML.
+func TestChartHTML(t *testing.T) {
+	html := chartHTML
 	require.NotEmpty(t, html)
 
 	t.Run("valid html skeleton", func(t *testing.T) {
@@ -42,7 +42,7 @@ func TestRenderChartHTML(t *testing.T) {
 	})
 
 	t.Run("static uri is not embedded in html", func(t *testing.T) {
-		// HTML is a template; URIs come via bridge, not baked in.
+		// URIs come via bridge, not baked in.
 		// Test against the exact constant (no trailing slash) to catch the real violation.
 		assert.NotContains(t, html, chartStaticURI)
 	})

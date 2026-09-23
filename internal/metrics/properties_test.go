@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"math"
+	"slices"
 	"sort"
 	"testing"
 	"time"
@@ -255,6 +256,18 @@ func TestProperty_ComputeDataQuality_EmptyOrSingle(t *testing.T) {
 
 // === computeSpikes ===
 
+// spikeInputFeatures pre-populates Mean/Stddev/Min/Max from values, as
+// ProcessWithBaselineStats does before calling computeSpikes.
+func spikeInputFeatures(values []float64) SignalFeatures {
+	m := mean(values)
+	return SignalFeatures{
+		Mean:   m,
+		Stddev: stddev(values, m),
+		Min:    slices.Min(values),
+		Max:    slices.Max(values),
+	}
+}
+
 // TestProperty_ComputeSpikes_EqualValues verifies that a flat signal (all
 // values equal) produces zero spikes and zero MaxZScore.
 func TestProperty_ComputeSpikes_EqualValues(t *testing.T) {
@@ -265,8 +278,7 @@ func TestProperty_ComputeSpikes_EqualValues(t *testing.T) {
 		for i := range values {
 			values[i] = v
 		}
-		// Pre-populate Min/Max as ProcessWithBaselineStats does before calling computeSpikes.
-		f := SignalFeatures{Min: v, Max: v}
+		f := spikeInputFeatures(values)
 		computeSpikes(&f, values, 3.0)
 
 		assert.Equal(t, 0, f.SpikeCount, "constant signal must have no spikes")
@@ -280,7 +292,7 @@ func TestProperty_ComputeSpikes_RatioFormula(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		n := rapid.IntRange(minPointsForSpikeDetection, 100).Draw(t, "n")
 		values := rapid.SliceOfN(finiteFloat(), n, n).Draw(t, "values")
-		var f SignalFeatures
+		f := spikeInputFeatures(values)
 		computeSpikes(&f, values, 3.0)
 
 		expected := float64(f.SpikeCount) / float64(n)
@@ -294,7 +306,7 @@ func TestProperty_ComputeSpikes_CountInRange(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		n := rapid.IntRange(minPointsForSpikeDetection, 100).Draw(t, "n")
 		values := rapid.SliceOfN(finiteFloat(), n, n).Draw(t, "values")
-		var f SignalFeatures
+		f := spikeInputFeatures(values)
 		computeSpikes(&f, values, 3.0)
 
 		assert.GreaterOrEqual(t, f.SpikeCount, 0)

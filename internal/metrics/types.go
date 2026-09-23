@@ -355,10 +355,6 @@ const (
 	TrendDown TrendDirection = "down"
 )
 
-func (t TrendDirection) IsValid() bool {
-	return t == TrendFlat || t == TrendUp || t == TrendDown
-}
-
 type Point struct {
 	Timestamp time.Time
 	Value     float64

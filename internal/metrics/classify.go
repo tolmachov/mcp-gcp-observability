@@ -28,17 +28,6 @@ const (
 	ClassNotComputed Classification = ""
 )
 
-// IsValid returns true if the Classification is one of the defined constants.
-func (c Classification) IsValid() bool {
-	switch c {
-	case ClassStable, ClassNoisy, ClassSpike, ClassStepRegression,
-		ClassSustainedRegression, ClassRecovery, ClassSaturation,
-		ClassImprovement, ClassFlapping, ClassInsufficientData:
-		return true
-	}
-	return false
-}
-
 // isDeltaBased reports whether a classification depends on baseline comparison.
 // Excludes saturation (measured directly from capacity, not from baseline delta),
 // stable (no delta analysis needed for lowest-severity), and flapping (based

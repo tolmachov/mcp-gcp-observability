@@ -219,15 +219,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 		var results []Contributor
 		for _, pc := range processed {
 			c := pc.contributor
-			if baselineErrNote != "" {
-				// Baseline failed: delta values are relative to a zero baseline
-				// and would appear as false regressions. Zero them out and let
-				// Current drive the ranking instead.
-				c.Baseline = 0
-				c.DeltaPct = 0
-				c.ShareOfAnomaly = 0
-				c.BaselineReliable = false
-			} else if totalAbsDelta > 0 {
+			if totalAbsDelta > 0 {
 				c.ShareOfAnomaly = pc.absDelta / totalAbsDelta
 			}
 			results = append(results, c)
@@ -436,6 +428,8 @@ func queryContributorBaselines(
 
 const missingDimensionLabel = "(missing_dimension)"
 
+// labelValueFromSeries returns the value of a fully-qualified dimension
+// (validated by validateTopContributorDimension) on s, or missingDimensionLabel.
 func labelValueFromSeries(s gcpdata.MetricTimeSeries, dimension string) string {
 	parts := splitDimension(dimension)
 	switch parts.prefix {
@@ -455,21 +449,6 @@ func labelValueFromSeries(s gcpdata.MetricTimeSeries, dimension string) string {
 		if v, ok := s.MetadataUserLabels[parts.key]; ok {
 			return v
 		}
-	}
-	if parts.prefix != "" {
-		return missingDimensionLabel
-	}
-	if v, ok := s.MetricLabels[parts.key]; ok {
-		return v
-	}
-	if v, ok := s.ResourceLabels[parts.key]; ok {
-		return v
-	}
-	if v, ok := s.MetadataSystemLabels[parts.key]; ok {
-		return v
-	}
-	if v, ok := s.MetadataUserLabels[parts.key]; ok {
-		return v
 	}
 	return missingDimensionLabel
 }

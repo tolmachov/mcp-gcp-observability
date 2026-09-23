@@ -26,22 +26,15 @@ func TestLoadRegistryFileNotFound(t *testing.T) {
 
 // TestEmbeddedDefaultRegistry verifies that the registry YAML embedded into
 // the binary (default_registry.yaml) parses cleanly, validates every entry,
-// and is reachable via both NewDefaultRegistry() and LoadRegistry("") (the
-// empty-path path falls back to embedded-only).
+// and is what LoadRegistry("") returns (the empty path loads embedded-only).
 func TestEmbeddedDefaultRegistry(t *testing.T) {
-	reg, err := NewDefaultRegistry()
-	require.NoError(t, err, "NewDefaultRegistry() failed")
+	reg, err := LoadRegistry("")
+	require.NoError(t, err, "LoadRegistry(\"\") failed")
 
-	got := reg.Count()
 	// Soft floor — the shipped default set is intentionally sized so this
 	// check is stable. When adding new metrics bump this; if the count
 	// drops unexpectedly the YAML is probably silently malformed.
-	assert.GreaterOrEqual(t, got, 50, "embedded default registry should load at least 50 metrics")
-
-	// Empty-path LoadRegistry must return the same set as NewDefaultRegistry.
-	reg2, err := LoadRegistry("")
-	require.NoError(t, err, "LoadRegistry(\"\") failed")
-	assert.Equal(t, got, reg2.Count(), "LoadRegistry(\"\") and NewDefaultRegistry() should return same count")
+	assert.GreaterOrEqual(t, reg.Count(), 50, "embedded default registry should load at least 50 metrics")
 
 	// Sanity check: a few representative metrics from each section should
 	// be present and come back with their configured kind.

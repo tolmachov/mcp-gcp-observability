@@ -26,18 +26,6 @@ const (
 	ModeCompact                          // concise descriptions (first sentence only)
 )
 
-// String implements fmt.Stringer for diagnostic output.
-func (m RegistrationMode) String() string {
-	switch m {
-	case ModeStandard:
-		return "standard"
-	case ModeCompact:
-		return "compact"
-	default:
-		return fmt.Sprintf("RegistrationMode(%d)", int(m))
-	}
-}
-
 // compactDesc returns the first sentence of desc — everything up to and
 // including the first ". " (period followed by space). If desc has no
 // such sequence, it is returned unchanged.

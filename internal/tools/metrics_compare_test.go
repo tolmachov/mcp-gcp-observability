@@ -13,9 +13,9 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
 
-// TestRenderCompareChartHTML verifies that the embedded compare HTML template renders correctly.
-func TestRenderCompareChartHTML(t *testing.T) {
-	html := renderCompareChartHTML()
+// TestCompareChartHTML verifies the embedded metrics compare widget HTML.
+func TestCompareChartHTML(t *testing.T) {
+	html := compareChartHTML
 	require.NotEmpty(t, html)
 
 	t.Run("valid html skeleton", func(t *testing.T) {

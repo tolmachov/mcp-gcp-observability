@@ -61,9 +61,6 @@ func TestLabelValueFromSeries_MetadataNamespaces(t *testing.T) {
 		{"resource.labels.zone", "us-central1-a"},
 		{"metadata.system_labels.machine_type", "e2-medium"},
 		{"metadata.user_labels.env", "prod"},
-		// Unprefixed: fall back to every namespace until found.
-		{"machine_type", "e2-medium"},
-		{"instance_id", "i-metric"},
 		// Missing everywhere: missing-dimension sentinel (distinct from ""
 		// which means "label present, value empty").
 		{"metric.labels.bogus", "(missing_dimension)"},

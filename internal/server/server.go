@@ -279,12 +279,8 @@ func (s *Server) Run(ctx context.Context, opts RunOptions) error {
 
 	s.wireCompleter(s.completer, reg, client)
 	deps := s.buildDeps(client, reg)
-	profilerCloser, ok := deps.Profiler.(io.Closer)
-	if !ok {
-		return fmt.Errorf("profiler backend does not expose its cache lifecycle")
-	}
 	defer func() {
-		if closeErr := profilerCloser.Close(); closeErr != nil {
+		if closeErr := deps.Profiler.Close(); closeErr != nil {
 			s.logger.Warn("failed to close profiler cache", "err", closeErr)
 		}
 	}()
@@ -333,25 +329,21 @@ func (s *Server) userAssemblyBuilder(reg *metrics.Registry, variantID string) us
 		completer := &promptCompleter{}
 		s.wireCompleter(completer, reg, client)
 		deps := s.buildDeps(client, reg)
-		profilerCloser, ok := deps.Profiler.(io.Closer)
-		if !ok {
-			return nil, nil, errors.Join(fmt.Errorf("profiler backend does not expose its cache lifecycle"), client.Close())
-		}
 
 		if variantID != "" {
 			srv, buildErr := s.buildSingleVariantServer(VariantID(variantID), client, deps, completer)
 			if buildErr != nil {
-				return nil, nil, errors.Join(fmt.Errorf("building variant server: %w", buildErr), profilerCloser.Close(), client.Close())
+				return nil, nil, errors.Join(fmt.Errorf("building variant server: %w", buildErr), deps.Profiler.Close(), client.Close())
 			}
 			handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, &mcp.StreamableHTTPOptions{Stateless: true})
-			return handler, multiCloser{profilerCloser, client}, nil
+			return handler, multiCloser{deps.Profiler, client}, nil
 		}
 
 		vs, buildErr := s.buildVariantsServer(client, deps, completer)
 		if buildErr != nil {
-			return nil, nil, errors.Join(fmt.Errorf("building variants server: %w", buildErr), profilerCloser.Close(), client.Close())
+			return nil, nil, errors.Join(fmt.Errorf("building variants server: %w", buildErr), deps.Profiler.Close(), client.Close())
 		}
-		return variants.NewStreamableHTTPHandler(vs, &mcp.StreamableHTTPOptions{Stateless: true}), multiCloser{vs, profilerCloser, client}, nil
+		return variants.NewStreamableHTTPHandler(vs, &mcp.StreamableHTTPOptions{Stateless: true}), multiCloser{vs, deps.Profiler, client}, nil
 	}
 }
 

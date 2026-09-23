@@ -309,6 +309,7 @@ func TestBuildSingleVariantServerUnknownVariant(t *testing.T) {
 func testServer(_ *testing.T) *Server {
 	return &Server{
 		completer: &promptCompleter{},
+		cfg:       &gcpclient.Config{},
 		version:   "test",
 		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}

@@ -27,19 +27,9 @@ type Registry struct {
 }
 
 // NewRegistry creates an empty registry that relies on auto-detection only.
-// Use NewDefaultRegistry if you want the embedded GCP defaults instead.
+// Use LoadRegistry("") if you want the embedded GCP defaults instead.
 func NewRegistry() *Registry {
 	return &Registry{metrics: make(map[string]MetricMeta)}
-}
-
-// NewDefaultRegistry populates a registry from embedded default YAML.
-// Errors if embedded YAML fails to parse (tested, should not happen).
-func NewDefaultRegistry() (*Registry, error) {
-	cfg, err := parseRegistryBytes(defaultRegistryYAML)
-	if err != nil {
-		return nil, fmt.Errorf("parsing embedded default registry: %w", err)
-	}
-	return &Registry{metrics: cfg.Metrics}, nil
 }
 
 // NewRegistryFromMetaMap creates a Registry directly from a MetricMeta map,
