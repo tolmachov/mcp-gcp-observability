@@ -49,8 +49,7 @@ func newCaptureErrorStatsClient(t *testing.T) (*errorreporting.ErrorStatsClient,
 
 func TestErrorWindowsReachAPIExactly(t *testing.T) {
 	client, service := newCaptureErrorStatsClient(t)
-	windows := []ErrorWindow{ErrorWindow1H, ErrorWindow6H, ErrorWindow24H, ErrorWindow7D, ErrorWindow30D}
-	for _, window := range windows {
+	for _, window := range ErrorWindows() {
 		t.Run(string(window), func(t *testing.T) {
 			spec, ok := window.Spec()
 			require.True(t, ok)

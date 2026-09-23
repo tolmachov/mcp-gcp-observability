@@ -267,3 +267,32 @@ func TestHasKnownGroupByPrefix(t *testing.T) {
 		})
 	}
 }
+
+func TestSplitLabelKey(t *testing.T) {
+	tests := []struct {
+		input      string
+		wantPrefix string
+		wantName   string
+		wantOK     bool
+	}{
+		{"metric.labels.response_code", MetricLabelsPrefix, "response_code", true},
+		{"resource.labels.instance_id", ResourceLabelsPrefix, "instance_id", true},
+		// Metadata namespaces exist so top_contributors can break down by
+		// GCE system metadata (machine_type) or user-supplied labels (env).
+		// A typo in these prefixes must NOT silently fall back to the bare
+		// key — the test locks the four accepted prefixes.
+		{"metadata.system_labels.machine_type", MetadataSystemLabelsPrefix, "machine_type", true},
+		{"metadata.user_labels.env", MetadataUserLabelsPrefix, "env", true},
+		{"response_code", "", "", false},
+		{"metric.labels.", "", "", false}, // malformed: empty label name
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			prefix, name, ok := SplitLabelKey(tt.input)
+			assert.Equal(t, tt.wantPrefix, prefix)
+			assert.Equal(t, tt.wantName, name)
+			assert.Equal(t, tt.wantOK, ok)
+		})
+	}
+}

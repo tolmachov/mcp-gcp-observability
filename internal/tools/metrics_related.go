@@ -63,23 +63,17 @@ func RegisterMetricsRelated(s *mcp.Server, d Deps) {
 			IdempotentHint: true,
 		},
 		InputSchema: projectInputSchema[MetricsRelatedInput](d.Project,
-			enumPatch{"window", enumWindow},
+			nonEmptyProp("metric_type"),
+			enumProp("window", metricWindowNames()),
 		),
 		OutputSchema: outputSchemaFor[RelatedSignalsResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsRelatedInput) (*mcp.CallToolResult, *RelatedSignalsResult, error) {
-		if in.MetricType == "" {
-			return errResult("metric_type is required"), nil, nil
-		}
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
 
-		windowStr := in.Window
-		if windowStr == "" {
-			windowStr = "1h"
-		}
-		windowDur, err := parseWindow(windowStr)
+		_, windowDur, err := parseWindow(in.Window)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -94,7 +88,7 @@ func RegisterMetricsRelated(s *mcp.Server, d Deps) {
 
 		now := time.Now().UTC()
 		start := now.Add(-windowDur)
-		stepSeconds := int64(60)
+		stepSeconds := int64(metrics.DefaultStepSeconds)
 		totalSignals := float64(len(related))
 
 		sendProgress(ctx, req, 0, totalSignals, fmt.Sprintf("Querying %d related signals", len(related)))
@@ -201,14 +195,7 @@ func RegisterMetricsRelated(s *mcp.Server, d Deps) {
 
 				currentPoints := mergePoints(currentSeries)
 				if len(currentPoints) == 0 {
-					reason := "no data in window"
-					switch relDesc.Kind {
-					case "DELTA", "CUMULATIVE":
-						reason = "no events in window (counter inactive)"
-					case "GAUGE":
-						reason = "no data in window (no resources reporting)"
-					}
-					addSkip(relMetric, reason, true)
+					addSkip(relMetric, gcpdata.EmptyWindowReason(relDesc.Kind), true)
 					return
 				}
 

@@ -6,6 +6,11 @@ import (
 	"time"
 )
 
+// DefaultStepSeconds is the alignment period, in seconds, that the metrics
+// tools query with unless the caller chooses one. Processing functions take
+// the step explicitly and require it to be positive.
+const DefaultStepSeconds = 60
+
 // minPointsForSpikeDetection is the minimum sample size for z-score spike
 // detection: with population stddev the achievable z is bounded by √(N-1), so
 // 10 points are needed to reach the ~3.0 default threshold (see computeSpikes).
@@ -277,9 +282,6 @@ func computeSLOBreach(f *SignalFeatures, points []Point, meta MetricMeta, stepSe
 	}
 	threshold := *meta.SLOThreshold
 	step := time.Duration(stepSeconds) * time.Second
-	if step == 0 {
-		step = 60 * time.Second
-	}
 
 	var breachCount int
 	var breachDuration time.Duration
@@ -355,10 +357,6 @@ func computeDataQuality(points []Point, stepSeconds int, window Window) DataQual
 	if len(points) == 0 {
 		return DataQuality{Reliable: false}
 	}
-	if stepSeconds <= 0 {
-		stepSeconds = 60
-	}
-
 	step := time.Duration(stepSeconds) * time.Second
 	first := points[0].Timestamp
 	last := points[len(points)-1].Timestamp

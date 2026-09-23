@@ -60,15 +60,12 @@ func RegisterProfilerFlamegraph(s *mcp.Server, d Deps) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
-		InputSchema:  projectInputSchema[ProfilerFlamegraphInput](d.Project),
+		InputSchema: projectInputSchema[ProfilerFlamegraphInput](d.Project,
+			nonEmptyProp("profile_id"),
+			nonNegativeValueIndex,
+		),
 		OutputSchema: flamegraphSchema,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerFlamegraphInput) (*mcp.CallToolResult, *gcpdata.ProfileFlamegraphResult, error) {
-		if in.ProfileID == "" {
-			return errResult("profile_id is required"), nil, nil
-		}
-		if in.ValueIndex < 0 {
-			return errResult("value_index must be non-negative"), nil, nil
-		}
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil

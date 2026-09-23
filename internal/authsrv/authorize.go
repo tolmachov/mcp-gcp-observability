@@ -190,7 +190,7 @@ button:hover{background:#1765cc}
 <h1>{{.ClientName}} wants to access Google Cloud data as you</h1>
 <p>Signing in grants this MCP client access to Google Cloud on your behalf, <strong>bounded by your own IAM permissions</strong>. This server only reads observability data (Logging, Monitoring, Trace, Error Reporting, Profiler).</p>
 <p class="muted">After approval you will be redirected to:<br><code>{{.RedirectURI}}</code></p>
-<form method="post" action="/authorize/confirm">
+<form method="post" action="` + AuthorizeConfirmPath + `">
 <input type="hidden" name="request" value="{{.Request}}">
 <button type="submit">Continue with Google</button>
 </form>

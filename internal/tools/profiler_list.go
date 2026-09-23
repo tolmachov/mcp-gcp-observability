@@ -26,7 +26,7 @@ func RegisterProfilerList(s *mcp.Server, d Deps) {
 			IdempotentHint: true,
 		},
 		InputSchema: projectInputSchema[ProfilerListInput](d.Project,
-			enumPatch{"profile_type", enumProfileType},
+			enumProp("profile_type", gcpdata.ProfileTypes),
 		),
 		OutputSchema: outputSchemaFor[gcpdata.ProfileListResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerListInput) (*mcp.CallToolResult, *gcpdata.ProfileListResult, error) {
@@ -34,10 +34,11 @@ func RegisterProfilerList(s *mcp.Server, d Deps) {
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
-		if err := gcpdata.ValidateProfileType(in.ProfileType); err != nil {
+		startTime, err := parseRFC3339Opt(in.StartTime, "start_time")
+		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
-		startTime, endTime, err := gcpdata.ParseTimeFilters(in.StartTime, in.EndTime)
+		endTime, err := parseRFC3339Opt(in.EndTime, "end_time")
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}

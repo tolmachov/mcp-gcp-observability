@@ -24,7 +24,7 @@ func RegisterErrorsTrends(s *mcp.Server, d Deps) {
 			IdempotentHint: true,
 		},
 		InputSchema: projectInputSchema[ErrorsListInput](d.Project,
-			enumPatch{"window", enumErrorWindow},
+			enumProp("window", gcpdata.ErrorWindows()),
 		),
 		OutputSchema: outputSchemaFor[gcpdata.ErrorTrendList](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ErrorsListInput) (*mcp.CallToolResult, *gcpdata.ErrorTrendList, error) {
@@ -33,10 +33,7 @@ func RegisterErrorsTrends(s *mcp.Server, d Deps) {
 			return errResult(err.Error()), nil, nil
 		}
 
-		window, err := resolveErrorsWindow(in.Window)
-		if err != nil {
-			return errResult(err.Error()), nil, nil
-		}
+		window := errorsWindowOrDefault(in.Window)
 
 		limit := clampLimit(in.Limit, 50, ErrorsHardLimit)
 

@@ -279,9 +279,11 @@ func TestProfilerNavigationHandlersValidateBeforeFetch(t *testing.T) {
 		{"flamegraph missing profile_id", "profiler_flamegraph", RegisterProfilerFlamegraph, map[string]any{}},
 		{"flamegraph negative value_index", "profiler_flamegraph", RegisterProfilerFlamegraph, map[string]any{"profile_id": "p", "value_index": -1}},
 		{"top missing profile_id", "profiler_top", RegisterProfilerTop, map[string]any{}},
+		{"top empty profile_id", "profiler_top", RegisterProfilerTop, map[string]any{"profile_id": ""}},
 		{"top negative value_index", "profiler_top", RegisterProfilerTop, map[string]any{"profile_id": "p", "value_index": -1}},
 		{"peek missing profile_id", "profiler_peek", RegisterProfilerPeek, map[string]any{"function_name": "f"}},
 		{"peek missing function_name", "profiler_peek", RegisterProfilerPeek, map[string]any{"profile_id": "p"}},
+		{"peek empty function_name", "profiler_peek", RegisterProfilerPeek, map[string]any{"profile_id": "p", "function_name": ""}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -332,4 +334,42 @@ func TestProfilerListHandler(t *testing.T) {
 		require.NoError(t, err)
 		assert.False(t, res.IsError)
 	})
+}
+
+// TestEnumInputsRejectedBeforeBackend pins that enum inputs are validated by
+// the input schema, case-sensitively, before any backend call: handlers no
+// longer re-check or case-fold them.
+func TestEnumInputsRejectedBeforeBackend(t *testing.T) {
+	ctx := context.Background()
+	called := false
+	deps := Deps{
+		Logs: fakeLogs{queryLogs: func(context.Context, string, string, int, string, string) (*gcpdata.LogQueryResult, error) {
+			called = true
+			return &gcpdata.LogQueryResult{}, nil
+		}},
+		Profiler: fakeProfiler{listProfiles: func(context.Context, gcpdata.ListProfilesParams) (*gcpdata.ProfileListResult, error) {
+			called = true
+			return &gcpdata.ProfileListResult{}, nil
+		}},
+		Project: MustProjectPolicy("test-project"),
+	}
+	ts := newTestToolServer(t)
+	RegisterLogsK8s(ts.server, deps)
+	RegisterProfilerList(ts.server, deps)
+	ts.connect(ctx)
+	defer ts.close()
+
+	for _, tc := range []struct {
+		tool string
+		args map[string]any
+	}{
+		{"logs_k8s", map[string]any{"severity": "error"}},
+		{"logs_k8s", map[string]any{"order": "newest"}},
+		{"profiler_list", map[string]any{"profile_type": "cpu"}},
+	} {
+		res, err := ts.callTool(ctx, tc.tool, tc.args)
+		require.NoError(t, err)
+		assert.True(t, res.IsError, "%s %v", tc.tool, tc.args)
+	}
+	assert.False(t, called, "invalid enum input must not reach the backend")
 }

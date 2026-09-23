@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"strings"
 	"sync"
@@ -32,7 +33,7 @@ type fakeQuerier struct {
 	// optional — when absent for a given metricType, the fake returns an
 	// empty ValueType, which exercises the numeric-safe aligner path. Set
 	// valueTypes["foo"] = "DISTRIBUTION" to test the distribution path.
-	metricKinds map[string]string
+	metricKinds map[string]gcpdata.MetricKind
 	valueTypes  map[string]string
 	// queryFn, when non-nil, takes precedence over seriesFunc and
 	// queryTimeSeriesErr. It lets tests produce per-query success/failure
@@ -73,7 +74,7 @@ type fakeQuerier struct {
 func newFakeQuerier() *fakeQuerier {
 	return &fakeQuerier{
 		series:      make(map[string][]gcpdata.MetricTimeSeries),
-		metricKinds: make(map[string]string),
+		metricKinds: make(map[string]gcpdata.MetricKind),
 		valueTypes:  make(map[string]string),
 	}
 }
@@ -640,7 +641,7 @@ func assertAllQueriesDistribution(t *testing.T, queryLog []gcpdata.QueryTimeSeri
 		}
 		count++
 		assert.Equal(t, "DISTRIBUTION", q.ValueType)
-		assert.Equal(t, "DELTA", q.MetricKind)
+		assert.Equal(t, gcpdata.MetricKindDelta, q.MetricKind)
 	}
 	require.Greater(t, count, 0)
 }
@@ -941,6 +942,42 @@ func TestSnapshotIntegration_PreEventMissingEventTime(t *testing.T) {
 	})
 	require.NoError(t, err)
 	expectError(t, result, "event_time is required")
+}
+
+// TestPreEventInvalidEventTimeIsInputError pins that a malformed event_time
+// is rejected as an input error before any query runs, instead of surfacing
+// later as a transient "baseline query failed, you can retry" note.
+func TestPreEventInvalidEventTimeIsInputError(t *testing.T) {
+	for _, tc := range []struct {
+		tool     string
+		register func(*testToolServer, gcpdata.MetricsQuerier, *metrics.Registry, string)
+		args     map[string]any
+	}{
+		{"metrics_snapshot", (*testToolServer).registerMetricsSnapshot, map[string]any{}},
+		{"metrics_top_contributors", (*testToolServer).registerMetricsTop, map[string]any{"dimension": "metric.labels.response_code"}},
+	} {
+		t.Run(tc.tool, func(t *testing.T) {
+			reg := loadTestRegistry(t, testRegistryYAML)
+			fq := newFakeQuerier()
+
+			ctx := context.Background()
+			ts := newTestToolServer(t)
+			tc.register(ts, fq, reg, "test-project")
+			ts.connect(ctx)
+			defer ts.close()
+
+			args := map[string]any{
+				"metric_type":   cpuMetric,
+				"baseline_mode": "pre_event",
+				"event_time":    "yesterday",
+			}
+			maps.Copy(args, tc.args)
+			result, err := ts.callTool(ctx, tc.tool, args)
+			require.NoError(t, err)
+			expectError(t, result, `invalid event_time "yesterday": must be RFC3339 format`)
+			assert.Empty(t, fq.queryLog, "no query may run for invalid input")
+		})
+	}
 }
 
 func TestSnapshotIntegration_InvalidWindow(t *testing.T) {

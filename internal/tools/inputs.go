@@ -174,7 +174,7 @@ type ProfilerListInput struct {
 	ProjectInput
 	StartTime   string `json:"start_time,omitempty"   jsonschema:"Optional lower time bound in RFC3339 format (e.g. '2025-01-15T00:00:00Z'), compared against each profile's start time. If omitted, no lower bound is applied (all available history is eligible)."`
 	EndTime     string `json:"end_time,omitempty"     jsonschema:"Optional upper time bound in RFC3339 format (e.g. '2025-01-15T23:59:59Z'). If omitted, no upper bound is applied."`
-	ProfileType string `json:"profile_type,omitempty" jsonschema:"Profile type filter, case-insensitive (one of: CPU, WALL, HEAP, THREADS, CONTENTION, PEAK_HEAP, HEAP_ALLOC)"`
+	ProfileType string `json:"profile_type,omitempty" jsonschema:"Profile type filter (one of: CPU, WALL, HEAP, THREADS, CONTENTION, PEAK_HEAP, HEAP_ALLOC)"`
 	Target      string `json:"target,omitempty"       jsonschema:"Deployment target (service name) filter, matched case- and separator-insensitively (e.g. 'crypto-steam' matches 'cryptosteam')"`
 	Limit       int    `json:"limit,omitempty"        jsonschema:"Number of profiles to return (default 20, max 100)"`
 	PageToken   string `json:"page_token,omitempty"   jsonschema:"Page token for pagination"`
@@ -223,7 +223,7 @@ type ProfilerCompareInput struct {
 // ProfilerTrendsInput is the input for profiler_trends.
 type ProfilerTrendsInput struct {
 	ProjectInput
-	ProfileType    string `json:"profile_type"            jsonschema:"Profile type, case-insensitive (one of: CPU, WALL, HEAP, THREADS, CONTENTION, PEAK_HEAP, HEAP_ALLOC)"`
+	ProfileType    string `json:"profile_type"            jsonschema:"Profile type (one of: CPU, WALL, HEAP, THREADS, CONTENTION, PEAK_HEAP, HEAP_ALLOC)"`
 	Target         string `json:"target"                  jsonschema:"Deployment target (service name)"`
 	FunctionFilter string `json:"function_filter,omitempty" jsonschema:"Substring filter to track specific functions (e.g. 'mypackage/handler'). If omitted, tracks top functions by peak cost."`
 	ValueIndex     int    `json:"value_index,omitempty"    jsonschema:"Value index for multi-value profiles (default 0)"`

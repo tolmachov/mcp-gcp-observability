@@ -7,6 +7,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
 // TestSnapshotCallResult verifies that snapshotCallResult excludes chart_points
@@ -59,7 +61,7 @@ func TestEmptyWindowMessage(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		kind        string
+		kind        gcpdata.MetricKind
 		labelFilter string
 		// substrs are phrases that must all appear in the message. Used
 		// for structural assertions rather than brittle exact-match checks.
@@ -84,7 +86,7 @@ func TestEmptyWindowMessage(t *testing.T) {
 			name: "cumulative counter uses the same delta wording",
 			kind: "CUMULATIVE",
 			wantSubstrs: []string{
-				"DELTA/CUMULATIVE counters",
+				"counter was inactive",
 				"no events occurred",
 			},
 			notSubstrs: []string{"verify the metric_type"},
@@ -93,8 +95,7 @@ func TestEmptyWindowMessage(t *testing.T) {
 			name: "gauge points at resources, not events",
 			kind: "GAUGE",
 			wantSubstrs: []string{
-				"GAUGE metrics",
-				"resources are reporting values",
+				"no matching resources reported values",
 			},
 			notSubstrs: []string{"no events occurred"},
 		},
@@ -104,7 +105,7 @@ func TestEmptyWindowMessage(t *testing.T) {
 			wantSubstrs: []string{
 				"registered in Cloud Monitoring",
 			},
-			notSubstrs: []string{"no events occurred", "GAUGE metrics"},
+			notSubstrs: []string{"no events occurred", "no matching resources"},
 		},
 		{
 			name:        "label filter present swaps the suffix",

@@ -19,11 +19,35 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
 
+// MetricKind is a Cloud Monitoring metric kind: how a metric's points relate
+// in time. Not to be confused with metrics.MetricKind, the semantic kind
+// (latency, throughput, ...) assigned by the registry.
+type MetricKind string
+
+const (
+	MetricKindGauge      MetricKind = "GAUGE"
+	MetricKindDelta      MetricKind = "DELTA"
+	MetricKindCumulative MetricKind = "CUMULATIVE"
+)
+
+// EmptyWindowReason explains why a metric of the given kind that exists in
+// Cloud Monitoring has no points in a query window.
+func EmptyWindowReason(kind MetricKind) string {
+	switch kind {
+	case MetricKindDelta, MetricKindCumulative:
+		return "no events occurred in the window (the counter was inactive)"
+	case MetricKindGauge:
+		return "no matching resources reported values in the window (check that they exist and the metric is being collected)"
+	default:
+		return "no data in window"
+	}
+}
+
 type MetricDescriptorInfo struct {
 	Type        string            `json:"type"`
 	DisplayName string            `json:"display_name"`
 	Description string            `json:"description,omitempty"`
-	MetricKind  string            `json:"metric_kind"`
+	MetricKind  MetricKind        `json:"metric_kind"`
 	ValueType   string            `json:"value_type"`
 	Unit        string            `json:"unit,omitempty"`
 	Labels      []LabelDescriptor `json:"labels,omitempty"`
@@ -77,7 +101,7 @@ type MetricTimeSeries struct {
 	ResourceLabels       map[string]string `json:"resource_labels,omitempty"`
 	MetadataSystemLabels map[string]string `json:"metadata_system_labels,omitempty"`
 	MetadataUserLabels   map[string]string `json:"metadata_user_labels,omitempty"`
-	MetricKind           string            `json:"metric_kind"`
+	MetricKind           MetricKind        `json:"metric_kind"`
 	ValueType            string            `json:"value_type"`
 	Points               []metrics.Point   `json:"points"`
 	Truncated            bool              `json:"truncated,omitempty"`
@@ -94,7 +118,7 @@ type MetricTimeSeries struct {
 // MetricDescriptorBasic contains fields needed for aligner selection and response enrichment.
 // Everything from one ListMetricDescriptors call; no second RPC needed.
 type MetricDescriptorBasic struct {
-	Kind      string // GAUGE, DELTA, CUMULATIVE
+	Kind      MetricKind
 	ValueType string // INT64, DOUBLE, DISTRIBUTION, BOOL, STRING
 	// Labels are the keys available under metric.labels.* for this metric.
 	// May be empty for metrics that expose no metric-level labels.
@@ -149,7 +173,7 @@ func ListMetricDescriptors(ctx context.Context, client *monitoring.MetricClient,
 			Type:                   desc.Type,
 			DisplayName:            desc.DisplayName,
 			Description:            desc.Description,
-			MetricKind:             desc.MetricKind.String(),
+			MetricKind:             MetricKind(desc.MetricKind.String()),
 			ValueType:              desc.ValueType.String(),
 			Unit:                   desc.Unit,
 			MonitoredResourceTypes: append([]string(nil), desc.MonitoredResourceTypes...),
@@ -205,8 +229,10 @@ type QueryTimeSeriesParams struct {
 	LabelFilter string
 	Start       time.Time
 	End         time.Time
+	// StepSeconds is the alignment period; callers must set it (tools
+	// default to metrics.DefaultStepSeconds).
 	StepSeconds int64
-	MetricKind  string
+	MetricKind  MetricKind
 	// ValueType is the metric descriptor's value type (INT64, DOUBLE,
 	// DISTRIBUTION, BOOL). Combined with MetricKind, it determines the
 	// per-series aligner — critical because some combinations (e.g.
@@ -237,12 +263,7 @@ func QueryTimeSeries(ctx context.Context, client *monitoring.MetricClient, param
 		filter += " AND " + params.LabelFilter
 	}
 
-	stepSeconds := params.StepSeconds
-	if stepSeconds <= 0 {
-		stepSeconds = 60
-	}
-
-	agg := buildAggregation(params.MetricKind, params.ValueType, stepSeconds, params.GroupByFields, params.Reducer)
+	agg := buildAggregation(params.MetricKind, params.ValueType, params.StepSeconds, params.GroupByFields, params.Reducer)
 
 	req := &monitoringpb.ListTimeSeriesRequest{
 		Name:   fmt.Sprintf("projects/%s", params.Project),
@@ -267,7 +288,7 @@ func QueryTimeSeries(ctx context.Context, client *monitoring.MetricClient, param
 		}
 
 		mts := MetricTimeSeries{
-			MetricKind: ts.MetricKind.String(),
+			MetricKind: MetricKind(ts.MetricKind.String()),
 			ValueType:  ts.ValueType.String(),
 		}
 		if ts.Metric != nil {
@@ -503,9 +524,9 @@ func StripTruncationSentinel(series []MetricTimeSeries) ([]MetricTimeSeries, boo
 
 // maxCarryForwardBuckets bounds how many consecutive buckets a per-group
 // series may be carried forward after its last fresh point before it is
-// treated as genuinely gone. Three buckets ≈ 180s at the 60s alignment
-// period used by every current tool caller (snapshot/compare/related
-// hardcode StepSeconds=60). Wide enough to bridge a rolling-deploy
+// treated as genuinely gone. Three buckets ≈ 180s at the
+// metrics.DefaultStepSeconds (60s) alignment period used by every tool
+// caller unless metrics_snapshot is given step_seconds. Wide enough to bridge a rolling-deploy
 // replica handoff, narrow enough that a truly departed group (leader-
 // lock lost, tenant deprovisioned, instance terminated) stops
 // contributing its last value within one metrics snapshot window.
@@ -753,7 +774,7 @@ func ReducerToGCP(r metrics.Reducer) monitoringpb.Aggregation_Reducer {
 	panic(fmt.Sprintf("metrics.ReducerToGCP: unknown reducer %q (spec validation bypassed)", r))
 }
 
-func buildAggregation(metricKind, valueType string, stepSeconds int64, groupByFields []string, reducer monitoringpb.Aggregation_Reducer) *monitoringpb.Aggregation {
+func buildAggregation(metricKind MetricKind, valueType string, stepSeconds int64, groupByFields []string, reducer monitoringpb.Aggregation_Reducer) *monitoringpb.Aggregation {
 	agg := &monitoringpb.Aggregation{
 		AlignmentPeriod:  &durationpb.Duration{Seconds: stepSeconds},
 		PerSeriesAligner: selectAligner(metricKind, valueType),
@@ -801,17 +822,17 @@ func buildAggregation(metricKind, valueType string, stepSeconds int64, groupByFi
 // older callers keep working. This fallback is unsafe for distribution
 // metrics (the API rejects ALIGN_RATE on DELTA+DISTRIBUTION), so callers
 // SHOULD always supply a valueType discovered via GetMetricDescriptor.
-func selectAligner(metricKind, valueType string) monitoringpb.Aggregation_Aligner {
+func selectAligner(metricKind MetricKind, valueType string) monitoringpb.Aggregation_Aligner {
 	if valueType == "DISTRIBUTION" {
 		switch metricKind {
-		case "DELTA", "CUMULATIVE":
+		case MetricKindDelta, MetricKindCumulative:
 			return monitoringpb.Aggregation_ALIGN_DELTA
 		default:
 			return monitoringpb.Aggregation_ALIGN_MEAN
 		}
 	}
 	switch metricKind {
-	case "DELTA", "CUMULATIVE":
+	case MetricKindDelta, MetricKindCumulative:
 		return monitoringpb.Aggregation_ALIGN_RATE
 	default:
 		return monitoringpb.Aggregation_ALIGN_MEAN

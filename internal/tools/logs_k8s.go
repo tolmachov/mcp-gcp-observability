@@ -23,8 +23,8 @@ func RegisterLogsK8s(s *mcp.Server, d Deps) {
 			IdempotentHint: true,
 		},
 		InputSchema: projectInputSchema[LogsK8sInput](d.Project,
-			enumPatch{"severity", enumSeverity},
-			enumPatch{"order", enumSortOrder},
+			enumProp("severity", gcpdata.Severities),
+			enumProp("order", sortOrders),
 		),
 		OutputSchema: outputSchemaFor[gcpdata.LogQueryResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsK8sInput) (*mcp.CallToolResult, *gcpdata.LogQueryResult, error) {
@@ -47,11 +47,7 @@ func RegisterLogsK8s(s *mcp.Server, d Deps) {
 			parts = append(parts, fmt.Sprintf(`resource.labels.container_name="%s"`, gcpdata.EscapeFilterValue(in.ContainerName)))
 		}
 		if in.Severity != "" {
-			severity := strings.ToUpper(in.Severity)
-			if !gcpdata.IsValidSeverity(severity) {
-				return errResult(fmt.Sprintf("invalid severity %q: must be one of DEFAULT, DEBUG, INFO, NOTICE, WARNING, ERROR, CRITICAL, ALERT, EMERGENCY", in.Severity)), nil, nil
-			}
-			parts = append(parts, fmt.Sprintf(`severity>=%s`, severity))
+			parts = append(parts, fmt.Sprintf(`severity>=%s`, in.Severity))
 		}
 		if in.TextSearch != "" {
 			escaped := gcpdata.EscapeFilterValue(in.TextSearch)
@@ -69,9 +65,6 @@ func RegisterLogsK8s(s *mcp.Server, d Deps) {
 		order := in.Order
 		if order == "" {
 			order = "desc"
-		}
-		if order != "asc" && order != "desc" {
-			return errResult(fmt.Sprintf("invalid order %q: must be \"asc\" or \"desc\"", order)), nil, nil
 		}
 
 		sendProgress(ctx, req, 0, 1, "Querying Kubernetes logs...")

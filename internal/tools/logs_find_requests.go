@@ -21,19 +21,13 @@ func RegisterLogsFindRequests(s *mcp.Server, d Deps) {
 			IdempotentHint: true,
 		},
 		InputSchema: projectInputSchema[LogsFindRequestsInput](d.Project,
-			enumPatch{"method", enumHTTPMethod},
+			nonEmptyProp("url_pattern"),
+			enumProp("method", httpMethods),
 		),
 		OutputSchema: outputSchemaFor[gcpdata.RequestList](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsFindRequestsInput) (*mcp.CallToolResult, *gcpdata.RequestList, error) {
-		if in.URLPattern == "" {
-			return errResult("url_pattern is required"), nil, nil
-		}
 		if in.StatusCode != 0 && (in.StatusCode < 100 || in.StatusCode > 599) {
 			return errResult(fmt.Sprintf("invalid status_code %d: must be in range [100, 599]", in.StatusCode)), nil, nil
-		}
-		validMethods := map[string]bool{"GET": true, "POST": true, "PUT": true, "PATCH": true, "DELETE": true, "HEAD": true, "OPTIONS": true}
-		if in.Method != "" && !validMethods[in.Method] {
-			return errResult(fmt.Sprintf("invalid method %q: must be one of GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS", in.Method)), nil, nil
 		}
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {

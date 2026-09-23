@@ -63,12 +63,11 @@ func RegisterTraceGet(s *mcp.Server, d Deps) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
-		InputSchema:  projectInputSchema[TraceGetInput](d.Project),
+		InputSchema: projectInputSchema[TraceGetInput](d.Project,
+			nonEmptyProp("trace_id"),
+		),
 		OutputSchema: traceDetailSchema,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in TraceGetInput) (*mcp.CallToolResult, *gcpdata.TraceDetail, error) {
-		if in.TraceID == "" {
-			return errResult("trace_id is required"), nil, nil
-		}
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil

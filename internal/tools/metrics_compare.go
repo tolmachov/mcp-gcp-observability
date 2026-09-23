@@ -60,13 +60,16 @@ func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 		// Meta here and in compareCallResult both carry the same URI deliberately:
 		// this declaration lets hosts prefetch the resource from tools/list;
 		// the per-call Meta binds the widget for hosts that skip tools/list caching.
-		Meta:         mcp.Meta{"ui": map[string]any{"resourceUri": compareChartStaticURI}},
-		InputSchema:  projectInputSchema[MetricsCompareInput](d.Project),
+		Meta: mcp.Meta{"ui": map[string]any{"resourceUri": compareChartStaticURI}},
+		InputSchema: projectInputSchema[MetricsCompareInput](d.Project,
+			nonEmptyProp("metric_type"),
+			nonEmptyProp("window_a_from"),
+			nonEmptyProp("window_a_to"),
+			nonEmptyProp("window_b_from"),
+			nonEmptyProp("window_b_to"),
+		),
 		OutputSchema: outputSchemaFor[CompareResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsCompareInput) (*mcp.CallToolResult, *CompareResult, error) {
-		if in.MetricType == "" {
-			return errResult("metric_type is required"), nil, nil
-		}
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
@@ -81,19 +84,19 @@ func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 			windowBLabel = "window_b"
 		}
 
-		aFrom, err := parseRFC3339(in.WindowAFrom, "window_a_from")
+		aFrom, err := parseRFC3339Opt(in.WindowAFrom, "window_a_from")
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
-		aTo, err := parseRFC3339(in.WindowATo, "window_a_to")
+		aTo, err := parseRFC3339Opt(in.WindowATo, "window_a_to")
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
-		bFrom, err := parseRFC3339(in.WindowBFrom, "window_b_from")
+		bFrom, err := parseRFC3339Opt(in.WindowBFrom, "window_b_from")
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
-		bTo, err := parseRFC3339(in.WindowBTo, "window_b_to")
+		bTo, err := parseRFC3339Opt(in.WindowBTo, "window_b_to")
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -106,7 +109,7 @@ func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 		}
 
 		meta := d.Registry.Lookup(in.MetricType)
-		stepSeconds := int64(60)
+		stepSeconds := int64(metrics.DefaultStepSeconds)
 
 		sendProgress(ctx, req, 1, 4, "Looking up metric descriptor")
 
@@ -377,17 +380,6 @@ type CompareResult struct {
 	// Also nil on error returns and on the no-data path, where chart points are never populated.
 	ChartPointsA []chartPoint `json:"chart_points_a,omitempty"`
 	ChartPointsB []chartPoint `json:"chart_points_b,omitempty"`
-}
-
-func parseRFC3339(s, field string) (time.Time, error) {
-	if s == "" {
-		return time.Time{}, fmt.Errorf("%s is required", field)
-	}
-	t, err := time.Parse(time.RFC3339, s)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("invalid %s %q: must be RFC3339 format", field, s)
-	}
-	return t, nil
 }
 
 func classificationSeverity(class metrics.Classification) int {

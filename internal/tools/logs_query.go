@@ -23,7 +23,8 @@ func RegisterLogsQuery(s *mcp.Server, d Deps) {
 			IdempotentHint: true,
 		},
 		InputSchema: projectInputSchema[LogsQueryInput](d.Project,
-			enumPatch{"order", enumSortOrder},
+			nonEmptyProp("filter"),
+			enumProp("order", sortOrders),
 		),
 		OutputSchema: outputSchemaFor[gcpdata.LogQueryResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsQueryInput) (*mcp.CallToolResult, *gcpdata.LogQueryResult, error) {
@@ -31,16 +32,10 @@ func RegisterLogsQuery(s *mcp.Server, d Deps) {
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
-		if in.Filter == "" {
-			return errResult("filter is required"), nil, nil
-		}
 		limit := clampLimit(in.Limit, 100, LogsHardLimit)
 		order := in.Order
 		if order == "" {
 			order = "desc"
-		}
-		if order != "asc" && order != "desc" {
-			return errResult(fmt.Sprintf("invalid order %q: must be \"asc\" or \"desc\"", order)), nil, nil
 		}
 
 		timeFilter, err := buildTimeFilter(in.TimeFilterInput)

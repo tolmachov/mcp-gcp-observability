@@ -24,16 +24,12 @@ func RegisterProfilerTop(s *mcp.Server, d Deps) {
 			IdempotentHint: true,
 		},
 		InputSchema: projectInputSchema[ProfilerTopInput](d.Project,
-			enumPatch{"sort_by", enumSortBy},
+			nonEmptyProp("profile_id"),
+			nonNegativeValueIndex,
+			enumProp("sort_by", profileSortBys),
 		),
 		OutputSchema: outputSchemaFor[gcpdata.ProfileTopResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerTopInput) (*mcp.CallToolResult, *gcpdata.ProfileTopResult, error) {
-		if in.ProfileID == "" {
-			return errResult("profile_id is required"), nil, nil
-		}
-		if in.ValueIndex < 0 {
-			return errResult("value_index must be non-negative"), nil, nil
-		}
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil

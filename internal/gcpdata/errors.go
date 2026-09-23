@@ -32,21 +32,37 @@ type ErrorWindowSpec struct {
 	Bucket time.Duration
 }
 
-func (w ErrorWindow) Spec() (ErrorWindowSpec, bool) {
-	switch w {
-	case ErrorWindow1H:
-		return ErrorWindowSpec{errorreportingpb.QueryTimeRange_PERIOD_1_HOUR, time.Hour, 5 * time.Minute}, true
-	case ErrorWindow6H:
-		return ErrorWindowSpec{errorreportingpb.QueryTimeRange_PERIOD_6_HOURS, 6 * time.Hour, 30 * time.Minute}, true
-	case ErrorWindow24H:
-		return ErrorWindowSpec{errorreportingpb.QueryTimeRange_PERIOD_1_DAY, 24 * time.Hour, time.Hour}, true
-	case ErrorWindow7D:
-		return ErrorWindowSpec{errorreportingpb.QueryTimeRange_PERIOD_1_WEEK, 7 * 24 * time.Hour, 6 * time.Hour}, true
-	case ErrorWindow30D:
-		return ErrorWindowSpec{errorreportingpb.QueryTimeRange_PERIOD_30_DAYS, 30 * 24 * time.Hour, 24 * time.Hour}, true
-	default:
-		return ErrorWindowSpec{}, false
+// errorWindowSpecs maps every supported window, in ascending order, to the
+// Error Reporting period and trend bucket it uses.
+var errorWindowSpecs = []struct {
+	window ErrorWindow
+	spec   ErrorWindowSpec
+}{
+	{ErrorWindow1H, ErrorWindowSpec{errorreportingpb.QueryTimeRange_PERIOD_1_HOUR, time.Hour, 5 * time.Minute}},
+	{ErrorWindow6H, ErrorWindowSpec{errorreportingpb.QueryTimeRange_PERIOD_6_HOURS, 6 * time.Hour, 30 * time.Minute}},
+	{ErrorWindow24H, ErrorWindowSpec{errorreportingpb.QueryTimeRange_PERIOD_1_DAY, 24 * time.Hour, time.Hour}},
+	{ErrorWindow7D, ErrorWindowSpec{errorreportingpb.QueryTimeRange_PERIOD_1_WEEK, 7 * 24 * time.Hour, 6 * time.Hour}},
+	{ErrorWindow30D, ErrorWindowSpec{errorreportingpb.QueryTimeRange_PERIOD_30_DAYS, 30 * 24 * time.Hour, 24 * time.Hour}},
+}
+
+// ErrorWindows lists the supported Error Reporting windows in ascending order.
+func ErrorWindows() []ErrorWindow {
+	windows := make([]ErrorWindow, len(errorWindowSpecs))
+	for i, e := range errorWindowSpecs {
+		windows[i] = e.window
 	}
+	return windows
+}
+
+// Spec returns the Error Reporting parameters for w, or false if w is not a
+// supported window.
+func (w ErrorWindow) Spec() (ErrorWindowSpec, bool) {
+	for _, e := range errorWindowSpecs {
+		if e.window == w {
+			return e.spec, true
+		}
+	}
+	return ErrorWindowSpec{}, false
 }
 
 // ListErrors lists error groups sorted by occurrence count.

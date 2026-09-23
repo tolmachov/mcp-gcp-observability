@@ -53,12 +53,6 @@ var defaultMetricCandidates = []string{
 	"appengine.googleapis.com/http/server/response_latencies",
 }
 
-// profileTypeCandidates are the Cloud Profiler profile types accepted by the
-// profile_type argument of the investigate-profile prompt.
-var profileTypeCandidates = []string{
-	"CPU", "HEAP", "HEAP_ALLOC", "WALL", "CONTENTION", "THREADS", "PEAK_HEAP",
-}
-
 func (p *promptCompleter) Handle(ctx context.Context, req *mcp.CompleteRequest) (*mcp.CompleteResult, error) {
 	var values []string
 	if req.Params.Ref != nil {
@@ -113,7 +107,7 @@ func (p *promptCompleter) promptArgCandidates(ctx context.Context, prompt, arg s
 		}
 		return p.loadServices(ctx)
 	case prompt == "investigate-profile" && arg == "profile_type":
-		return profileTypeCandidates
+		return gcpdata.ProfileTypes
 	}
 	return nil
 }

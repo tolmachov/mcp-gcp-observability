@@ -125,7 +125,7 @@ func TestPromptCompleter_ProfileType(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, []string{"HEAP", "HEAP_ALLOC", "PEAK_HEAP"}, result.Completion.Values)
+	assert.Equal(t, []string{"HEAP", "PEAK_HEAP", "HEAP_ALLOC"}, result.Completion.Values)
 }
 
 // TestPromptCompleter_ProfileTypeWrongPrompt guards that profile_type is only

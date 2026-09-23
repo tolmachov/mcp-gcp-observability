@@ -25,12 +25,11 @@ func RegisterTraceFindFromLogs(s *mcp.Server, d Deps) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
-		InputSchema:  projectInputSchema[TraceFindFromLogsInput](d.Project),
+		InputSchema: projectInputSchema[TraceFindFromLogsInput](d.Project,
+			nonEmptyProp("filter"),
+		),
 		OutputSchema: outputSchemaFor[gcpdata.TraceFromLogsList](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in TraceFindFromLogsInput) (*mcp.CallToolResult, *gcpdata.TraceFromLogsList, error) {
-		if in.Filter == "" {
-			return errResult("filter is required"), nil, nil
-		}
 
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {

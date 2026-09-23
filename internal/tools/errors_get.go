@@ -21,12 +21,11 @@ func RegisterErrorsGet(s *mcp.Server, d Deps) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
-		InputSchema:  projectInputSchema[ErrorsGetInput](d.Project),
+		InputSchema: projectInputSchema[ErrorsGetInput](d.Project,
+			nonEmptyProp("group_id"),
+		),
 		OutputSchema: outputSchemaFor[gcpdata.ErrorGroupDetail](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ErrorsGetInput) (*mcp.CallToolResult, *gcpdata.ErrorGroupDetail, error) {
-		if in.GroupID == "" {
-			return errResult("group_id is required"), nil, nil
-		}
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil

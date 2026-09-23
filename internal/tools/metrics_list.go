@@ -30,7 +30,7 @@ func RegisterMetricsList(s *mcp.Server, d Deps) {
 			IdempotentHint: true,
 		},
 		InputSchema: projectInputSchema[MetricsListInput](d.Project,
-			enumPatch{"kind", toAny(metrics.ValidMetricKindsForInput())},
+			enumProp("kind", metrics.ValidMetricKindsForInput()),
 		),
 		OutputSchema: outputSchemaFor[MetricsListResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsListInput) (*mcp.CallToolResult, *MetricsListResult, error) {
@@ -39,13 +39,7 @@ func RegisterMetricsList(s *mcp.Server, d Deps) {
 			return errResult(err.Error()), nil, nil
 		}
 
-		var kind metrics.MetricKind
-		if in.Kind != "" {
-			kind = metrics.MetricKind(in.Kind)
-			if !kind.IsValid() || kind == metrics.KindUnknown {
-				return errResult(fmt.Sprintf("invalid kind %q: must be one of %v", in.Kind, metrics.ValidMetricKindsForInput())), nil, nil
-			}
-		}
+		kind := metrics.MetricKind(in.Kind)
 		limit := clampLimit(in.Limit, 50, 200)
 
 		sendProgress(ctx, req, 0, 1, "Discovering metrics...")

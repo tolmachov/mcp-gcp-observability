@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -33,36 +32,28 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 			IdempotentHint: true,
 		},
 		InputSchema: projectInputSchema[MetricsTopInput](d.Project,
-			enumPatch{"window", enumWindow},
-			enumPatch{"baseline_mode", enumBaselineMode},
+			nonEmptyProp("metric_type"),
+			nonEmptyProp("dimension"),
+			enumProp("window", metricWindowNames()),
+			enumProp("baseline_mode", baselineModes),
 		),
 		OutputSchema: outputSchemaFor[TopContributorsResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsTopInput) (*mcp.CallToolResult, *TopContributorsResult, error) {
-		if in.MetricType == "" {
-			return errResult("metric_type is required"), nil, nil
-		}
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
 
-		windowStr := in.Window
-		if windowStr == "" {
-			windowStr = "1h"
-		}
-		baselineMode := BaselineMode(in.BaselineMode)
-		if baselineMode == "" {
-			baselineMode = BaselineModePrevWindow
-		}
 		limit := clampLimit(in.Limit, 5, 20)
-		stepSeconds := int64(60)
+		stepSeconds := int64(metrics.DefaultStepSeconds)
 
-		windowDur, err := parseWindow(windowStr)
+		windowStr, windowDur, err := parseWindow(in.Window)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
 
-		if err := baselineMode.Validate(in.EventTime); err != nil {
+		baselineMode, eventTime, err := parseBaselineMode(in.BaselineMode, in.EventTime)
+		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
 
@@ -141,7 +132,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 		sendProgress(ctx, req, 3, 4, "Querying baseline ("+string(baselineMode)+")")
 
 		var baselineErrNote string
-		baselineByLabel, baselinePartialNote, err := queryContributorBaselines(ctx, req, d.Querier, currentParams, windowDur, baselineMode, in.EventTime, in.Dimension)
+		baselineByLabel, baselinePartialNote, err := queryContributorBaselines(ctx, req, d.Querier, currentParams, windowDur, baselineMode, eventTime, in.Dimension)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "metrics_top_contributors", fmt.Sprintf("baseline query failed: %v", err))
 			baselineByLabel = map[string]contributorBaseline{}
@@ -321,7 +312,7 @@ func queryContributorBaselines(
 	currentParams gcpdata.QueryTimeSeriesParams,
 	windowDur time.Duration,
 	mode BaselineMode,
-	eventTimeStr string,
+	eventTime time.Time,
 	dimension string,
 ) (map[string]contributorBaseline, string, error) {
 	result := make(map[string]contributorBaseline)
@@ -389,10 +380,6 @@ func queryContributorBaselines(
 		return result, partialNote, nil
 
 	case BaselineModePreEvent:
-		eventTime, err := time.Parse(time.RFC3339, eventTimeStr)
-		if err != nil {
-			return nil, "", fmt.Errorf("invalid event_time: %w", err)
-		}
 		p := currentParams
 		p.End = eventTime
 		p.Start = eventTime.Add(-30 * time.Minute)
@@ -431,52 +418,26 @@ const missingDimensionLabel = "(missing_dimension)"
 // labelValueFromSeries returns the value of a fully-qualified dimension
 // (validated by validateTopContributorDimension) on s, or missingDimensionLabel.
 func labelValueFromSeries(s gcpdata.MetricTimeSeries, dimension string) string {
-	parts := splitDimension(dimension)
-	switch parts.prefix {
-	case "metric":
-		if v, ok := s.MetricLabels[parts.key]; ok {
-			return v
-		}
-	case "resource":
-		if v, ok := s.ResourceLabels[parts.key]; ok {
-			return v
-		}
-	case "metadata_system":
-		if v, ok := s.MetadataSystemLabels[parts.key]; ok {
-			return v
-		}
-	case "metadata_user":
-		if v, ok := s.MetadataUserLabels[parts.key]; ok {
-			return v
-		}
+	prefix, key, _ := metrics.SplitLabelKey(dimension)
+	var labels map[string]string
+	switch prefix {
+	case metrics.MetricLabelsPrefix:
+		labels = s.MetricLabels
+	case metrics.ResourceLabelsPrefix:
+		labels = s.ResourceLabels
+	case metrics.MetadataSystemLabelsPrefix:
+		labels = s.MetadataSystemLabels
+	case metrics.MetadataUserLabelsPrefix:
+		labels = s.MetadataUserLabels
+	}
+	if v, ok := labels[key]; ok {
+		return v
 	}
 	return missingDimensionLabel
 }
 
-type dimensionParts struct {
-	prefix string
-	key    string
-}
-
-func splitDimension(dimension string) dimensionParts {
-	if key, ok := strings.CutPrefix(dimension, "metric.labels."); ok && key != "" {
-		return dimensionParts{prefix: "metric", key: key}
-	}
-	if key, ok := strings.CutPrefix(dimension, "resource.labels."); ok && key != "" {
-		return dimensionParts{prefix: "resource", key: key}
-	}
-	if key, ok := strings.CutPrefix(dimension, "metadata.system_labels."); ok && key != "" {
-		return dimensionParts{prefix: "metadata_system", key: key}
-	}
-	if key, ok := strings.CutPrefix(dimension, "metadata.user_labels."); ok && key != "" {
-		return dimensionParts{prefix: "metadata_user", key: key}
-	}
-	return dimensionParts{key: dimension}
-}
-
 func validateTopContributorDimension(dimension string) string {
-	parts := splitDimension(dimension)
-	if parts.prefix == "" || parts.key == "" {
+	if _, _, ok := metrics.SplitLabelKey(dimension); !ok {
 		return fmt.Sprintf(
 			"dimension %q must be a fully-qualified label key such as `metric.labels.response_code`, `resource.labels.instance_id`, `metadata.system_labels.machine_type`, or `metadata.user_labels.env`.",
 			dimension,

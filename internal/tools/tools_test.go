@@ -171,9 +171,15 @@ func TestBuildTimeFilter(t *testing.T) {
 		assert.Equal(t, want, filter)
 	})
 
+	t.Run("start_time keeps sub-second precision and offset", func(t *testing.T) {
+		filter, err := buildTimeFilter(TimeFilterInput{StartTime: "2025-01-15T00:00:00.5+02:00"})
+		require.NoError(t, err)
+		assert.Equal(t, `timestamp>="2025-01-15T00:00:00.5+02:00"`, filter)
+	})
+
 	t.Run("invalid start_time", func(t *testing.T) {
 		_, err := buildTimeFilter(TimeFilterInput{StartTime: "not-a-date"})
-		assert.Error(t, err)
+		assert.ErrorContains(t, err, `invalid start_time "not-a-date": must be RFC3339 format`)
 	})
 
 	t.Run("invalid end_time", func(t *testing.T) {
@@ -198,28 +204,64 @@ func TestBuildTimeFilter(t *testing.T) {
 	})
 }
 
-func TestResolveErrorsWindow(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   string
-		wantErr bool
-		want    gcpdata.ErrorWindow
-	}{
-		{"default 24h", "", false, gcpdata.ErrorWindow24H},
-		{"7d", "7d", false, gcpdata.ErrorWindow7D},
-		{"arbitrary rejected", "48h", true, ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := resolveErrorsWindow(tt.input)
-			if tt.wantErr {
-				assert.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, got)
-		})
-	}
+func TestParseTimeRange(t *testing.T) {
+	t.Run("both empty defaults to last 1 hour", func(t *testing.T) {
+		before := time.Now().UTC()
+		start, end, err := parseTimeRange("", "", time.Hour)
+		after := time.Now().UTC()
+
+		require.NoError(t, err)
+		assert.True(t, end.After(before.Add(-time.Second)))
+		assert.True(t, end.Before(after.Add(time.Second)))
+		assert.True(t, start.Before(end))
+
+		diff := end.Sub(start)
+		assert.InDelta(t, time.Hour.Seconds(), diff.Seconds(), 1.0)
+	})
+
+	t.Run("both specified", func(t *testing.T) {
+		start, end, err := parseTimeRange("2025-01-15T10:00:00Z", "2025-01-15T11:00:00Z", time.Hour)
+		require.NoError(t, err)
+		assert.Equal(t, "2025-01-15T10:00:00Z", start.Format(time.RFC3339))
+		assert.Equal(t, "2025-01-15T11:00:00Z", end.Format(time.RFC3339))
+	})
+
+	t.Run("only end_time", func(t *testing.T) {
+		start, end, err := parseTimeRange("", "2025-01-15T12:00:00Z", time.Hour)
+		require.NoError(t, err)
+		assert.Equal(t, "2025-01-15T12:00:00Z", end.Format(time.RFC3339))
+		assert.Equal(t, "2025-01-15T11:00:00Z", start.Format(time.RFC3339))
+	})
+
+	t.Run("only start_time", func(t *testing.T) {
+		start, end, err := parseTimeRange("2025-01-15T10:00:00Z", "", time.Hour)
+		require.NoError(t, err)
+		assert.Equal(t, "2025-01-15T10:00:00Z", start.Format(time.RFC3339))
+		assert.True(t, end.After(start))
+	})
+
+	t.Run("end before start", func(t *testing.T) {
+		_, _, err := parseTimeRange("2025-01-15T12:00:00Z", "2025-01-15T10:00:00Z", time.Hour)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "end_time must be after start_time")
+	})
+
+	t.Run("invalid start_time format", func(t *testing.T) {
+		_, _, err := parseTimeRange("not-a-date", "", time.Hour)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid start_time")
+	})
+
+	t.Run("future start_time without end_time", func(t *testing.T) {
+		_, _, err := parseTimeRange(time.Now().Add(time.Hour).Format(time.RFC3339), "", time.Hour)
+		assert.ErrorContains(t, err, "end_time must be after start_time")
+	})
+
+	t.Run("invalid end_time format", func(t *testing.T) {
+		_, _, err := parseTimeRange("", "not-a-date", time.Hour)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid end_time")
+	})
 }
 
 func TestAggregationWarningMessagesTruncation(t *testing.T) {

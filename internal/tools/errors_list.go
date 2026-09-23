@@ -23,7 +23,7 @@ func RegisterErrorsList(s *mcp.Server, d Deps) {
 			IdempotentHint: true,
 		},
 		InputSchema: projectInputSchema[ErrorsListInput](d.Project,
-			enumPatch{"window", enumErrorWindow},
+			enumProp("window", gcpdata.ErrorWindows()),
 		),
 		OutputSchema: outputSchemaFor[gcpdata.ErrorGroupList](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ErrorsListInput) (*mcp.CallToolResult, *gcpdata.ErrorGroupList, error) {
@@ -32,10 +32,7 @@ func RegisterErrorsList(s *mcp.Server, d Deps) {
 			return errResult(err.Error()), nil, nil
 		}
 
-		window, err := resolveErrorsWindow(in.Window)
-		if err != nil {
-			return errResult(err.Error()), nil, nil
-		}
+		window := errorsWindowOrDefault(in.Window)
 
 		limit := clampLimit(in.Limit, 50, ErrorsHardLimit)
 
@@ -51,14 +48,11 @@ func RegisterErrorsList(s *mcp.Server, d Deps) {
 	})
 }
 
-// resolveErrorsTimeRange returns the lookback range in hours for Error Reporting.
-func resolveErrorsWindow(raw string) (gcpdata.ErrorWindow, error) {
+// errorsWindowOrDefault applies the default window to the schema-validated
+// window input.
+func errorsWindowOrDefault(raw string) gcpdata.ErrorWindow {
 	if raw == "" {
-		return gcpdata.ErrorWindow24H, nil
+		return gcpdata.ErrorWindow24H
 	}
-	w := gcpdata.ErrorWindow(raw)
-	if _, ok := w.Spec(); !ok {
-		return "", fmt.Errorf("invalid window %q: must be one of 1h, 6h, 24h, 7d, 30d", raw)
-	}
-	return w, nil
+	return gcpdata.ErrorWindow(raw)
 }

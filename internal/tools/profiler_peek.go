@@ -23,18 +23,13 @@ func RegisterProfilerPeek(s *mcp.Server, d Deps) {
 			OpenWorldHint:  new(true),
 			IdempotentHint: true,
 		},
-		InputSchema:  projectInputSchema[ProfilerPeekInput](d.Project),
+		InputSchema: projectInputSchema[ProfilerPeekInput](d.Project,
+			nonEmptyProp("profile_id"),
+			nonEmptyProp("function_name"),
+			nonNegativeValueIndex,
+		),
 		OutputSchema: outputSchemaFor[gcpdata.ProfilePeekResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerPeekInput) (*mcp.CallToolResult, *gcpdata.ProfilePeekResult, error) {
-		if in.ProfileID == "" {
-			return errResult("profile_id is required"), nil, nil
-		}
-		if in.ValueIndex < 0 {
-			return errResult("value_index must be non-negative"), nil, nil
-		}
-		if in.FunctionName == "" {
-			return errResult("function_name is required"), nil, nil
-		}
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil

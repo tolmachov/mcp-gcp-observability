@@ -147,7 +147,7 @@ func (a *AuthServer) oauth2Config() *oauth2.Config {
 		ClientID:     a.cfg.GoogleClientID,
 		ClientSecret: a.cfg.GoogleClientSecret,
 		Endpoint:     googleoauth.Endpoint,
-		RedirectURL:  a.cfg.IssuerURL + "/callback",
+		RedirectURL:  a.cfg.IssuerURL + CallbackPath,
 		Scopes:       a.cfg.scopes(),
 	}
 }
@@ -155,18 +155,16 @@ func (a *AuthServer) oauth2Config() *oauth2.Config {
 // Routes mounts every auth endpoint on mux. The MCP handler itself is mounted
 // by the caller (wrapped in RequireBearerToken with this server's Verifier).
 func (a *AuthServer) Routes(mux *http.ServeMux) {
-	mux.Handle("GET /.well-known/oauth-protected-resource", a.protectedResourceHandler())
-	mux.Handle("GET /.well-known/oauth-authorization-server", jsonMetadataHandler(a.authServerMetadata()))
-	// Some clients probe the OIDC discovery path as a fallback; serve the
-	// same document there.
-	mux.Handle("GET /.well-known/openid-configuration", jsonMetadataHandler(a.authServerMetadata()))
-	mux.Handle("GET /jwks.json", jsonMetadataHandler(emptyJWKS{}))
-	mux.HandleFunc("POST /register", a.handleRegister)
-	mux.HandleFunc("GET /authorize", a.handleAuthorize)
-	mux.HandleFunc("POST /authorize/confirm", a.handleAuthorizeConfirm)
-	mux.HandleFunc("GET /callback", a.handleCallback)
-	mux.HandleFunc("POST /token", a.handleToken)
-	mux.HandleFunc("POST /revoke", a.handleRevoke)
+	mux.Handle("GET "+ProtectedResourceMetadataPath, a.protectedResourceHandler())
+	mux.Handle("GET "+AuthServerMetadataPath, jsonMetadataHandler(a.authServerMetadata()))
+	mux.Handle("GET "+OpenIDConfigurationPath, jsonMetadataHandler(a.authServerMetadata()))
+	mux.Handle("GET "+JWKSPath, jsonMetadataHandler(emptyJWKS{}))
+	mux.HandleFunc("POST "+RegisterPath, a.handleRegister)
+	mux.HandleFunc("GET "+AuthorizePath, a.handleAuthorize)
+	mux.HandleFunc("POST "+AuthorizeConfirmPath, a.handleAuthorizeConfirm)
+	mux.HandleFunc("GET "+CallbackPath, a.handleCallback)
+	mux.HandleFunc("POST "+TokenPath, a.handleToken)
+	mux.HandleFunc("POST "+RevokePath, a.handleRevoke)
 }
 
 // googleIdP is the production IdentityProvider backed by accounts.google.com.

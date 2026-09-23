@@ -14,17 +14,13 @@ const sampleMessageMaxLen = 300
 
 // severityRanks orders Cloud Logging severities so the most severe entry of a
 // trace can be selected as its representative sample.
-var severityRanks = map[string]int{
-	"DEFAULT":   0,
-	"DEBUG":     1,
-	"INFO":      2,
-	"NOTICE":    3,
-	"WARNING":   4,
-	"ERROR":     5,
-	"CRITICAL":  6,
-	"ALERT":     7,
-	"EMERGENCY": 8,
-}
+var severityRanks = func() map[string]int {
+	ranks := make(map[string]int, len(Severities))
+	for i, s := range Severities {
+		ranks[s] = i
+	}
+	return ranks
+}()
 
 // FindTracesFromLogs scans logs matching a filter, groups the matching entries
 // by trace ID, and returns the distinct traces with aggregated context. It
@@ -75,7 +71,7 @@ func aggregateTracesFromLogs(logs *LogQueryResult, resultLimit int) *TraceFromLo
 				a.trace.LastSeen = e.Timestamp
 			}
 		}
-		if r := severityRank(e.Severity); r > a.sevRank {
+		if r := severityRanks[e.Severity]; r > a.sevRank {
 			a.sevRank = r
 			a.trace.MaxSeverity = e.Severity
 			if msg := sampleLogMessage(e); msg != "" {
@@ -123,10 +119,6 @@ func aggregateTracesFromLogs(logs *LogQueryResult, resultLimit int) *TraceFromLo
 	return result
 }
 
-func severityRank(s string) int {
-	return severityRanks[strings.ToUpper(s)]
-}
-
 // sampleLogMessage extracts a short representative line from a log entry,
 // preferring the text payload and falling back to common JSON message fields.
 func sampleLogMessage(e *LogEntry) string {
@@ -160,16 +152,11 @@ func firstLine(s string) string {
 	return s
 }
 
-// serviceFromResourceInfo derives a service name from a converted resource's
-// labels, mirroring extractServiceName for the post-conversion LogEntry shape.
+// serviceFromResourceInfo derives a service name from a converted resource,
+// using the same label keys as extractServiceName.
 func serviceFromResourceInfo(r *ResourceInfo) string {
 	if r == nil {
 		return ""
 	}
-	for _, key := range []string{"service_name", "container_name", "namespace_name", "function_name"} {
-		if v := r.Labels[key]; v != "" {
-			return v
-		}
-	}
-	return r.Type
+	return serviceName(r.Type, r.Labels)
 }

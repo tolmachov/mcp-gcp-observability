@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -22,37 +23,23 @@ import (
 	"google.golang.org/api/iterator"
 )
 
-// profilerScanTimeout bounds a single paginated scan of the Cloud Profiler
+// ProfilerScanTimeout bounds a single paginated scan of the Cloud Profiler
 // Export API. Because that API returns profile bytes inline and offers no
 // server-side filter (see ListProfiles), scans must page through and download
 // many profiles client-side and can legitimately run well past a few seconds on
 // large projects. The old 60s cap cut those scans short; the tool layer keeps
 // the MCP client's request alive across this window with progress heartbeats,
-// and maxScan still bounds the total work examined.
-const profilerScanTimeout = 8 * time.Minute
+// and maxScan still bounds the total work examined. The server applies the
+// same bound to every profiler_* tool call.
+const ProfilerScanTimeout = 8 * time.Minute
 
 const (
 	maxCompressedProfileBytes   = 16 << 20
 	maxDecompressedProfileBytes = 64 << 20
 )
 
-// validProfileTypes is the set of profile types supported by Cloud Profiler.
-var validProfileTypes = map[string]bool{
-	"CPU": true, "WALL": true, "HEAP": true, "THREADS": true,
-	"CONTENTION": true, "PEAK_HEAP": true, "HEAP_ALLOC": true,
-}
-
-// ValidateProfileType returns an error if profileType is non-empty and not a known type.
-func ValidateProfileType(profileType string) error {
-	if profileType == "" {
-		return nil
-	}
-	upper := strings.ToUpper(profileType)
-	if !validProfileTypes[upper] {
-		return fmt.Errorf("invalid profile_type %q. Valid types: CPU, WALL, HEAP, THREADS, CONTENTION, PEAK_HEAP, HEAP_ALLOC", profileType)
-	}
-	return nil
-}
+// ProfileTypes lists the profile types supported by Cloud Profiler.
+var ProfileTypes = []string{"CPU", "WALL", "HEAP", "THREADS", "CONTENTION", "PEAK_HEAP", "HEAP_ALLOC"}
 
 // ListProfiles lists profile metadata without downloading profile bytes.
 // The Cloud Profiler API does not support server-side filtering by profile_type,
@@ -83,7 +70,7 @@ type profileCursor struct {
 const profileCursorPrefix = "mcp_pc_v2_"
 
 func profileFilterFingerprint(params ListProfilesParams) string {
-	payload := strings.Join([]string{params.Project, strings.ToUpper(params.ProfileType), normalizeIdent(params.Target), params.StartTime.UTC().Format(time.RFC3339Nano), params.EndTime.UTC().Format(time.RFC3339Nano)}, "\x00")
+	payload := strings.Join([]string{params.Project, params.ProfileType, normalizeIdent(params.Target), params.StartTime.UTC().Format(time.RFC3339Nano), params.EndTime.UTC().Format(time.RFC3339Nano)}, "\x00")
 	sum := sha256.Sum256([]byte(payload))
 	return hex.EncodeToString(sum[:16])
 }
@@ -118,7 +105,7 @@ func decodeProfileCursor(raw, fingerprint string) (profileCursor, error) {
 // ListProfiles advances through the Export API page by page. Its opaque cursor
 // can resume inside an API page and is bound to the exact filter set.
 func ListProfiles(ctx context.Context, svc *cloudprofiler.ExportClient, params ListProfilesParams) (*ProfileListResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, profilerScanTimeout)
+	ctx, cancel := context.WithTimeout(ctx, ProfilerScanTimeout)
 	defer cancel()
 	fingerprint := profileFilterFingerprint(params)
 	cursor, err := decodeProfileCursor(params.PageToken, fingerprint)
@@ -241,29 +228,6 @@ func availableTargetsHint(seen map[string]int) string {
 	return hint
 }
 
-// ParseTimeFilters parses optional RFC3339 start/end filter strings into times,
-// returning zero-value times for empty strings. It belongs at the tool
-// boundary: ListProfiles takes already-parsed time.Time, so handlers call this
-// to turn user input into ListProfilesParams and report a friendly error.
-func ParseTimeFilters(startTime, endTime string) (time.Time, time.Time, error) {
-	var startT, endT time.Time
-	if startTime != "" {
-		var err error
-		startT, err = time.Parse(time.RFC3339, startTime)
-		if err != nil {
-			return startT, endT, fmt.Errorf("invalid start_time %q: must be RFC3339 format (e.g. 2024-01-15T00:00:00Z)", startTime)
-		}
-	}
-	if endTime != "" {
-		var err error
-		endT, err = time.Parse(time.RFC3339, endTime)
-		if err != nil {
-			return startT, endT, fmt.Errorf("invalid end_time %q: must be RFC3339 format (e.g. 2024-01-15T23:59:59Z)", endTime)
-		}
-	}
-	return startT, endT, nil
-}
-
 // normalizeIdent lowercases s and strips every non-alphanumeric rune. Service
 // names that differ only in separators or case then compare equal — e.g.
 // "crypto-steam", "Crypto_Steam" and "cryptosteam" all normalize to
@@ -296,7 +260,7 @@ func targetMatches(metaTarget, filter string) bool {
 // parseErr is true when the profile was excluded due to an unparseable timestamp
 // (so the caller can track how many were excluded for user feedback).
 func matchesProfileFilter(meta ProfileMeta, profileType, target string, startT, endT time.Time) (match, parseErr bool) {
-	if profileType != "" && !strings.EqualFold(meta.ProfileType, profileType) {
+	if profileType != "" && meta.ProfileType != profileType {
 		return false, false
 	}
 	if !targetMatches(meta.Target, target) {
@@ -342,7 +306,7 @@ func GetOrFetchProfile(
 		return p, meta, nil
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, profilerScanTimeout)
+	ctx, cancel := context.WithTimeout(ctx, ProfilerScanTimeout)
 	defer cancel()
 
 	// The profile name from the API is "projects/{project}/profiles/{id}".
@@ -1243,7 +1207,7 @@ func profileFromAPI(p *cloudprofilerpb.Profile) ProfileMeta {
 	// Only accept values that are in the known set; unrecognized numeric values
 	// (returned as their decimal string, e.g. "999") are treated as unset.
 	pt := p.ProfileType.String()
-	if validProfileTypes[pt] {
+	if slices.Contains(ProfileTypes, pt) {
 		meta.ProfileType = pt
 	}
 	if p.Duration != nil {

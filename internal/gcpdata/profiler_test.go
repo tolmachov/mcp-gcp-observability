@@ -280,34 +280,6 @@ func TestScanFunctionCosts_InvalidValueIndex(t *testing.T) {
 	assert.Contains(t, err.Error(), "value_index 5 out of range")
 }
 
-func TestValidateTimeFilters(t *testing.T) {
-	// Both empty.
-	s, e, err := ParseTimeFilters("", "")
-	require.NoError(t, err)
-	assert.True(t, s.IsZero())
-	assert.True(t, e.IsZero())
-
-	// Valid start, empty end.
-	s, _, err = ParseTimeFilters("2024-01-15T00:00:00Z", "")
-	require.NoError(t, err)
-	assert.Equal(t, 2024, s.Year())
-
-	// Empty start, valid end.
-	_, e, err = ParseTimeFilters("", "2024-12-31T23:59:59Z")
-	require.NoError(t, err)
-	assert.Equal(t, 12, int(e.Month()))
-
-	// Invalid start.
-	_, _, err = ParseTimeFilters("not-a-date", "")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid start_time")
-
-	// Invalid end.
-	_, _, err = ParseTimeFilters("", "also-bad")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid end_time")
-}
-
 func TestMatchesProfileFilter(t *testing.T) {
 	meta := ProfileMeta{
 		ProfileType: "CPU",
@@ -328,8 +300,7 @@ func TestMatchesProfileFilter(t *testing.T) {
 	// No filters — always matches.
 	check(true, false, "", "", zero, zero, meta)
 
-	// Profile type filter (case-insensitive).
-	check(true, false, "cpu", "", zero, zero, meta)
+	// Profile type filter.
 	check(true, false, "CPU", "", zero, zero, meta)
 	check(false, false, "HEAP", "", zero, zero, meta)
 
@@ -396,21 +367,6 @@ func TestBuildDiffProfile(t *testing.T) {
 
 	// Verify the original base was not mutated.
 	assert.Equal(t, int64(60), base.Sample[0].Value[0])
-}
-
-func TestValidateProfileType(t *testing.T) {
-	// Empty is valid (no filter).
-	assert.NoError(t, ValidateProfileType(""))
-
-	// Valid types (case-insensitive).
-	assert.NoError(t, ValidateProfileType("CPU"))
-	assert.NoError(t, ValidateProfileType("cpu"))
-	assert.NoError(t, ValidateProfileType("Heap"))
-
-	// Invalid type.
-	err := ValidateProfileType("GARBAGE")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid profile_type")
 }
 
 func TestValidateValueIndex_EmptySampleTypes(t *testing.T) {
@@ -720,15 +676,6 @@ func TestFlamegraph_ZeroTotalValue(t *testing.T) {
 	assert.Equal(t, int64(0), total)
 	// Root should exist even with zero total.
 	assert.Equal(t, "(root)", root.Name)
-}
-
-func TestValidateProfileType_CaseInsensitive(t *testing.T) {
-	// Ensure validation normalizes to uppercase internally.
-	assert.NoError(t, ValidateProfileType("wall"))
-	assert.NoError(t, ValidateProfileType("Wall"))
-	assert.NoError(t, ValidateProfileType("WALL"))
-	assert.NoError(t, ValidateProfileType("heap_alloc"))
-	assert.Error(t, ValidateProfileType("INVALID_TYPE"))
 }
 
 func TestProfileFromAPI(t *testing.T) {

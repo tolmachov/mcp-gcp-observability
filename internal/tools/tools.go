@@ -350,43 +350,57 @@ func errResult(msg string) *mcp.CallToolResult {
 	}
 }
 
-// buildTimeFilter constructs a Cloud Logging timestamp filter from TimeFilterInput.
+// parseRFC3339Opt parses an optional RFC3339 input field; an empty string
+// yields the zero time. field names the input in the error message.
+func parseRFC3339Opt(s, field string) (time.Time, error) {
+	if s == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid %s %q: must be RFC3339 format (e.g. 2025-01-15T00:00:00Z)", field, s)
+	}
+	return t, nil
+}
+
+// parseTimeRange parses the start_time/end_time inputs. A missing end
+// defaults to now and a missing start to defaultSpan before the end; the
+// range must be non-empty.
+func parseTimeRange(startStr, endStr string, defaultSpan time.Duration) (start, end time.Time, err error) {
+	start, err = parseRFC3339Opt(startStr, "start_time")
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	end, err = parseRFC3339Opt(endStr, "end_time")
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	if end.IsZero() {
+		end = time.Now().UTC()
+	}
+	if start.IsZero() {
+		start = end.Add(-defaultSpan)
+	}
+	if !end.After(start) {
+		return time.Time{}, time.Time{}, fmt.Errorf("end_time must be after start_time (got start=%s, end=%s)",
+			start.Format(time.RFC3339), end.Format(time.RFC3339))
+	}
+	return start, end, nil
+}
+
+// buildTimeFilter constructs a Cloud Logging timestamp filter from
+// TimeFilterInput, defaulting to the 24 hours before end_time (or now). The
+// upper bound is only emitted when end_time is given, so an open range keeps
+// matching entries ingested while the query runs.
 func buildTimeFilter(in TimeFilterInput) (string, error) {
-	startTime := in.StartTime
-	endTime := in.EndTime
-
-	if startTime == "" && endTime == "" {
-		startTime = time.Now().Add(-24 * time.Hour).Format(time.RFC3339)
+	start, end, err := parseTimeRange(in.StartTime, in.EndTime, 24*time.Hour)
+	if err != nil {
+		return "", err
 	}
-
-	var parsedStart, parsedEnd time.Time
-	var filter string
-	if startTime != "" {
-		var err error
-		parsedStart, err = time.Parse(time.RFC3339, startTime)
-		if err != nil {
-			return "", fmt.Errorf("invalid start_time %q: must be RFC3339 format (e.g. 2025-01-15T00:00:00Z)", startTime)
-		}
-		filter = fmt.Sprintf(`timestamp>="%s"`, startTime)
+	filter := fmt.Sprintf(`timestamp>="%s"`, start.Format(time.RFC3339Nano))
+	if in.EndTime != "" {
+		filter = gcpdata.AppendFilter(filter, fmt.Sprintf(`timestamp<="%s"`, end.Format(time.RFC3339Nano)))
 	}
-	if endTime != "" {
-		var err error
-		parsedEnd, err = time.Parse(time.RFC3339, endTime)
-		if err != nil {
-			return "", fmt.Errorf("invalid end_time %q: must be RFC3339 format (e.g. 2025-01-15T23:59:59Z)", endTime)
-		}
-		// Default start to 24h before end to avoid unbounded scans
-		if startTime == "" {
-			parsedStart = parsedEnd.Add(-24 * time.Hour)
-			filter = fmt.Sprintf(`timestamp>="%s"`, parsedStart.Format(time.RFC3339))
-		}
-		filter = gcpdata.AppendFilter(filter, fmt.Sprintf(`timestamp<="%s"`, endTime))
-	}
-
-	if !parsedStart.IsZero() && !parsedEnd.IsZero() && !parsedEnd.After(parsedStart) {
-		return "", fmt.Errorf("end_time must be after start_time (got start=%s, end=%s)", startTime, endTime)
-	}
-
 	return filter, nil
 }
 

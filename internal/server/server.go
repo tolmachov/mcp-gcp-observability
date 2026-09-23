@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strings"
-	"time"
 
 	"github.com/modelcontextprotocol/experimental-ext-variants/go/sdk/variants"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -142,7 +141,6 @@ func (s *Server) newMCPInstance(completer *promptCompleter) *mcp.Server {
 }
 
 const maxEncodedToolResultBytes = 2 << 20
-const profilerToolTimeout = 8 * time.Minute
 const structuredResultContentNotice = "The complete result is available in structuredContent."
 
 func toolLimitsMiddleware(userCalls, profilerCalls chan struct{}, logger *slog.Logger) func(mcp.MethodHandler) mcp.MethodHandler {
@@ -159,7 +157,7 @@ func toolLimitsMiddleware(userCalls, profilerCalls chan struct{}, logger *slog.L
 			}
 			var releaseProfiler func()
 			if call, ok := req.(*mcp.CallToolRequest); ok && call.Params != nil && strings.HasPrefix(call.Params.Name, "profiler_") {
-				profilerCtx, cancel := context.WithTimeout(ctx, profilerToolTimeout)
+				profilerCtx, cancel := context.WithTimeout(ctx, gcpdata.ProfilerScanTimeout)
 				defer cancel()
 				ctx = profilerCtx
 				if len(profilerCalls) == cap(profilerCalls) {

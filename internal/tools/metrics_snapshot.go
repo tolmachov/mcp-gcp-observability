@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -24,18 +25,31 @@ const (
 	BaselineModePreEvent        BaselineMode = "pre_event"
 )
 
-// Validate checks that the mode is a known value and that eventTime is provided
-// when required. Returns an error suitable for returning directly to the user.
-func (m BaselineMode) Validate(eventTime string) error {
-	switch m {
-	case BaselineModePrevWindow, BaselineModeSameWeekdayHour, BaselineModePreEvent:
-	default:
-		return fmt.Errorf("invalid baseline_mode %q: must be one of prev_window, same_weekday_hour, pre_event", m)
+// baselineModes lists the supported baseline modes; the first is the default.
+var baselineModes = []BaselineMode{BaselineModePrevWindow, BaselineModeSameWeekdayHour, BaselineModePreEvent}
+
+// parseBaselineMode resolves the baseline_mode input ("" selects the
+// default) and, for pre_event, parses the required event_time once so a bad
+// value is reported as an input error. eventTime is zero for other modes.
+func parseBaselineMode(raw, eventTimeStr string) (BaselineMode, time.Time, error) {
+	mode := BaselineMode(raw)
+	if mode == "" {
+		mode = baselineModes[0]
 	}
-	if m == BaselineModePreEvent && eventTime == "" {
-		return errors.New("event_time is required when baseline_mode is 'pre_event'")
+	if !slices.Contains(baselineModes, mode) {
+		return "", time.Time{}, fmt.Errorf("invalid baseline_mode %q: must be one of %v", raw, baselineModes)
 	}
-	return nil
+	if mode != BaselineModePreEvent {
+		return mode, time.Time{}, nil
+	}
+	if eventTimeStr == "" {
+		return "", time.Time{}, errors.New("event_time is required when baseline_mode is 'pre_event'")
+	}
+	eventTime, err := parseRFC3339Opt(eventTimeStr, "event_time")
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return mode, eventTime, nil
 }
 
 // toChartPoints converts metric points to the compact chartPoint slice used by
@@ -98,41 +112,32 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 		// Per-call data is delivered via structuredContent through the MCP Apps bridge.
 		Meta: mcp.Meta{"ui": map[string]any{"resourceUri": chartStaticURI}},
 		InputSchema: projectInputSchema[MetricsSnapshotInput](d.Project,
-			enumPatch{"window", enumWindow},
-			enumPatch{"baseline_mode", enumBaselineMode},
+			nonEmptyProp("metric_type"),
+			enumProp("window", metricWindowNames()),
+			enumProp("baseline_mode", baselineModes),
 		),
 		OutputSchema: outputSchemaFor[MetricSnapshotResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsSnapshotInput) (*mcp.CallToolResult, *MetricSnapshotResult, error) {
-		if in.MetricType == "" {
-			return errResult("metric_type is required"), nil, nil
-		}
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
 
-		windowStr := in.Window
-		if windowStr == "" {
-			windowStr = "1h"
-		}
-		baselineMode := BaselineMode(in.BaselineMode)
-		if baselineMode == "" {
-			baselineMode = BaselineModePrevWindow
-		}
 		stepSeconds := int64(in.StepSeconds)
 		if stepSeconds == 0 {
-			stepSeconds = 60
+			stepSeconds = metrics.DefaultStepSeconds
 		}
 		if stepSeconds < 10 {
 			return errResult("step_seconds must be at least 10"), nil, nil
 		}
 
-		windowDur, err := parseWindow(windowStr)
+		windowStr, windowDur, err := parseWindow(in.Window)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
 
-		if err := baselineMode.Validate(in.EventTime); err != nil {
+		baselineMode, eventTime, err := parseBaselineMode(in.BaselineMode, in.EventTime)
+		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
 
@@ -212,7 +217,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 		sendProgress(ctx, req, 3, 4, "Querying baseline ("+string(baselineMode)+")")
 
 		var baselineErrNote string
-		baseline, baselinePartialNote, err := buildBaselineStats(ctx, req, d.Querier, currentParams, aggSpec, windowDur, baselineMode, in.EventTime, int(stepSeconds))
+		baseline, baselinePartialNote, err := buildBaselineStats(ctx, req, d.Querier, currentParams, aggSpec, windowDur, baselineMode, eventTime, int(stepSeconds))
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "metrics_snapshot", fmt.Sprintf("baseline query failed: %v", err))
 			baseline = metrics.BaselineStats{}
@@ -378,7 +383,7 @@ func buildBaselineStats(
 	aggSpec metrics.AggregationSpec,
 	windowDur time.Duration,
 	mode BaselineMode,
-	eventTimeStr string,
+	eventTime time.Time,
 	stepSeconds int,
 ) (metrics.BaselineStats, string, error) {
 	expectedPerWindow := expectedPointsForWindow(windowDur, stepSeconds)
@@ -388,10 +393,6 @@ func buildBaselineStats(
 		return buildRobustWeeklyBaseline(ctx, req, querier, params, aggSpec, expectedPerWindow)
 
 	case BaselineModePreEvent:
-		eventTime, err := time.Parse(time.RFC3339, eventTimeStr)
-		if err != nil {
-			return metrics.BaselineStats{}, "", fmt.Errorf("invalid event_time: %w", err)
-		}
 		p := params
 		p.End = eventTime
 		p.Start = eventTime.Add(-30 * time.Minute)
@@ -474,14 +475,7 @@ func buildRobustWeeklyBaseline(
 // expectedPointsForWindow is the ideal point count for a window of the given
 // duration at the given step size.
 func expectedPointsForWindow(windowDur time.Duration, stepSeconds int) int {
-	if stepSeconds <= 0 {
-		stepSeconds = 60
-	}
-	step := time.Duration(stepSeconds) * time.Second
-	if step <= 0 {
-		return 0
-	}
-	return int(windowDur/step) + 1
+	return int(windowDur/(time.Duration(stepSeconds)*time.Second)) + 1
 }
 
 // mergePoints concatenates points from all series and sorts by timestamp.
@@ -496,16 +490,9 @@ func mergePoints(series []gcpdata.MetricTimeSeries) []metrics.Point {
 	return all
 }
 
-func emptyWindowMessage(metricType, window, kind, labelFilter string) string {
-	base := fmt.Sprintf("Metric %q has no data points in the last %s. The metric is registered in Cloud Monitoring but the window is empty.",
-		metricType, window)
-
-	switch kind {
-	case "DELTA", "CUMULATIVE":
-		base += " For DELTA/CUMULATIVE counters this almost always means no events occurred during the window — for example, dead_letter_message_count has no data when no messages were forwarded to a DLQ."
-	case "GAUGE":
-		base += " For GAUGE metrics this usually means no matching resources are reporting values — check that resources exist and the metric is being collected."
-	}
+func emptyWindowMessage(metricType, window string, kind gcpdata.MetricKind, labelFilter string) string {
+	base := fmt.Sprintf("Metric %q has no data points in the last %s. The metric is registered in Cloud Monitoring but the window is empty. Likely cause: %s.",
+		metricType, window, gcpdata.EmptyWindowReason(kind))
 	if labelFilter != "" {
 		base += fmt.Sprintf(" The label filter %q may also be excluding every series — try removing it.", labelFilter)
 	} else {
@@ -514,21 +501,42 @@ func emptyWindowMessage(metricType, window, kind, labelFilter string) string {
 	return base
 }
 
-func parseWindow(s string) (time.Duration, error) {
-	switch s {
-	case "15m":
-		return 15 * time.Minute, nil
-	case "30m":
-		return 30 * time.Minute, nil
-	case "1h":
-		return time.Hour, nil
-	case "3h":
-		return 3 * time.Hour, nil
-	case "6h":
-		return 6 * time.Hour, nil
-	case "24h":
-		return 24 * time.Hour, nil
-	default:
-		return 0, fmt.Errorf("invalid window %q: must be one of 15m, 30m, 1h, 3h, 6h, 24h", s)
+// metricWindows lists the supported metric analysis windows in ascending
+// order.
+var metricWindows = []struct {
+	name string
+	dur  time.Duration
+}{
+	{"15m", 15 * time.Minute},
+	{"30m", 30 * time.Minute},
+	{"1h", time.Hour},
+	{"3h", 3 * time.Hour},
+	{"6h", 6 * time.Hour},
+	{"24h", 24 * time.Hour},
+}
+
+// defaultMetricWindow is the window used when the input omits one.
+const defaultMetricWindow = "1h"
+
+// metricWindowNames returns the names of metricWindows for the input schema.
+func metricWindowNames() []string {
+	names := make([]string, len(metricWindows))
+	for i, w := range metricWindows {
+		names[i] = w.name
 	}
+	return names
+}
+
+// parseWindow resolves the window input ("" selects defaultMetricWindow) to
+// its name and duration.
+func parseWindow(s string) (string, time.Duration, error) {
+	if s == "" {
+		s = defaultMetricWindow
+	}
+	for _, w := range metricWindows {
+		if w.name == s {
+			return w.name, w.dur, nil
+		}
+	}
+	return "", 0, fmt.Errorf("invalid window %q: must be one of %v", s, metricWindowNames())
 }

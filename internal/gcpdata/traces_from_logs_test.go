@@ -8,10 +8,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestSeverityRank(t *testing.T) {
-	assert.Equal(t, severityRanks["ERROR"], severityRank("error"), "should be case-insensitive")
-	assert.Greater(t, severityRank("CRITICAL"), severityRank("WARNING"))
-	assert.Equal(t, 0, severityRank("NONSENSE"), "unknown severity ranks lowest")
+func TestSeverityRanks(t *testing.T) {
+	assert.Greater(t, severityRanks["CRITICAL"], severityRanks["WARNING"])
+	assert.Equal(t, len(Severities)-1, severityRanks["EMERGENCY"])
+	assert.Equal(t, 0, severityRanks["NONSENSE"], "unknown severity ranks lowest")
 }
 
 func TestFirstLine(t *testing.T) {
@@ -34,6 +34,10 @@ func TestServiceFromResourceInfo(t *testing.T) {
 	assert.Equal(t, "api", serviceFromResourceInfo(&ResourceInfo{
 		Type:   "k8s_container",
 		Labels: map[string]string{"container_name": "api"},
+	}))
+	assert.Equal(t, "resize", serviceFromResourceInfo(&ResourceInfo{
+		Type:   "cloud_function",
+		Labels: map[string]string{"function_name": "resize"},
 	}))
 }
 

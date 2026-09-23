@@ -24,24 +24,14 @@ func RegisterProfilerTrends(s *mcp.Server, d Deps) {
 			IdempotentHint: true,
 		},
 		InputSchema: projectInputSchema[ProfilerTrendsInput](d.Project,
-			enumPatch{"profile_type", enumProfileType},
+			nonEmptyProp("target"),
+			nonNegativeValueIndex,
+			enumProp("profile_type", gcpdata.ProfileTypes),
 		),
 		OutputSchema: outputSchemaFor[gcpdata.ProfileTrendsResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerTrendsInput) (*mcp.CallToolResult, *gcpdata.ProfileTrendsResult, error) {
-		if in.ProfileType == "" {
-			return errResult("profile_type is required (e.g. CPU, HEAP, WALL)"), nil, nil
-		}
-		if in.ValueIndex < 0 {
-			return errResult("value_index must be non-negative"), nil, nil
-		}
-		if in.Target == "" {
-			return errResult("target is required (service name from profiler_list results)"), nil, nil
-		}
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
-		}
-		if err := gcpdata.ValidateProfileType(in.ProfileType); err != nil {
 			return errResult(err.Error()), nil, nil
 		}
 
