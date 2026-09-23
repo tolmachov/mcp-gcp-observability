@@ -229,19 +229,18 @@ func TestRegistryOverlay_UntouchedDefaults(t *testing.T) {
 
 // TestRegistryOverlay_TypeMismatchCollectsAllErrors verifies that when an
 // overlay entry contains multiple fields with wrong Go types, LoadRegistry
-// collects every mismatch into a single returned error (via errors.Join)
-// instead of bailing on the first one. This is the R2-C3 contract: an
-// operator fixing a broken overlay should see every mistake per run, not
-// play whack-a-mole across map-iteration-order failures.
+// collects every mismatch into a single returned error instead of bailing
+// on the first one, so an operator fixing a broken overlay sees every
+// mistake per run.
 func TestRegistryOverlay_TypeMismatchCollectsAllErrors(t *testing.T) {
-	// Two wrong types on the same base metric — `kind: 1` (should be
-	// string) and `slo_threshold: "high"` (should be number). A regression
-	// that early-returned on the first mismatch would produce an error
-	// containing only one of the two substrings.
+	// Two wrong types on the same base metric — `slo_threshold: "high"`
+	// (should be number) and `keywords: cpu` (should be a list). A
+	// regression that early-returned on the first mismatch would produce an
+	// error containing only one of the two lines.
 	overlay := `metrics:
   "compute.googleapis.com/instance/cpu/utilization":
-    kind: 1
     slo_threshold: "high"
+    keywords: cpu
 `
 	dir := t.TempDir()
 	overlayPath := filepath.Join(dir, "overlay.yaml")
@@ -250,8 +249,8 @@ func TestRegistryOverlay_TypeMismatchCollectsAllErrors(t *testing.T) {
 	require.Error(t, err, "expected error for overlay with type mismatches")
 	msg := err.Error()
 	for _, want := range []string{
-		`field "kind" must be string`,
-		`field "slo_threshold" must be number`,
+		"line 3: cannot unmarshal !!str `high` into float64",
+		"line 4: cannot unmarshal !!str `cpu` into []string",
 	} {
 		assert.Contains(t, msg, want, "error message should include all type mismatches")
 	}
@@ -276,4 +275,21 @@ func containsString(list []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// TestRegistryOverlay_UnknownFieldRejected verifies that a misspelled metric
+// or threshold key fails the load instead of being silently ignored.
+func TestRegistryOverlay_UnknownFieldRejected(t *testing.T) {
+	overlay := `metrics:
+  "compute.googleapis.com/instance/cpu/utilization":
+    slo_treshold: 0.9
+    thresholds:
+      cv_noisy: 0.5
+`
+	overlayPath := filepath.Join(t.TempDir(), "overlay.yaml")
+	require.NoError(t, os.WriteFile(overlayPath, []byte(overlay), 0o644))
+	_, err := LoadRegistry(overlayPath)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "line 3: field slo_treshold not found")
+	assert.Contains(t, err.Error(), "line 5: field cv_noisy not found")
 }

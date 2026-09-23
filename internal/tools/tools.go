@@ -205,22 +205,30 @@ func mcpLog(ctx context.Context, req *mcp.CallToolRequest, level mcp.LoggingLeve
 	}
 }
 
-// logAggregationWarnings forwards non-fatal AggregationWarnings to the client.
-// Helps operators spot registry typos and sparse coverage. windowLabel
-// distinguishes current/baseline/windowA/windowB sites.
-func logAggregationWarnings(ctx context.Context, req *mcp.CallToolRequest, logger, metricType, windowLabel string, warnings gcpdata.AggregationWarnings) {
-	for _, msg := range aggregationWarningMessages(metricType, windowLabel, warnings) {
-		mcpLog(ctx, req, logLevelWarning, logger, msg)
+// reportQueryWarnings logs each non-fatal query warning to the client and
+// returns them joined as a note for the tool result, so the log and the note
+// always say the same thing. windowLabel names the queried window (current,
+// baseline (prev_window), window_a, ...).
+func reportQueryWarnings(ctx context.Context, req *mcp.CallToolRequest, tool, metricType, windowLabel string, warnings gcpdata.QueryWarnings) string {
+	msgs := queryWarningMessages(metricType, windowLabel, warnings)
+	for _, msg := range msgs {
+		mcpLog(ctx, req, logLevelWarning, tool, msg)
 	}
+	return joinNote(msgs...)
 }
 
-// aggregationWarningMessages returns warning messages from AggregationWarnings.
+// queryWarningMessages returns one message per warning in warnings.
 // Pure function; testable without an MCP server context.
-func aggregationWarningMessages(metricType, windowLabel string, warnings gcpdata.AggregationWarnings) []string {
+func queryWarningMessages(metricType, windowLabel string, warnings gcpdata.QueryWarnings) []string {
 	if !warnings.HasAny() {
 		return nil
 	}
 	var msgs []string
+	if warnings.UnsupportedPoints > 0 {
+		msgs = append(msgs, fmt.Sprintf(
+			"metric %q (%s): dropped %d point(s) with unsupported or malformed value types during decode.",
+			metricType, windowLabel, warnings.UnsupportedPoints))
+	}
 	if warnings.NonFinitePoints > 0 {
 		msgs = append(msgs, fmt.Sprintf(
 			"metric %q (%s): discarded %d non-finite point(s) (NaN or infinity); no public numeric field contains a non-finite value.",
@@ -250,27 +258,15 @@ func aggregationWarningMessages(metricType, windowLabel string, warnings gcpdata
 	return msgs
 }
 
-func stripTruncatedSeries(series []gcpdata.MetricTimeSeries) ([]gcpdata.MetricTimeSeries, bool) {
-	return gcpdata.StripTruncationSentinel(series)
-}
-
+// joinNote joins the non-empty parts with a space.
 func joinNote(parts ...string) string {
-	var out string
+	kept := make([]string, 0, len(parts))
 	for _, part := range parts {
-		if part == "" {
-			continue
-		}
-		if out == "" {
-			out = part
-		} else {
-			out += " " + part
+		if part != "" {
+			kept = append(kept, part)
 		}
 	}
-	return out
-}
-
-func aggregationWarningsNote(metricType, windowLabel string, warnings gcpdata.AggregationWarnings) string {
-	return joinNote(aggregationWarningMessages(metricType, windowLabel, warnings)...)
+	return strings.Join(kept, " ")
 }
 
 // invalidAggregationSpecError reports whether err is a registry validation error
@@ -314,32 +310,6 @@ func resolveValidAggSpec(ctx context.Context, req *mcp.CallToolRequest, tool, me
 		return aggSpec, errResult(formatRegistryMisconfigError(metricType, err))
 	}
 	return aggSpec, nil
-}
-
-// reportUnsupportedPoints sums and logs dropped points across series.
-// Returns total so callers can surface drops on results.
-func reportUnsupportedPoints(ctx context.Context, req *mcp.CallToolRequest, tool, metricType string, series []gcpdata.MetricTimeSeries) int {
-	total := 0
-	for _, s := range series {
-		total += s.UnsupportedCount
-	}
-	if total > 0 {
-		mcpLog(ctx, req, logLevelWarning, tool,
-			fmt.Sprintf("metric %q: dropped %d points with unsupported or malformed value types during decode", metricType, total))
-	}
-	return total
-}
-
-func reportNonFinitePoints(ctx context.Context, req *mcp.CallToolRequest, tool, metricType, window string, series []gcpdata.MetricTimeSeries) int {
-	total := 0
-	for _, s := range series {
-		total += s.NonFiniteCount
-	}
-	if total > 0 {
-		mcpLog(ctx, req, logLevelWarning, tool,
-			fmt.Sprintf("metric %q (%s): discarded %d non-finite point(s) (NaN or infinity)", metricType, window, total))
-	}
-	return total
 }
 
 // errResult creates a tool error result.
@@ -461,21 +431,16 @@ func clampLimit(limit, fallback, maxLimit int) int {
 	return limit
 }
 
-// weeklyBaselineWeeks is the number of prior same-weekday windows sampled for
-// the same_weekday_hour baseline mode.
-const weeklyBaselineWeeks = 4
-
-// panicError wraps a value recovered from a panic in a weekly-baseline
-// goroutine. It exists so callers can distinguish a code bug (which no retry
-// will fix) from a transient fetch failure via errors.As, rather than
-// substring-matching the error text.
+// panicError wraps a value recovered from a panic in a runParallel task. It
+// exists so callers can distinguish a code bug (which no retry will fix) from
+// a transient fetch failure via errors.As, rather than substring-matching the
+// error text.
 type panicError struct {
-	weeksBack int
-	value     any
+	value any
 }
 
 func (e *panicError) Error() string {
-	return fmt.Sprintf("week -%d: panic: %v", e.weeksBack, e.value)
+	return fmt.Sprintf("panic: %v", e.value)
 }
 
 // containsPanic reports whether any error in errs wraps a recovered panic.
@@ -489,83 +454,39 @@ func containsPanic(errs []error) bool {
 	return false
 }
 
-// runWeeklyBaseline runs work for each of the last weeklyBaselineWeeks weeks
-// (1..N weeks back) concurrently and returns the collected errors. Each work
-// call gets the 1-based weeksBack and should write only its own result slot —
-// indices are disjoint, so those writes need no locking; any other shared
-// state it touches must do its own synchronization. A work error is wrapped
-// with the week offset; a panic is recovered, logged (labeled with tool) to the
-// server-side notifyErrLog, and recorded as a *panicError (detectable via
-// containsPanic) rather than crashing the request. ctx is only consulted once
-// before each work call — a pre-canceled ctx yields one error per week — and
-// is not passed to work, so work must observe cancellation itself by closing
-// over the same ctx. Shared by metrics_snapshot and metrics_top_contributors,
-// whose same_weekday_hour baselines differ only in the per-week body.
-func runWeeklyBaseline(ctx context.Context, tool string, work func(weeksBack int) error) []error {
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	var errs []error
-	addErr := func(e error) {
-		mu.Lock()
-		errs = append(errs, e)
-		mu.Unlock()
+// runParallel calls task(i) for every i in [0, n), running at most limit
+// tasks at a time (limit <= 0 means all at once), and returns the error of
+// each task by index (nil on success). Tasks should write only their own
+// result slot; any other shared state needs its own synchronization. A task
+// is not started once ctx is done — its slot gets ctx.Err() — but a running
+// task must observe cancellation itself. A panic is recovered, logged with
+// its stack (labeled with tool) to the server-side notifyErrLog, and recorded
+// as a *panicError (detectable via containsPanic) rather than crashing the
+// server.
+func runParallel(ctx context.Context, tool string, n, limit int, task func(i int) error) []error {
+	if limit <= 0 {
+		limit = n
 	}
-	for w := 1; w <= weeklyBaselineWeeks; w++ {
-		wg.Add(1)
-		go func(weeksBack int) {
-			defer wg.Done()
+	errs := make([]error, n)
+	sem := make(chan struct{}, limit)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() {
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			defer func() {
 				if r := recover(); r != nil {
-					stack := debug.Stack()
-					notifyErrLog.Load().Error(tool+": panic in baseline goroutine", "weeks_back", weeksBack, "panic", r, "stack", string(stack))
-					addErr(&panicError{weeksBack: weeksBack, value: r})
+					notifyErrLog.Load().Error(tool+": panic in parallel task", "index", i, "panic", r, "stack", string(debug.Stack()))
+					errs[i] = &panicError{value: r}
 				}
 			}()
-			if ctx.Err() != nil {
-				addErr(fmt.Errorf("week -%d: %w", weeksBack, ctx.Err()))
+			if err := ctx.Err(); err != nil {
+				errs[i] = err
 				return
 			}
-			if err := work(weeksBack); err != nil {
-				addErr(fmt.Errorf("week -%d: %w", weeksBack, err))
-			}
-		}(w)
+			errs[i] = task(i)
+		})
 	}
 	wg.Wait()
 	return errs
-}
-
-// weeklyBaselinePartialNote builds the user-facing note and emits the matching
-// MCP log for a partial same_weekday_hour baseline failure — some weeks failed
-// but at least one produced data (nonEmpty > 0). Recovered panics are reported
-// distinctly from transient fetch failures (error-level log, "report this
-// issue" wording) because they signal a code bug a retry will not fix. Returns
-// "" when errs is empty. Shared by metrics_snapshot and metrics_top_contributors
-// so both surface panics identically.
-func weeklyBaselinePartialNote(ctx context.Context, req *mcp.CallToolRequest, tool string, errs []error, nonEmpty int) string {
-	if len(errs) == 0 {
-		return ""
-	}
-	joined := errors.Join(errs...)
-	if containsPanic(errs) {
-		mcpLog(ctx, req, logLevelError, tool,
-			fmt.Sprintf("baseline partial failure: UNEXPECTED PANICS in %d of %d weeks; %v",
-				len(errs), weeklyBaselineWeeks, joined))
-		return fmt.Sprintf("Baseline partial failure (%s): UNEXPECTED PANICS occurred in %d of %d weekly queries. This is a bug in the code, not a transient failure. Baseline computed from %d weeks, but results may be unreliable. Please report this issue.",
-			string(BaselineModeSameWeekdayHour), len(errs), weeklyBaselineWeeks, nonEmpty)
-	}
-	mcpLog(ctx, req, logLevelWarning, tool,
-		fmt.Sprintf("baseline partial failure: %d of %d weeks failed (%v); using %d weeks of data",
-			len(errs), weeklyBaselineWeeks, joined, nonEmpty))
-	return fmt.Sprintf("Baseline partial failure (%s): %d of %d weekly samples could not be fetched; baseline computed from %d weeks. Results may be less reliable.",
-		string(BaselineModeSameWeekdayHour), len(errs), weeklyBaselineWeeks, nonEmpty)
-}
-
-// safeClassification converts a Classification to string for JSON output,
-// mapping the zero value ClassNotComputed ("") to ClassInsufficientData
-// so consumers never receive an empty classification string.
-func safeClassification(c metrics.Classification) string {
-	if c == metrics.ClassNotComputed {
-		return string(metrics.ClassInsufficientData)
-	}
-	return string(c)
 }

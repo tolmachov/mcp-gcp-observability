@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"math"
+	"slices"
 	"sort"
 	"time"
 )
@@ -55,18 +56,15 @@ func Process(points, baselinePoints []Point, meta MetricMeta, stepSeconds, expec
 // ProcessWithBaselineStats computes features using precomputed baseline stats
 // (e.g. same_weekday_hour with median/MAD). window is the requested wall-clock
 // range used for data-quality reliability; pass the zero Window when unknown.
+// Empty points yield ClassInsufficientData with low confidence.
 func ProcessWithBaselineStats(points []Point, baseline BaselineStats, meta MetricMeta, stepSeconds int, window Window) SignalFeatures {
+	if len(points) == 0 {
+		return SignalFeatures{Classification: ClassInsufficientData, Confidence: ConfidenceLow}
+	}
 	var f SignalFeatures
 
-	if len(points) == 0 {
-		return f
-	}
-
 	// Copy before sorting to avoid mutating the caller's slice.
-	pts := make([]Point, len(points))
-	copy(pts, points)
-	points = pts
-
+	points = slices.Clone(points)
 	sort.Slice(points, func(i, j int) bool {
 		return points[i].Timestamp.Before(points[j].Timestamp)
 	})
@@ -82,9 +80,7 @@ func ProcessWithBaselineStats(points []Point, baseline BaselineStats, meta Metri
 		f.CV = f.Stddev / denom
 	}
 
-	sorted := make([]float64, len(values))
-	copy(sorted, values)
-	sort.Float64s(sorted)
+	sorted := slices.Sorted(slices.Values(values))
 
 	f.Min = sorted[0]
 	f.Max = sorted[len(sorted)-1]

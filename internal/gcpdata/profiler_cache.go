@@ -1,6 +1,7 @@
 package gcpdata
 
 import (
+	"bytes"
 	"sync"
 	"sync/atomic"
 )
@@ -38,7 +39,7 @@ func (c *ProfileCache) Get(key string) ([]byte, ProfileMeta, bool) {
 		if e.key == key {
 			c.entries = append(c.entries[:i], c.entries[i+1:]...)
 			c.entries = append(c.entries, e)
-			return append([]byte(nil), e.data...), e.meta, true
+			return bytes.Clone(e.data), e.meta, true
 		}
 	}
 	return nil, ProfileMeta{}, false
@@ -67,7 +68,7 @@ func (c *ProfileCache) Put(key string, data []byte, meta ProfileMeta) bool {
 		processProfileCacheBytes.Add(-size)
 		return false
 	}
-	c.entries = append(c.entries, profileCacheEntry{key: key, data: append([]byte(nil), data...), meta: meta})
+	c.entries = append(c.entries, profileCacheEntry{key: key, data: bytes.Clone(data), meta: meta})
 	c.bytes += size
 	return true
 }

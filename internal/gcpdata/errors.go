@@ -4,7 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -124,10 +125,7 @@ func ListErrors(ctx context.Context, client *errorreporting.ErrorStatsClient, pr
 					versions[svc.Version] = true
 				}
 			}
-			for v := range versions {
-				g.AffectedVersions = append(g.AffectedVersions, v)
-			}
-			sort.Strings(g.AffectedVersions)
+			g.AffectedVersions = slices.Sorted(maps.Keys(versions))
 		}
 
 		// Extract message from representative event

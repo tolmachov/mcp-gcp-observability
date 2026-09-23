@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -33,7 +34,7 @@ func availableLabelsFromDescriptor(ctx context.Context, req *mcp.CallToolRequest
 	for _, l := range desc.Labels {
 		result.Metric = append(result.Metric, l.Key)
 	}
-	sort.Strings(result.Metric)
+	slices.Sort(result.Metric)
 
 	if len(desc.MonitoredResourceTypes) > 0 {
 		result.Resource = make(map[string][]string, len(desc.MonitoredResourceTypes))
@@ -48,7 +49,7 @@ func availableLabelsFromDescriptor(ctx context.Context, req *mcp.CallToolRequest
 			if labels == nil {
 				continue
 			}
-			sort.Strings(labels)
+			slices.Sort(labels)
 			result.Resource[rt] = labels
 		}
 		if len(result.Resource) == 0 {

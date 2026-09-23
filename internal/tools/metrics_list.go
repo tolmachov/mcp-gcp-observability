@@ -45,19 +45,17 @@ func RegisterMetricsList(s *mcp.Server, d Deps) {
 		sendProgress(ctx, req, 0, 1, "Discovering metrics...")
 
 		// Registry entries.
-		registryEntries := d.Registry.List(in.Match, kind)
-		seen := make(map[string]bool, len(registryEntries))
-
+		seen := make(map[string]bool)
 		var entries []MetricsListEntry
-		for _, re := range registryEntries {
-			seen[re.MetricType] = true
+		for name, meta := range d.Registry.List(in.Match, kind) {
+			seen[name] = true
 			entries = append(entries, MetricsListEntry{
-				MetricType:      re.MetricType,
-				Kind:            string(re.Kind),
-				Unit:            re.Unit,
-				BetterDirection: string(re.BetterDirection),
-				SLOThreshold:    re.SLOThreshold,
-				RelatedMetrics:  re.RelatedMetrics,
+				MetricType:      name,
+				Kind:            string(meta.Kind),
+				Unit:            meta.Unit,
+				BetterDirection: string(meta.BetterDirection),
+				SLOThreshold:    meta.SLOThreshold,
+				RelatedMetrics:  meta.RelatedMetrics,
 			})
 		}
 

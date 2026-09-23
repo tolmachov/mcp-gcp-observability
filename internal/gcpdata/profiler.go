@@ -2,6 +2,7 @@ package gcpdata
 
 import (
 	"bytes"
+	"cmp"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -11,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"slices"
 	"sort"
@@ -1323,14 +1325,9 @@ func findInTrie(root *trieNode, name string) (*trieNode, error) {
 }
 
 func sortedChildren(node *trieNode) []*trieNode {
-	children := make([]*trieNode, 0, len(node.children))
-	for _, child := range node.children {
-		children = append(children, child)
-	}
-	sort.Slice(children, func(i, j int) bool {
-		return absInt64(children[i].cumulative) > absInt64(children[j].cumulative)
+	return slices.SortedFunc(maps.Values(node.children), func(a, b *trieNode) int {
+		return cmp.Compare(absInt64(b.cumulative), absInt64(a.cumulative))
 	})
-	return children
 }
 
 func safePercent(value, total int64) float64 {

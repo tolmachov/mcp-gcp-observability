@@ -11,7 +11,7 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-// TestSnapshotCallResult verifies that snapshotCallResult excludes chart_points
+// TestSnapshotCallResult verifies that chartCallResult excludes chart_points
 // from the LLM-facing content while leaving the original struct intact.
 func TestSnapshotCallResult(t *testing.T) {
 	pts := []chartPoint{{TS: 1700000000, V: 1.0}, {TS: 1700000060, V: 2.0}}
@@ -23,7 +23,8 @@ func TestSnapshotCallResult(t *testing.T) {
 		ChartPoints: pts,
 	}
 
-	cr := snapshotCallResult(result)
+	cr, structured := chartCallResult(result, result.withoutChart(), chartStaticURI)
+	assert.Same(t, result, structured, "structuredContent must be the full result")
 
 	t.Run("content does not contain chart_points", func(t *testing.T) {
 		require.Len(t, cr.Content, 1)
@@ -36,7 +37,7 @@ func TestSnapshotCallResult(t *testing.T) {
 	})
 
 	t.Run("original struct is not mutated", func(t *testing.T) {
-		assert.Equal(t, pts, result.ChartPoints, "snapshotCallResult must not modify the caller's struct")
+		assert.Equal(t, pts, result.ChartPoints, "withoutChart must not modify the caller's struct")
 	})
 
 	t.Run("not an error result", func(t *testing.T) {

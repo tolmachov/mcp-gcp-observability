@@ -8,7 +8,6 @@ import (
 	"math"
 	"slices"
 	"sort"
-	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -52,6 +51,129 @@ func parseBaselineMode(raw, eventTimeStr string) (BaselineMode, time.Time, error
 	return mode, eventTime, nil
 }
 
+// weeklyBaselineWeeks is the number of prior same-weekday windows sampled for
+// the same_weekday_hour baseline mode.
+const weeklyBaselineWeeks = 4
+
+// preEventBaselineSpan is how far before event_time the pre_event baseline
+// looks.
+const preEventBaselineSpan = 30 * time.Minute
+
+// baselineWindow is one time range sampled for a baseline. label names it in
+// warnings and errors.
+type baselineWindow struct {
+	start, end time.Time
+	label      string
+}
+
+// windows returns the time ranges the mode samples as the baseline of the
+// current window [start, end): the window just before it (prev_window), the
+// same wall-clock window in each of the previous weeklyBaselineWeeks weeks
+// (same_weekday_hour), or the preEventBaselineSpan before eventTime
+// (pre_event). eventTime is ignored by the other modes.
+func (m BaselineMode) windows(start, end, eventTime time.Time) []baselineWindow {
+	switch m {
+	case BaselineModeSameWeekdayHour:
+		out := make([]baselineWindow, weeklyBaselineWeeks)
+		for i := range out {
+			days := -7 * (i + 1)
+			out[i] = baselineWindow{
+				start: start.AddDate(0, 0, days),
+				end:   end.AddDate(0, 0, days),
+				label: fmt.Sprintf("baseline (%s week -%d)", m, i+1),
+			}
+		}
+		return out
+	case BaselineModePreEvent:
+		return []baselineWindow{{start: eventTime.Add(-preEventBaselineSpan), end: eventTime, label: "baseline (pre_event)"}}
+	default:
+		return []baselineWindow{{start: start.Add(-end.Sub(start)), end: start, label: "baseline (prev_window)"}}
+	}
+}
+
+// windowResult is the outcome of one time-series query.
+type windowResult struct {
+	series   []gcpdata.MetricTimeSeries
+	warnings gcpdata.QueryWarnings
+	err      error
+}
+
+// hasPoints reports whether the query succeeded with at least one point.
+func (r windowResult) hasPoints() bool {
+	return r.err == nil && slices.ContainsFunc(r.series, func(s gcpdata.MetricTimeSeries) bool { return len(s.Points) > 0 })
+}
+
+// queryFunc runs one time-series query; the metrics tools bind it to the raw
+// or the aggregated querier method.
+type queryFunc func(gcpdata.QueryTimeSeriesParams) ([]gcpdata.MetricTimeSeries, gcpdata.QueryWarnings, error)
+
+// queryWithBaseline runs the current-window query and one query per baseline
+// window concurrently: baseline parameters depend only on the current ones,
+// so there is no reason to wait for the current result first. Callers drop
+// the baseline results (without reporting them) when the current window turns
+// out to be empty or failed.
+func queryWithBaseline(ctx context.Context, tool string, current gcpdata.QueryTimeSeriesParams, windows []baselineWindow, query queryFunc) (windowResult, []windowResult) {
+	results := make([]windowResult, 1+len(windows))
+	errs := runParallel(ctx, tool, len(results), 0, func(i int) error {
+		p := current
+		if i > 0 {
+			p.Start, p.End = windows[i-1].start, windows[i-1].end
+		}
+		r := &results[i]
+		r.series, r.warnings, r.err = query(p)
+		return r.err
+	})
+	for i, err := range errs {
+		results[i].err = err
+	}
+	return results[0], results[1:]
+}
+
+// collectBaseline reports the warnings of every baseline window and applies
+// the baseline failure policy: the baseline fails only when no window produced
+// data and at least one query failed; failed windows alongside usable ones
+// yield a partial-failure note. The returned note carries the partial-failure
+// note and the warning notes.
+func collectBaseline(ctx context.Context, req *mcp.CallToolRequest, tool, metricType string, mode BaselineMode, windows []baselineWindow, results []windowResult) (string, error) {
+	var notes []string
+	var errs []error
+	withData := 0
+	for i, r := range results {
+		if note := reportQueryWarnings(ctx, req, tool, metricType, windows[i].label, r.warnings); note != "" && !slices.Contains(notes, note) {
+			notes = append(notes, note)
+		}
+		if r.err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", windows[i].label, r.err))
+		}
+		if r.hasPoints() {
+			withData++
+		}
+	}
+	if len(errs) == 0 {
+		return joinNote(notes...), nil
+	}
+	joined := errors.Join(errs...)
+	if withData == 0 {
+		if len(errs) == len(windows) {
+			return "", fmt.Errorf("all %d baseline queries failed: %w", len(windows), joined)
+		}
+		return "", fmt.Errorf("%d of %d baseline queries failed and the rest returned no data: %w", len(errs), len(windows), joined)
+	}
+	var partial string
+	if containsPanic(errs) {
+		mcpLog(ctx, req, logLevelError, tool,
+			fmt.Sprintf("baseline partial failure: UNEXPECTED PANICS in %d of %d queries; %v", len(errs), len(windows), joined))
+		partial = fmt.Sprintf("Baseline partial failure (%s): UNEXPECTED PANICS occurred in %d of %d baseline queries. This is a bug in the code, not a transient failure. Baseline computed from %d windows, but results may be unreliable. Please report this issue.",
+			mode, len(errs), len(windows), withData)
+	} else {
+		mcpLog(ctx, req, logLevelWarning, tool,
+			fmt.Sprintf("baseline partial failure: %d of %d queries failed (%v); using %d windows of data", len(errs), len(windows), joined, withData))
+		partial = fmt.Sprintf("Baseline partial failure (%s): %d of %d baseline windows could not be fetched; baseline computed from %d windows. Results may be less reliable.",
+			mode, len(errs), len(windows), withData)
+	}
+	return joinNote(partial, joinNote(notes...)), nil
+}
+
 // toChartPoints converts metric points to the compact chartPoint slice used by
 // the chart widget, filtering out NaN and Inf values.
 func toChartPoints(pts []metrics.Point) []chartPoint {
@@ -64,29 +186,29 @@ func toChartPoints(pts []metrics.Point) []chartPoint {
 	return out
 }
 
-// snapshotCallResult builds the CallToolResult for metrics_snapshot. It sets
-// Content to the JSON of the analysis result without chart_points, so that
-// raw time-series data stays in structuredContent only and never reaches the LLM.
-func snapshotCallResult(result *MetricSnapshotResult) *mcp.CallToolResult {
-	// Shallow copy so we can zero ChartPoints without mutating the caller's struct.
-	// The caller returns result as structuredContent (with ChartPoints intact).
-	clone := *result
-	clone.ChartPoints = nil
-	analysisJSON, err := json.Marshal(&clone)
+// chartCallResult returns the handler results of a chart tool: result goes to
+// structuredContent, where the chart widget reads its points, while the
+// LLM-facing text content is the JSON of llm — a copy of result with the
+// chart points removed, so raw time-series data never reaches the model. The
+// ui meta binds the widget at uri on every result, for hosts that missed the
+// resource URI in the tool definition.
+func chartCallResult[T any](result, llm *T, uri string) (*mcp.CallToolResult, *T) {
+	text, err := json.Marshal(llm)
 	if err != nil {
-		// Should never happen: all fields are JSON-safe types.
-		return &mcp.CallToolResult{
-			IsError: true,
-			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("internal error: failed to marshal result: %v", err)}},
-		}
+		return errResult(fmt.Sprintf("internal error: failed to marshal result: %v", err)), nil
 	}
 	return &mcp.CallToolResult{
-		// Signal the static chart widget resource on every call result so hosts
-		// can associate this result with the chart iframe even if they missed the
-		// resource URI in the tool definition (belt-and-suspenders).
-		Meta:    mcp.Meta{"ui": map[string]any{"resourceUri": chartStaticURI}},
-		Content: []mcp.Content{&mcp.TextContent{Text: string(analysisJSON)}},
-	}
+		Meta:    mcp.Meta{"ui": map[string]any{"resourceUri": uri}},
+		Content: []mcp.Content{&mcp.TextContent{Text: string(text)}},
+	}, result
+}
+
+// withoutChart returns a copy of r without chart points, for the LLM-facing
+// content.
+func (r *MetricSnapshotResult) withoutChart() *MetricSnapshotResult {
+	c := *r
+	c.ChartPoints = nil
+	return &c
 }
 
 func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
@@ -145,21 +267,20 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 		now := time.Now().UTC()
 		start := now.Add(-windowDur)
 
-		sendProgress(ctx, req, 1, 4, "Looking up metric descriptor")
+		sendProgress(ctx, req, 1, 3, "Looking up metric descriptor")
 
 		descriptor, errRes := lookupMetricDescriptor(ctx, req, d.Querier, "metrics_snapshot", project, in.MetricType)
 		if errRes != nil {
 			return errRes, nil, nil
 		}
 
-		sendProgress(ctx, req, 2, 4, "Querying current window")
-
 		aggSpec, errRes := resolveValidAggSpec(ctx, req, "metrics_snapshot", in.MetricType, meta)
 		if errRes != nil {
 			return errRes, nil, nil
 		}
 
-		// Query current window.
+		sendProgress(ctx, req, 2, 3, "Querying current window and baseline ("+string(baselineMode)+")")
+
 		currentParams := gcpdata.QueryTimeSeriesParams{
 			Project:     project,
 			MetricType:  in.MetricType,
@@ -170,10 +291,14 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 			MetricKind:  descriptor.Kind,
 			ValueType:   descriptor.ValueType,
 		}
-		currentSeries, currentWarnings, err := d.Querier.QueryTimeSeriesAggregated(ctx, currentParams, aggSpec)
-		logAggregationWarnings(ctx, req, "metrics_snapshot", in.MetricType, "current", currentWarnings)
-		currentWarningsNote := aggregationWarningsNote(in.MetricType, "current", currentWarnings)
-		if err != nil {
+		baselineWindows := baselineMode.windows(start, now, eventTime)
+		current, baselineResults := queryWithBaseline(ctx, "metrics_snapshot", currentParams, baselineWindows,
+			func(p gcpdata.QueryTimeSeriesParams) ([]gcpdata.MetricTimeSeries, gcpdata.QueryWarnings, error) {
+				return d.Querier.QueryTimeSeriesAggregated(ctx, p, aggSpec)
+			})
+
+		currentWarningsNote := reportQueryWarnings(ctx, req, "metrics_snapshot", in.MetricType, "current", current.warnings)
+		if err := current.err; err != nil {
 			mcpLog(ctx, req, logLevelError, "metrics_snapshot", fmt.Sprintf("current window query failed: %v", err))
 			if invalidAggregationSpecError(err) {
 				return errResult(formatRegistryMisconfigError(in.MetricType, err)), nil, nil
@@ -183,9 +308,8 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 			}
 			return errResult(fmt.Sprintf("Failed to query metric: %v", err)), nil, nil
 		}
-		unsupportedCount := reportUnsupportedPoints(ctx, req, "metrics_snapshot", in.MetricType, currentSeries)
 
-		currentPoints := mergePoints(currentSeries)
+		currentPoints := mergePoints(current.series)
 		if len(currentPoints) == 0 {
 			expected := expectedPointsForWindow(windowDur, int(stepSeconds))
 			r := &MetricSnapshotResult{
@@ -198,11 +322,11 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 				BaselineMode:             string(baselineMode),
 				Trend:                    "unchanged",
 				Classification:           string(metrics.ClassInsufficientData),
-				ClassificationConfidence: "low",
+				ClassificationConfidence: string(metrics.ConfidenceLow),
 				DataQuality: metrics.DataQuality{
 					ExpectedPoints:  expected,
 					ActualPoints:    0,
-					NonFinitePoints: currentWarnings.NonFinitePoints,
+					NonFinitePoints: current.warnings.NonFinitePoints,
 					Reliable:        false,
 				},
 				Window: WindowInfo{
@@ -211,16 +335,15 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 				},
 				AvailableLabels: availableLabelsFromDescriptor(ctx, req, d.Querier, project, in.MetricType, descriptor),
 			}
-			return snapshotCallResult(r), r, nil
+			res, out := chartCallResult(r, r.withoutChart(), chartStaticURI)
+			return res, out, nil
 		}
 
-		sendProgress(ctx, req, 3, 4, "Querying baseline ("+string(baselineMode)+")")
-
 		var baselineErrNote string
-		baseline, baselinePartialNote, err := buildBaselineStats(ctx, req, d.Querier, currentParams, aggSpec, windowDur, baselineMode, eventTime, int(stepSeconds))
+		baselineNote, err := collectBaseline(ctx, req, "metrics_snapshot", in.MetricType, baselineMode, baselineWindows, baselineResults)
+		var baseline metrics.BaselineStats
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "metrics_snapshot", fmt.Sprintf("baseline query failed: %v", err))
-			baseline = metrics.BaselineStats{}
 			// Classify error type to help user understand whether to retry or fix configuration
 			if invalidAggregationSpecError(err) {
 				baselineErrNote = fmt.Sprintf("Baseline skipped: registry misconfiguration for metric %q. Fix the aggregation block in the metrics registry YAML file; retrying will not help. %v",
@@ -229,9 +352,20 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 				baselineErrNote = fmt.Sprintf("Baseline query (%s) temporarily failed: %v. You can retry. Returning current-window snapshot with baseline_reliable=false; delta fields are not meaningful.",
 					string(baselineMode), err)
 			}
+		} else {
+			buckets := make([][]metrics.Point, len(baselineResults))
+			for i, r := range baselineResults {
+				if r.err == nil {
+					buckets[i] = mergePoints(r.series)
+				}
+			}
+			// Every window of a mode has the same span. A single-window mode
+			// makes ComputeRobustBaselineStats reduce to plain mean/stddev.
+			span := baselineWindows[0].end.Sub(baselineWindows[0].start)
+			baseline = metrics.ComputeRobustBaselineStats(buckets, expectedPointsForWindow(span, int(stepSeconds)))
 		}
 
-		sendProgress(ctx, req, 4, 4, "Processing results")
+		sendProgress(ctx, req, 3, 3, "Processing results")
 
 		// Process.
 		f := metrics.ProcessWithBaselineStats(currentPoints, baseline, meta, int(stepSeconds), metrics.Window{Start: start, End: now})
@@ -268,18 +402,13 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 				From: start.Format(time.RFC3339),
 				To:   now.Format(time.RFC3339),
 			},
+			Note: joinNote(baselineErrNote, currentWarningsNote, baselineNote),
 		}
-		result.DataQuality.NonFinitePoints = currentWarnings.NonFinitePoints
+		result.DataQuality.NonFinitePoints = current.warnings.NonFinitePoints
 
 		if f.StepChangeAt != nil {
 			result.StepChangeAt = f.StepChangeAt.Format(time.RFC3339)
 		}
-
-		var unsupportedNote string
-		if unsupportedCount > 0 {
-			unsupportedNote = fmt.Sprintf("Dropped %d points with unsupported or malformed value types during decode (see server log).", unsupportedCount)
-		}
-		result.Note = joinNote(baselineErrNote, currentWarningsNote, baselinePartialNote, unsupportedNote)
 
 		if meta.Kind == metrics.KindLatency {
 			result.Percentiles = &PercentileInfo{
@@ -293,7 +422,8 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 		result.AvailableLabels = availableLabelsFromDescriptor(ctx, req, d.Querier, project, in.MetricType, descriptor)
 
 		result.ChartPoints = toChartPoints(currentPoints)
-		return snapshotCallResult(result), result, nil
+		res, out := chartCallResult(result, result.withoutChart(), chartStaticURI)
+		return res, out, nil
 	})
 }
 
@@ -353,8 +483,8 @@ type MetricSnapshotResult struct {
 	AvailableLabels *AvailableLabels `json:"available_labels,omitempty"`
 
 	// ChartPoints holds the raw time-series points for the UI chart widget.
-	// Included in structuredContent; snapshotCallResult excludes it from the
-	// LLM-facing content field by marshaling a shallow copy with ChartPoints=nil.
+	// Included in structuredContent; chartCallResult excludes it from the
+	// LLM-facing content field (see withoutChart).
 	ChartPoints []chartPoint `json:"chart_points,omitempty"`
 }
 
@@ -368,108 +498,6 @@ type PercentileInfo struct {
 type WindowInfo struct {
 	From string `json:"from"`
 	To   string `json:"to"`
-}
-
-// buildBaselineStats queries baseline data in the requested mode and returns
-// precomputed BaselineStats ready for metrics.ProcessWithBaselineStats.
-// note is non-empty when the baseline succeeded with caveats (for example
-// weekly partial failures or aggregation warnings); the caller should surface
-// it in the tool result Note field.
-func buildBaselineStats(
-	ctx context.Context,
-	req *mcp.CallToolRequest,
-	querier gcpdata.MetricsQuerier,
-	params gcpdata.QueryTimeSeriesParams,
-	aggSpec metrics.AggregationSpec,
-	windowDur time.Duration,
-	mode BaselineMode,
-	eventTime time.Time,
-	stepSeconds int,
-) (metrics.BaselineStats, string, error) {
-	expectedPerWindow := expectedPointsForWindow(windowDur, stepSeconds)
-
-	switch mode {
-	case BaselineModeSameWeekdayHour:
-		return buildRobustWeeklyBaseline(ctx, req, querier, params, aggSpec, expectedPerWindow)
-
-	case BaselineModePreEvent:
-		p := params
-		p.End = eventTime
-		p.Start = eventTime.Add(-30 * time.Minute)
-		series, warnings, err := querier.QueryTimeSeriesAggregated(ctx, p, aggSpec)
-		logAggregationWarnings(ctx, req, "metrics_snapshot", params.MetricType, "baseline (pre_event)", warnings)
-		if err != nil {
-			return metrics.BaselineStats{}, "", fmt.Errorf("querying pre_event baseline: %w", err)
-		}
-		preEventExpected := expectedPointsForWindow(30*time.Minute, stepSeconds)
-		return metrics.ComputeBaselineStats(mergePoints(series), preEventExpected),
-			aggregationWarningsNote(params.MetricType, "baseline (pre_event)", warnings), nil
-
-	default: // prev_window
-		p := params
-		p.End = params.Start
-		p.Start = params.Start.Add(-windowDur)
-		series, warnings, err := querier.QueryTimeSeriesAggregated(ctx, p, aggSpec)
-		logAggregationWarnings(ctx, req, "metrics_snapshot", params.MetricType, "baseline (prev_window)", warnings)
-		if err != nil {
-			return metrics.BaselineStats{}, "", fmt.Errorf("querying prev_window baseline: %w", err)
-		}
-		return metrics.ComputeBaselineStats(mergePoints(series), expectedPerWindow),
-			aggregationWarningsNote(params.MetricType, "baseline (prev_window)", warnings), nil
-	}
-}
-
-// buildRobustWeeklyBaseline queries the same wall-clock window for each of
-// the last 4 weeks in parallel and combines them via median/MAD.
-// partialNote is non-empty when some weeks failed but enough data remains.
-func buildRobustWeeklyBaseline(
-	ctx context.Context,
-	req *mcp.CallToolRequest,
-	querier gcpdata.MetricsQuerier,
-	params gcpdata.QueryTimeSeriesParams,
-	aggSpec metrics.AggregationSpec,
-	expectedPerWeek int,
-) (metrics.BaselineStats, string, error) {
-	weekly := make([][]metrics.Point, weeklyBaselineWeeks)
-	warningNotes := make([]string, 0, weeklyBaselineWeeks)
-	warningNotesSeen := make(map[string]bool, weeklyBaselineWeeks)
-	var noteMu sync.Mutex
-
-	errs := runWeeklyBaseline(ctx, "metrics_snapshot", func(weeksBack int) error {
-		p := params
-		p.Start = params.Start.AddDate(0, 0, -7*weeksBack)
-		p.End = params.End.AddDate(0, 0, -7*weeksBack)
-		series, warnings, err := querier.QueryTimeSeriesAggregated(ctx, p, aggSpec)
-		label := fmt.Sprintf("baseline (same_weekday_hour week -%d)", weeksBack)
-		logAggregationWarnings(ctx, req, "metrics_snapshot", params.MetricType, label, warnings)
-		if note := aggregationWarningsNote(params.MetricType, label, warnings); note != "" {
-			noteMu.Lock()
-			if !warningNotesSeen[note] {
-				warningNotesSeen[note] = true
-				warningNotes = append(warningNotes, note)
-			}
-			noteMu.Unlock()
-		}
-		if err != nil {
-			return err
-		}
-		weekly[weeksBack-1] = mergePoints(series)
-		return nil
-	})
-
-	nonEmpty := 0
-	for _, w := range weekly {
-		if len(w) > 0 {
-			nonEmpty++
-		}
-	}
-	if nonEmpty == 0 && len(errs) > 0 {
-		return metrics.BaselineStats{}, "", fmt.Errorf("all %d baseline queries failed; first error: %w", len(errs), errors.Join(errs...))
-	}
-	partialNote := weeklyBaselinePartialNote(ctx, req, "metrics_snapshot", errs, nonEmpty)
-
-	return metrics.ComputeRobustBaselineStats(weekly, expectedPerWeek),
-		joinNote(partialNote, joinNote(warningNotes...)), nil
 }
 
 // expectedPointsForWindow is the ideal point count for a window of the given

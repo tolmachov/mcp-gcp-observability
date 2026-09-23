@@ -2,6 +2,8 @@ package tools
 
 import (
 	"context"
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,17 +16,17 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func TestAggregationWarningMessages(t *testing.T) {
+func TestQueryWarningMessages(t *testing.T) {
 	const metricType = "custom.googleapis.com/players_count"
 	const window = "current"
 
 	t.Run("Edge: zero warnings → empty slice", func(t *testing.T) {
-		got := aggregationWarningMessages(metricType, window, gcpdata.AggregationWarnings{})
+		got := queryWarningMessages(metricType, window, gcpdata.QueryWarnings{})
 		assert.Nil(t, got)
 	})
 
 	t.Run("Positive: SingleGroup-only emits one message naming the metric, window, and group count", func(t *testing.T) {
-		got := aggregationWarningMessages(metricType, window, gcpdata.AggregationWarnings{
+		got := queryWarningMessages(metricType, window, gcpdata.QueryWarnings{
 			SingleGroup: true,
 			GroupCount:  1,
 		})
@@ -37,7 +39,7 @@ func TestAggregationWarningMessages(t *testing.T) {
 	})
 
 	t.Run("Positive: CarryForwardBuckets-only emits one message with the ratio", func(t *testing.T) {
-		got := aggregationWarningMessages(metricType, "baseline", gcpdata.AggregationWarnings{
+		got := queryWarningMessages(metricType, "baseline", gcpdata.QueryWarnings{
 			CarryForwardBuckets: 7,
 			TotalBuckets:        20,
 		})
@@ -49,7 +51,7 @@ func TestAggregationWarningMessages(t *testing.T) {
 	})
 
 	t.Run("Positive: DepartedGroupBuckets emits a message naming distinct departed series", func(t *testing.T) {
-		got := aggregationWarningMessages(metricType, window, gcpdata.AggregationWarnings{
+		got := queryWarningMessages(metricType, window, gcpdata.QueryWarnings{
 			DepartedGroupBuckets: 4,
 			DepartedSeries:       2,
 			TotalBuckets:         60,
@@ -61,7 +63,7 @@ func TestAggregationWarningMessages(t *testing.T) {
 	})
 
 	t.Run("Positive: SingleGroup + DepartedGroup + CarryForward → three messages, departed before carry-forward", func(t *testing.T) {
-		got := aggregationWarningMessages(metricType, window, gcpdata.AggregationWarnings{
+		got := queryWarningMessages(metricType, window, gcpdata.QueryWarnings{
 			SingleGroup:          true,
 			GroupCount:           1,
 			DepartedGroupBuckets: 2,
@@ -76,8 +78,15 @@ func TestAggregationWarningMessages(t *testing.T) {
 		assert.NotContains(t, got[2], "departed")
 	})
 
+	t.Run("Positive: UnsupportedPoints emits one message with the count", func(t *testing.T) {
+		got := queryWarningMessages(metricType, window, gcpdata.QueryWarnings{UnsupportedPoints: 4})
+		require.Len(t, got, 1)
+		assert.Contains(t, got[0], "dropped 4 point(s) with unsupported")
+		assert.Contains(t, got[0], window)
+	})
+
 	t.Run("Edge: zero counters with TotalBuckets>0 does NOT emit ragged warning", func(t *testing.T) {
-		got := aggregationWarningMessages(metricType, window, gcpdata.AggregationWarnings{
+		got := queryWarningMessages(metricType, window, gcpdata.QueryWarnings{
 			TotalBuckets: 60,
 		})
 		assert.Nil(t, got)
@@ -264,8 +273,8 @@ func TestParseTimeRange(t *testing.T) {
 	})
 }
 
-func TestAggregationWarningMessagesTruncation(t *testing.T) {
-	got := aggregationWarningMessages("custom.googleapis.com/foo", "current", gcpdata.AggregationWarnings{
+func TestQueryWarningMessagesTruncation(t *testing.T) {
+	got := queryWarningMessages("custom.googleapis.com/foo", "current", gcpdata.QueryWarnings{
 		TruncatedSeries: true,
 	})
 	require.Len(t, got, 1)
@@ -420,4 +429,63 @@ func TestStartProgressHeartbeat_NoToken(t *testing.T) {
 
 	// Calling stop again must stay safe.
 	assert.NotPanics(t, stop)
+}
+
+func TestJoinNote(t *testing.T) {
+	assert.Empty(t, joinNote())
+	assert.Empty(t, joinNote("", ""))
+	assert.Equal(t, "a b", joinNote("", "a", "", "b"))
+}
+
+func TestRunParallel(t *testing.T) {
+	t.Run("collects errors by index and recovers panics", func(t *testing.T) {
+		boom := errors.New("boom")
+		errs := runParallel(context.Background(), "test", 3, 2, func(i int) error {
+			switch i {
+			case 1:
+				return boom
+			case 2:
+				panic("bug")
+			}
+			return nil
+		})
+		require.Len(t, errs, 3)
+		assert.NoError(t, errs[0])
+		assert.ErrorIs(t, errs[1], boom)
+		var pe *panicError
+		require.ErrorAs(t, errs[2], &pe)
+		assert.Equal(t, "bug", pe.value)
+		assert.True(t, containsPanic(errs))
+	})
+
+	t.Run("respects the concurrency limit", func(t *testing.T) {
+		var running, peak atomic.Int32
+		runParallel(context.Background(), "test", 8, 2, func(int) error {
+			n := running.Add(1)
+			for {
+				p := peak.Load()
+				if n <= p || peak.CompareAndSwap(p, n) {
+					break
+				}
+			}
+			time.Sleep(5 * time.Millisecond)
+			running.Add(-1)
+			return nil
+		})
+		assert.LessOrEqual(t, peak.Load(), int32(2))
+	})
+
+	t.Run("does not start tasks after cancellation", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		var calls atomic.Int32
+		errs := runParallel(ctx, "test", 2, 0, func(int) error {
+			calls.Add(1)
+			return nil
+		})
+		assert.Zero(t, calls.Load())
+		for _, err := range errs {
+			assert.ErrorIs(t, err, context.Canceled)
+		}
+	})
 }

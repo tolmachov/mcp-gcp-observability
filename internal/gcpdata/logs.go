@@ -1,10 +1,13 @@
 package gcpdata
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -114,10 +117,7 @@ func FindRequests(ctx context.Context, client *logging.Client, params FindReques
 	ctx, cancel := context.WithTimeout(ctx, logQueryTimeout)
 	defer cancel()
 
-	project, limit := params.Project, params.Limit
-	if limit > LogsHardLimit {
-		limit = LogsHardLimit
-	}
+	project, limit := params.Project, min(params.Limit, LogsHardLimit)
 
 	parts := []string{
 		fmt.Sprintf(`httpRequest.requestUrl:"%s"`, EscapeFilterValue(params.URLPattern)),
@@ -135,10 +135,7 @@ func FindRequests(ctx context.Context, client *logging.Client, params FindReques
 	filter := AppendFilter(strings.Join(parts, " AND "), params.TimeFilter)
 
 	// Request more entries than limit to account for entries without httpRequest
-	pageSize := limit * 3
-	if pageSize > LogsHardLimit {
-		pageSize = LogsHardLimit
-	}
+	pageSize := min(limit*3, LogsHardLimit)
 
 	req := &loggingpb.ListLogEntriesRequest{
 		ResourceNames: []string{fmt.Sprintf("projects/%s", project)},
@@ -244,9 +241,7 @@ func extractRequestID(entry *loggingpb.LogEntry) string {
 
 // fetchLogEntries is a shared helper for querying log entries.
 func fetchLogEntries(ctx context.Context, client *logging.Client, req *loggingpb.ListLogEntriesRequest, limit int) (*LogQueryResult, error) {
-	if limit > LogsHardLimit {
-		limit = LogsHardLimit
-	}
+	limit = min(limit, LogsHardLimit)
 	req.PageSize = safeInt32(limit)
 	it := client.ListLogEntries(ctx, req)
 
@@ -369,12 +364,8 @@ func ListServices(ctx context.Context, client *logging.Client, project, timeFilt
 		}
 	}
 
-	services := make([]ServiceInfo, 0, len(seen))
-	for _, info := range seen {
-		services = append(services, info)
-	}
-	sort.Slice(services, func(i, j int) bool {
-		return services[i].Name < services[j].Name
+	services := slices.SortedFunc(maps.Values(seen), func(a, b ServiceInfo) int {
+		return cmp.Compare(a.Name, b.Name)
 	})
 
 	result := &ServiceList{
@@ -687,11 +678,7 @@ func boundStringMap(in map[string]string, maxEntries, maxValueBytes int) (map[st
 	if len(in) == 0 {
 		return nil, false
 	}
-	keys := make([]string, 0, len(in))
-	for k := range in {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := slices.Sorted(maps.Keys(in))
 	if len(keys) > maxEntries {
 		keys = keys[:maxEntries]
 	}

@@ -44,15 +44,15 @@ type fakeQuerier struct {
 	// QueryTimeSeriesAggregated behavior (which delegates to the
 	// single-stage path). Tests that want to assert the spec passed into
 	// the aggregated path set this.
-	aggregatedQueryFn func(params gcpdata.QueryTimeSeriesParams, spec metrics.AggregationSpec) ([]gcpdata.MetricTimeSeries, gcpdata.AggregationWarnings, error)
+	aggregatedQueryFn func(params gcpdata.QueryTimeSeriesParams, spec metrics.AggregationSpec) ([]gcpdata.MetricTimeSeries, gcpdata.QueryWarnings, error)
 	// aggregatedSpecs records every AggregationSpec received by
 	// QueryTimeSeriesAggregated in call order. Tests can read it after
 	// running a tool to assert the resolved aggregation strategy.
 	aggregatedSpecs []metrics.AggregationSpec
-	// aggregatedWarnings is the AggregationWarnings the fake returns from
-	// QueryTimeSeriesAggregated. Zero value = "no warnings" (production
-	// default). Tests that exercise warning plumbing populate this.
-	aggregatedWarnings gcpdata.AggregationWarnings
+	// warnings is what the fake returns alongside every query result.
+	// Zero value = "no warnings" (production default). Tests that exercise
+	// warning plumbing populate this.
+	warnings gcpdata.QueryWarnings
 	// queryLogMu guards concurrent appends to queryLog. Metrics handlers
 	// fan out parallel QueryTimeSeries calls (compare, top_contributors,
 	// snapshot same_weekday_hour), and without this lock the race detector
@@ -123,26 +123,26 @@ func (f *fakeQuerier) ListMetricDescriptors(_ context.Context, _, _ string, limi
 	return result, nil
 }
 
-func (f *fakeQuerier) QueryTimeSeries(_ context.Context, params gcpdata.QueryTimeSeriesParams) ([]gcpdata.MetricTimeSeries, error) {
+func (f *fakeQuerier) QueryTimeSeries(_ context.Context, params gcpdata.QueryTimeSeriesParams) ([]gcpdata.MetricTimeSeries, gcpdata.QueryWarnings, error) {
 	f.queryLogMu.Lock()
 	f.queryLog = append(f.queryLog, params)
 	f.queryLogMu.Unlock()
 	if f.queryFn != nil {
-		return f.queryFn(params)
+		series, err := f.queryFn(params)
+		return series, f.warnings, err
 	}
 	if f.queryTimeSeriesErr != nil {
-		return nil, f.queryTimeSeriesErr
+		return nil, f.warnings, f.queryTimeSeriesErr
 	}
 	if f.seriesFunc != nil {
-		return f.seriesFunc(params), nil
+		return f.seriesFunc(params), f.warnings, nil
 	}
-	return f.series[params.MetricType], nil
+	return f.series[params.MetricType], f.warnings, nil
 }
 
-func (f *fakeQuerier) QueryTimeSeriesAggregated(ctx context.Context, params gcpdata.QueryTimeSeriesParams, spec metrics.AggregationSpec) ([]gcpdata.MetricTimeSeries, gcpdata.AggregationWarnings, error) {
+func (f *fakeQuerier) QueryTimeSeriesAggregated(ctx context.Context, params gcpdata.QueryTimeSeriesParams, spec metrics.AggregationSpec) ([]gcpdata.MetricTimeSeries, gcpdata.QueryWarnings, error) {
 	f.queryLogMu.Lock()
 	f.aggregatedSpecs = append(f.aggregatedSpecs, spec)
-	warnings := f.aggregatedWarnings
 	f.queryLogMu.Unlock()
 	if f.aggregatedQueryFn != nil {
 		return f.aggregatedQueryFn(params, spec)
@@ -150,8 +150,7 @@ func (f *fakeQuerier) QueryTimeSeriesAggregated(ctx context.Context, params gcpd
 	// Default behavior: defer to the single-stage QueryTimeSeries so
 	// existing tests that only populate .series / .seriesFunc keep
 	// working without knowing about aggregation.
-	series, err := f.QueryTimeSeries(ctx, params)
-	return series, warnings, err
+	return f.QueryTimeSeries(ctx, params)
 }
 
 func (f *fakeQuerier) GetResourceLabels(_ context.Context, _, resourceType string) ([]string, error) {
@@ -504,7 +503,7 @@ func TestSnapshotIntegration_DeltaDistributionAligner(t *testing.T) {
 	}
 
 	// Every QueryTimeSeries call made by the handler — including the
-	// separate baseline-window query in buildBaselineStats — must carry
+	// separate baseline-window query — must carry
 	// DELTA+DISTRIBUTION. A previous version of this test only checked
 	// calls whose MetricType matched the primary metric and could miss a
 	// baseline-only regression. Walk every entry to be safe.
@@ -818,7 +817,7 @@ func TestSnapshotIntegration_SameWeekdayHour_PartialFailure(t *testing.T) {
 // TestSnapshotIntegration_SameWeekdayHour_PanicRecovered verifies that a panic
 // in one baseline goroutine is recovered (the request still returns) and
 // reported as a code bug, not a transient fetch failure. This pins both the
-// recover contract of runWeeklyBaseline and the panic-classification wording
+// recover contract of runParallel and the panic-classification wording
 // that operators rely on to tell "retry may help" from "this is a bug".
 func TestSnapshotIntegration_SameWeekdayHour_PanicRecovered(t *testing.T) {
 	reg := loadTestRegistry(t, testRegistryYAML)
@@ -1361,9 +1360,8 @@ func TestTopContributorsIntegration_PartialDimensionCoverage(t *testing.T) {
 // TestTopContributorsIntegration_SameWeekdayHour_PartialBaselineFail verifies
 // that when some same_weekday_hour baseline weeks fail, the handler still
 // returns contributors and surfaces "Baseline partial failure" in Note.
-// Regression guard: queryContributorBaselines returns (map, partialNote, error)
-// — a refactor that dropped the partialNote return would pass other tests but
-// break the operator-visible signal.
+// Regression guard: a refactor that dropped collectBaseline's partial-failure
+// note would pass other tests but break the operator-visible signal.
 func TestTopContributorsIntegration_SameWeekdayHour_PartialBaselineFail(t *testing.T) {
 	reg := loadTestRegistry(t, testRegistryYAML)
 	fq := newFakeQuerier()
@@ -2497,7 +2495,7 @@ func TestSnapshotUnsupportedPointsNonFatal(t *testing.T) {
 	baselineBase := base.Add(-time.Hour)
 
 	tsSeries := makeTimeSeries(base, stableValues(60, 0.50))
-	tsSeries.UnsupportedCount = 3
+	fq.warnings = gcpdata.QueryWarnings{UnsupportedPoints: 3}
 	fq.series["compute.googleapis.com/instance/cpu/utilization"] = []gcpdata.MetricTimeSeries{
 		tsSeries,
 		makeTimeSeries(baselineBase, stableValues(60, 0.49)),
@@ -2521,9 +2519,7 @@ func TestSnapshotUnsupportedPointsNonFatal(t *testing.T) {
 	if snap.MetricType != "compute.googleapis.com/instance/cpu/utilization" {
 		assert.NotEmpty(t, snap.MetricType)
 	}
-	if !strings.Contains(snap.Note, "Dropped") {
-		assert.Contains(t, snap.Note, "it to mention dropped unsupported points")
-	}
+	assert.Contains(t, snap.Note, "dropped 3 point(s) with unsupported")
 }
 
 func TestTopRegistryMisconfigError(t *testing.T) {
@@ -2574,7 +2570,7 @@ func TestTopUnsupportedPointsNonFatal(t *testing.T) {
 	now := time.Now().UTC()
 	base := now.Add(-time.Hour)
 	tsSeries := makeTimeSeriesWithLabels(base, stableValues(60, 0.50), map[string]string{"instance_id": "i-123"})
-	tsSeries.UnsupportedCount = 5
+	fq.warnings = gcpdata.QueryWarnings{UnsupportedPoints: 5}
 	fq.series[metricType] = []gcpdata.MetricTimeSeries{tsSeries}
 
 	ctx := context.Background()
@@ -2594,9 +2590,7 @@ func TestTopUnsupportedPointsNonFatal(t *testing.T) {
 	if top.Dimension != "metric.labels.instance_id" {
 		assert.Equal(t, "metric.labels.instance_id", top.Dimension)
 	}
-	if !strings.Contains(top.Note, "Dropped") {
-		assert.Contains(t, top.Note, "dropped")
-	}
+	assert.Contains(t, top.Note, "dropped 5 point(s) with unsupported")
 }
 
 func TestCompareUnsupportedPointsNonFatal(t *testing.T) {
@@ -2608,7 +2602,7 @@ func TestCompareUnsupportedPointsNonFatal(t *testing.T) {
 	now := time.Now().UTC()
 	base := now.Add(-2 * time.Hour)
 	tsSeries := makeTimeSeries(base, stableValues(60, 0.50))
-	tsSeries.UnsupportedCount = 3
+	fq.warnings = gcpdata.QueryWarnings{UnsupportedPoints: 3}
 	fq.series[metricType] = []gcpdata.MetricTimeSeries{tsSeries}
 
 	aFrom := now.Add(-2 * time.Hour).Format(time.RFC3339)
@@ -2635,9 +2629,7 @@ func TestCompareUnsupportedPointsNonFatal(t *testing.T) {
 	if cmp.WindowALabel != "window_a" {
 		assert.Equal(t, "window_a", cmp.WindowALabel)
 	}
-	if !strings.Contains(cmp.Note, "Dropped") {
-		assert.Contains(t, cmp.Note, "Dropped")
-	}
+	assert.Contains(t, cmp.Note, "dropped 3 point(s) with unsupported")
 }
 
 func TestRelatedUnsupportedPointsNonFatal(t *testing.T) {
@@ -2652,7 +2644,7 @@ func TestRelatedUnsupportedPointsNonFatal(t *testing.T) {
 	base := now.Add(-time.Hour)
 
 	tsSeries := makeTimeSeries(base, stableValues(60, 0.50))
-	tsSeries.UnsupportedCount = 2
+	fq.warnings = gcpdata.QueryWarnings{UnsupportedPoints: 2}
 	fq.series[relatedMetric] = []gcpdata.MetricTimeSeries{tsSeries}
 
 	ctx := context.Background()
@@ -2682,7 +2674,7 @@ func TestSnapshotTruncationWarningSurfacedInNote(t *testing.T) {
 	fq.series[metricType] = []gcpdata.MetricTimeSeries{
 		makeTimeSeries(time.Now().UTC().Add(-time.Hour), stableValues(60, 0.50)),
 	}
-	fq.aggregatedWarnings = gcpdata.AggregationWarnings{TruncatedSeries: true}
+	fq.warnings = gcpdata.QueryWarnings{TruncatedSeries: true}
 
 	ctx := context.Background()
 	ts := newTestToolServer(t)
@@ -2707,14 +2699,14 @@ func TestSnapshotBaselineTruncationWarningSurfacedInNote(t *testing.T) {
 	metricType := "compute.googleapis.com/instance/cpu/utilization"
 	fq.metricKinds[metricType] = "GAUGE"
 	fq.valueTypes[metricType] = "DOUBLE"
-	fq.aggregatedQueryFn = func(params gcpdata.QueryTimeSeriesParams, _ metrics.AggregationSpec) ([]gcpdata.MetricTimeSeries, gcpdata.AggregationWarnings, error) {
+	fq.aggregatedQueryFn = func(params gcpdata.QueryTimeSeriesParams, _ metrics.AggregationSpec) ([]gcpdata.MetricTimeSeries, gcpdata.QueryWarnings, error) {
 		series := []gcpdata.MetricTimeSeries{
 			makeTimeSeries(params.Start, stableValues(60, 0.50)),
 		}
 		if params.End.Before(time.Now().UTC().Add(-30 * time.Minute)) {
-			return series, gcpdata.AggregationWarnings{TruncatedSeries: true}, nil
+			return series, gcpdata.QueryWarnings{TruncatedSeries: true}, nil
 		}
-		return series, gcpdata.AggregationWarnings{}, nil
+		return series, gcpdata.QueryWarnings{}, nil
 	}
 
 	ctx := context.Background()
@@ -2746,7 +2738,7 @@ func TestCompareTruncationWarningSurfacedInNote(t *testing.T) {
 	fq.series[metricType] = []gcpdata.MetricTimeSeries{
 		makeTimeSeries(time.Now().UTC().Add(-2*time.Hour), stableValues(60, 0.50)),
 	}
-	fq.aggregatedWarnings = gcpdata.AggregationWarnings{TruncatedSeries: true}
+	fq.warnings = gcpdata.QueryWarnings{TruncatedSeries: true}
 
 	now := time.Now().UTC().Truncate(time.Second)
 	ctx := context.Background()
@@ -2781,7 +2773,7 @@ func TestRelatedTruncationWarningSetsPartialAndNote(t *testing.T) {
 	fq.series[relatedMetric] = []gcpdata.MetricTimeSeries{
 		makeTimeSeries(time.Now().UTC().Add(-time.Hour), stableValues(60, 0.50)),
 	}
-	fq.aggregatedWarnings = gcpdata.AggregationWarnings{TruncatedSeries: true}
+	fq.warnings = gcpdata.QueryWarnings{TruncatedSeries: true}
 
 	ctx := context.Background()
 	ts := newTestToolServer(t)

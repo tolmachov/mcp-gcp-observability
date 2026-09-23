@@ -20,7 +20,7 @@ import (
 )
 
 func TestPromptCompleter_EmptyPrefix(t *testing.T) {
-	c := &promptCompleter{}
+	c := &promptCompleter{metricTypes: metricTypeCandidates(metrics.NewRegistry())}
 	result, err := c.Handle(context.Background(), &mcp.CompleteRequest{
 		Params: &mcp.CompleteParams{
 			Ref:      &mcp.CompleteReference{Type: "ref/prompt", Name: "investigate-metrics"},
@@ -28,11 +28,11 @@ func TestPromptCompleter_EmptyPrefix(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, len(defaultMetricCandidates), len(result.Completion.Values))
+	assert.Equal(t, defaultMetricCandidates.values, result.Completion.Values)
 }
 
 func TestPromptCompleter_FilterByPrefix(t *testing.T) {
-	c := &promptCompleter{}
+	c := &promptCompleter{metricTypes: metricTypeCandidates(metrics.NewRegistry())}
 	result, err := c.Handle(context.Background(), &mcp.CompleteRequest{
 		Params: &mcp.CompleteParams{
 			Ref:      &mcp.CompleteReference{Type: "ref/prompt", Name: "investigate-metrics"},
@@ -47,7 +47,7 @@ func TestPromptCompleter_FilterByPrefix(t *testing.T) {
 }
 
 func TestPromptCompleter_CaseInsensitive(t *testing.T) {
-	c := &promptCompleter{}
+	c := &promptCompleter{metricTypes: metricTypeCandidates(metrics.NewRegistry())}
 	result, err := c.Handle(context.Background(), &mcp.CompleteRequest{
 		Params: &mcp.CompleteParams{
 			Ref:      &mcp.CompleteReference{Type: "ref/prompt", Name: "investigate-metrics"},
@@ -84,7 +84,7 @@ func TestPromptCompleter_UnknownArgument(t *testing.T) {
 
 func TestPromptCompleter_UsesRegistry(t *testing.T) {
 	reg := metrics.NewRegistry()
-	c := &promptCompleter{registry: reg}
+	c := &promptCompleter{metricTypes: metricTypeCandidates(reg)}
 	result, err := c.Handle(context.Background(), &mcp.CompleteRequest{
 		Params: &mcp.CompleteParams{
 			Ref:      &mcp.CompleteReference{Type: "ref/prompt", Name: "investigate-metrics"},
@@ -92,7 +92,7 @@ func TestPromptCompleter_UsesRegistry(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, len(defaultMetricCandidates), len(result.Completion.Values))
+	assert.Equal(t, defaultMetricCandidates.values, result.Completion.Values)
 }
 
 // TestPromptCompleter_NonEmptyRegistry verifies that when the registry has
@@ -104,7 +104,7 @@ func TestPromptCompleter_NonEmptyRegistry(t *testing.T) {
 	reg := metrics.NewRegistryFromMetaMap(map[string]metrics.MetricMeta{
 		metricType: {Kind: metrics.KindThroughput, BetterDirection: metrics.DirectionNone},
 	})
-	c := &promptCompleter{registry: reg}
+	c := &promptCompleter{metricTypes: metricTypeCandidates(reg)}
 	result, err := c.Handle(context.Background(), &mcp.CompleteRequest{
 		Params: &mcp.CompleteParams{
 			Ref:      &mcp.CompleteReference{Type: "ref/prompt", Name: "investigate-metrics"},

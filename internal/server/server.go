@@ -349,7 +349,7 @@ func (s *Server) userAssemblyBuilder(reg *metrics.Registry, variantID string) us
 // service-list cache lives inside the closure, so each completer (one per
 // user in HTTP auth mode) caches independently.
 func (s *Server) wireCompleter(c *promptCompleter, reg *metrics.Registry, client *gcpclient.Client) {
-	c.registry = reg
+	c.metricTypes = metricTypeCandidates(reg)
 	c.project = s.project
 	if !s.project.Pinned() {
 		c.loadServices = nil

@@ -148,7 +148,7 @@ metrics:
 `
 	_, err := writeAndLoad(t, yaml)
 	require.Error(t, err, "expected error for typo'd field")
-	assert.Contains(t, err.Error(), "unknown field", "error should mention unknown field")
+	assert.Contains(t, err.Error(), "line 8: field acros_groups not found", "error should name the unknown field and its line")
 }
 
 func testOverlayAggregationInvalidWithinGroup(t *testing.T) {
@@ -183,8 +183,8 @@ metrics:
 `
 	_, err := writeAndLoad(t, yaml)
 	require.Error(t, err, "expected error for group_by not-a-list")
-	assert.Contains(t, err.Error(), "group_by", "error should mention group_by")
-	assert.Contains(t, err.Error(), "list", "error should mention list")
+	assert.Contains(t, err.Error(), "line 8: cannot unmarshal", "error should point at the group_by line")
+	assert.Contains(t, err.Error(), "into []string", "error should say a list is expected")
 }
 
 func testOverlayAggregationGroupByItemWrongType(t *testing.T) {
@@ -217,7 +217,7 @@ metrics:
 `
 	_, err := writeAndLoad(t, yaml)
 	require.Error(t, err, "expected error for aggregation as list")
-	assert.Contains(t, err.Error(), "aggregation", "error should mention aggregation")
+	assert.Contains(t, err.Error(), "into metrics.AggregationSpec", "error should say an aggregation block is expected")
 }
 
 // testOverlayAggregationReplaceSemantics guards the documented rule that
@@ -225,7 +225,7 @@ metrics:
 // thresholds. If a base registry declares a two-stage spec and an overlay
 // specifies only `across_groups`, the result must be a fresh spec with
 // the base's group_by and within_group discarded. This test drives
-// mergeMetricFields directly because the base registry load itself would
+// metricOverlay.applyTo directly because the base registry load itself would
 // reject the partial overlay as an invalid spec (missing within_group).
 func testOverlayAggregationReplaceSemantics(t *testing.T) {
 	base := MetricMeta{
@@ -238,13 +238,8 @@ func testOverlayAggregationReplaceSemantics(t *testing.T) {
 			AcrossGroups: ReducerSum,
 		},
 	}
-	overlay := map[string]any{
-		"aggregation": map[string]any{
-			"across_groups": "mean",
-		},
-	}
-	merged, errs := mergeMetricFields(base, overlay)
-	require.Empty(t, errs, "should have no merge errors")
+	overlay := metricOverlay{Aggregation: &AggregationSpec{AcrossGroups: ReducerMean}}
+	merged := overlay.applyTo(base)
 	require.NotNil(t, merged.Aggregation, "merged.Aggregation should be the replacement spec")
 	assert.Equal(t, ReducerMean, merged.Aggregation.AcrossGroups, "AcrossGroups should be mean")
 	assert.Empty(t, merged.Aggregation.GroupBy, "GroupBy should be empty (replace-semantics discards base)")

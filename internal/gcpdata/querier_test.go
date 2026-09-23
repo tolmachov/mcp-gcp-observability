@@ -3,6 +3,8 @@ package gcpdata
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,6 +16,7 @@ import (
 func TestGetResourceLabels_CachesOnSuccess(t *testing.T) {
 	calls := 0
 	q := &MonitoringQuerier{
+		resourceLabels: newResourceLabelsCache(),
 		listDescriptors: func(ctx context.Context, _ *monitoring.MetricClient, _ string) ([]MonitoredResourceDescriptor, error) {
 			calls++
 			return []MonitoredResourceDescriptor{
@@ -41,6 +44,7 @@ func TestGetResourceLabels_RetriesAfterError(t *testing.T) {
 	calls := 0
 	transient := errors.New("transient context canceled")
 	q := &MonitoringQuerier{
+		resourceLabels: newResourceLabelsCache(),
 		listDescriptors: func(ctx context.Context, _ *monitoring.MetricClient, _ string) ([]MonitoredResourceDescriptor, error) {
 			calls++
 			if calls == 1 {
@@ -64,6 +68,7 @@ func TestGetResourceLabels_RetriesAfterError(t *testing.T) {
 
 func TestGetResourceLabels_UnknownTypeReturnsNilNil(t *testing.T) {
 	q := &MonitoringQuerier{
+		resourceLabels: newResourceLabelsCache(),
 		listDescriptors: func(ctx context.Context, _ *monitoring.MetricClient, _ string) ([]MonitoredResourceDescriptor, error) {
 			return []MonitoredResourceDescriptor{
 				{Type: "pubsub_subscription", Labels: []string{"project_id"}},
@@ -78,6 +83,7 @@ func TestGetResourceLabels_UnknownTypeReturnsNilNil(t *testing.T) {
 
 func TestGetResourceLabels_ReturnsDefensiveCopy(t *testing.T) {
 	q := &MonitoringQuerier{
+		resourceLabels: newResourceLabelsCache(),
 		listDescriptors: func(ctx context.Context, _ *monitoring.MetricClient, _ string) ([]MonitoredResourceDescriptor, error) {
 			return []MonitoredResourceDescriptor{
 				{Type: "pubsub_subscription", Labels: []string{"project_id", "subscription_id"}},
@@ -105,4 +111,33 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestGetResourceLabels_SharedAcrossQueriers pins the process-wide contract:
+// queriers built per user share one fetch per project, and projects are
+// cached independently.
+func TestGetResourceLabels_SharedAcrossQueriers(t *testing.T) {
+	cache := newResourceLabelsCache()
+	var calls atomic.Int32
+	list := func(ctx context.Context, _ *monitoring.MetricClient, _ string) ([]MonitoredResourceDescriptor, error) {
+		calls.Add(1)
+		return []MonitoredResourceDescriptor{{Type: "gce_instance", Labels: []string{"instance_id"}}}, nil
+	}
+	a := &MonitoringQuerier{resourceLabels: cache, listDescriptors: list}
+	b := &MonitoringQuerier{resourceLabels: cache, listDescriptors: list}
+
+	var wg sync.WaitGroup
+	for _, q := range []*MonitoringQuerier{a, b, a, b} {
+		wg.Go(func() {
+			labels, err := q.GetResourceLabels(context.Background(), "proj", "gce_instance")
+			assert.NoError(t, err)
+			assert.Equal(t, []string{"instance_id"}, labels)
+		})
+	}
+	wg.Wait()
+	assert.Equal(t, int32(1), calls.Load(), "one fetch per project across queriers")
+
+	_, err := b.GetResourceLabels(context.Background(), "other-proj", "gce_instance")
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), calls.Load(), "a different project is fetched separately")
 }

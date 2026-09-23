@@ -165,7 +165,7 @@ func TestTopContributorsTwoStageDoesNotCrash(t *testing.T) {
 	_ = metrics.ReducerSum // anchor the metrics import even if no other reference exists
 }
 
-func TestTopContributorsTruncationSentinelDoesNotMasqueradeAsMissingDimension(t *testing.T) {
+func TestTopContributorsTruncationDoesNotMasqueradeAsMissingDimension(t *testing.T) {
 	const metricType = "custom.googleapis.com/business_kpi_counter"
 	registry := loadTestRegistry(t, aggregationTestRegistryYAML)
 
@@ -175,8 +175,8 @@ func TestTopContributorsTruncationSentinelDoesNotMasqueradeAsMissingDimension(t 
 	fq.series[metricType] = []gcpdata.MetricTimeSeries{
 		makeTimeSeriesWithLabels(time.Now().Add(-30*time.Minute), []float64{10, 20, 30, 40, 50},
 			map[string]string{"response_code": "200"}),
-		{Truncated: true},
 	}
+	fq.warnings = gcpdata.QueryWarnings{TruncatedSeries: true}
 
 	ctx := context.Background()
 	tts := newTestToolServer(t)
@@ -194,7 +194,7 @@ func TestTopContributorsTruncationSentinelDoesNotMasqueradeAsMissingDimension(t 
 
 	var top TopContributorsResult
 	unmarshalResult(t, result, &top)
-	require.NotContains(t, top.Note, "Partial dimension coverage", "truncation sentinel must not look like missing-dimension coverage loss")
+	require.NotContains(t, top.Note, "Partial dimension coverage", "truncation must not look like missing-dimension coverage loss")
 	require.Contains(t, top.Note, "time-series cap", "want explicit truncation warning")
 	require.Len(t, top.Contributors, 1)
 }

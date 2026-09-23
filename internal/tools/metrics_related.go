@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime/debug"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -46,6 +46,12 @@ func classifyErr(err error) (reason string, benign bool) {
 	}
 	return err.Error(), false
 }
+
+// relatedConcurrency bounds how many related metrics are queried at once. Each
+// issues its current and baseline queries concurrently, so at most twice this
+// many Monitoring API calls are in flight — a conservative bound for the
+// default rate limits.
+const relatedConcurrency = 5
 
 func RegisterMetricsRelated(s *mcp.Server, d Deps) {
 	requireQuerier(d.Querier)
@@ -97,9 +103,7 @@ func RegisterMetricsRelated(s *mcp.Server, d Deps) {
 		var skipped []SkippedSignal
 		var rpcFailures int
 		var warningNotes []string
-		var warningNotesSeen = make(map[string]bool)
 		var mu sync.Mutex
-		var wg sync.WaitGroup
 		completed := float64(0)
 
 		// addSkip must be called with a pre-classified benign flag —
@@ -113,133 +117,114 @@ func RegisterMetricsRelated(s *mcp.Server, d Deps) {
 			}
 		}
 		addWarningNote := func(note string) {
-			if note == "" {
-				return
-			}
 			mu.Lock()
 			defer mu.Unlock()
-			if warningNotesSeen[note] {
-				return
+			if note != "" && !slices.Contains(warningNotes, note) {
+				warningNotes = append(warningNotes, note)
 			}
-			warningNotesSeen[note] = true
-			warningNotes = append(warningNotes, note)
 		}
 
-		// sem limits concurrent GCP API calls to avoid quota exhaustion; capacity
-		// 10 is a conservative bound for Monitoring API default rate limits.
-		sem := make(chan struct{}, 10)
+		errs := runParallel(ctx, "metrics_related", len(related), relatedConcurrency, func(i int) error {
+			relMetric := related[i]
+			relMeta := d.Registry.Lookup(relMetric)
 
-		for _, relMetric := range related {
-			wg.Add(1)
-			go func(relMetric string) {
-				sem <- struct{}{}
-				defer func() { <-sem }()
-				defer wg.Done()
-				defer func() {
-					if r := recover(); r != nil {
-						stack := debug.Stack()
-						msg := fmt.Sprintf("panic querying %s: %v\n%s", relMetric, r, stack)
-						notifyErrLog.Load().Error("metrics_related: panic in handler", "metric", relMetric, "panic", r, "stack", string(stack))
-						mcpLog(ctx, req, logLevelError, "metrics_related", msg)
-						addSkip(relMetric, fmt.Sprintf("internal error: %v", r), false)
-					}
-				}()
+			relDesc, err := d.Querier.GetMetricDescriptor(ctx, project, relMetric)
+			if err != nil {
+				mcpLog(ctx, req, logLevelWarning, "metrics_related",
+					fmt.Sprintf("descriptor lookup failed for %s: %v", relMetric, err))
+				reason, benign := classifyErr(err)
+				addSkip(relMetric, fmt.Sprintf("failed to get metric descriptor: %s", reason), benign)
+				return nil
+			}
 
-				if ctx.Err() != nil {
-					reason, benign := classifyErr(ctx.Err())
-					addSkip(relMetric, reason, benign)
-					return
-				}
+			relAggSpec := relMeta.ResolveAggregation()
+			if err := relAggSpec.Validate(); err != nil {
+				mcpLog(ctx, req, logLevelError, "metrics_related",
+					fmt.Sprintf("registry misconfiguration for %s: %v", relMetric, err))
+				addSkip(relMetric, formatRegistryMisconfigError(relMetric, err), false)
+				return nil
+			}
 
-				relMeta := d.Registry.Lookup(relMetric)
-
-				relDesc, err := d.Querier.GetMetricDescriptor(ctx, project, relMetric)
-				if err != nil {
-					mcpLog(ctx, req, logLevelWarning, "metrics_related",
-						fmt.Sprintf("descriptor lookup failed for %s: %v", relMetric, err))
-					reason, benign := classifyErr(err)
-					addSkip(relMetric, fmt.Sprintf("failed to get metric descriptor: %s", reason), benign)
-					return
-				}
-
-				params := gcpdata.QueryTimeSeriesParams{
-					Project:     project,
-					MetricType:  relMetric,
-					LabelFilter: in.Filter,
-					Start:       start,
-					End:         now,
-					StepSeconds: stepSeconds,
-					MetricKind:  relDesc.Kind,
-					ValueType:   relDesc.ValueType,
-				}
-
-				relAggSpec := relMeta.ResolveAggregation()
-				if err := relAggSpec.Validate(); err != nil {
-					mcpLog(ctx, req, logLevelError, "metrics_related",
-						fmt.Sprintf("registry misconfiguration for %s: %v", relMetric, err))
-					addSkip(relMetric, formatRegistryMisconfigError(relMetric, err), false)
-					return
-				}
-
-				currentSeries, currentWarnings, qErr := d.Querier.QueryTimeSeriesAggregated(ctx, params, relAggSpec)
-				logAggregationWarnings(ctx, req, "metrics_related", relMetric, "current", currentWarnings)
-				addWarningNote(aggregationWarningsNote(relMetric, "current", currentWarnings))
-				if qErr != nil {
-					mcpLog(ctx, req, logLevelWarning, "metrics_related",
-						fmt.Sprintf("current window query failed for %s: %v", relMetric, qErr))
-					reason, benign := classifyErr(qErr)
-					addSkip(relMetric, fmt.Sprintf("query failed: %s", reason), benign)
-					return
-				}
-				reportUnsupportedPoints(ctx, req, "metrics_related", relMetric, currentSeries)
-
-				currentPoints := mergePoints(currentSeries)
-				if len(currentPoints) == 0 {
-					addSkip(relMetric, gcpdata.EmptyWindowReason(relDesc.Kind), true)
-					return
-				}
-
-				baselineParams := params
-				baselineParams.End = start
-				baselineParams.Start = start.Add(-windowDur)
-				baselineSeries, baselineWarnings, qErr := d.Querier.QueryTimeSeriesAggregated(ctx, baselineParams, relAggSpec)
-				logAggregationWarnings(ctx, req, "metrics_related", relMetric, "baseline", baselineWarnings)
-				addWarningNote(aggregationWarningsNote(relMetric, "baseline", baselineWarnings))
-				if qErr != nil {
-					mcpLog(ctx, req, logLevelWarning, "metrics_related",
-						fmt.Sprintf("baseline query failed for %s: %v", relMetric, qErr))
-					reason, benign := classifyErr(qErr)
-					addSkip(relMetric, fmt.Sprintf("baseline query failed: %s", reason), benign)
-					return
-				}
-				baselinePoints := mergePoints(baselineSeries)
-				expectedBaseline := expectedPointsForWindow(windowDur, int(stepSeconds))
-
-				f := metrics.Process(currentPoints, baselinePoints, relMeta, int(stepSeconds), expectedBaseline, metrics.Window{Start: start, End: now})
-
-				anomaly := f.Classification != metrics.ClassStable && f.Classification != metrics.ClassNoisy
-				mu.Lock()
-				signals = append(signals, RelatedSignal{
-					MetricType:               relMetric,
-					Kind:                     string(relMeta.Kind),
-					Current:                  f.Current,
-					Baseline:                 f.Baseline,
-					DeltaPct:                 f.DeltaPct,
-					Trend:                    string(f.Trend),
-					TrendScore:               f.TrendScore,
-					CV:                       f.CV,
-					Classification:           safeClassification(f.Classification),
-					ClassificationConfidence: string(f.Confidence),
-					Anomaly:                  anomaly,
-					NonFinitePoints:          currentWarnings.NonFinitePoints + baselineWarnings.NonFinitePoints,
+			params := gcpdata.QueryTimeSeriesParams{
+				Project:     project,
+				MetricType:  relMetric,
+				LabelFilter: in.Filter,
+				Start:       start,
+				End:         now,
+				StepSeconds: stepSeconds,
+				MetricKind:  relDesc.Kind,
+				ValueType:   relDesc.ValueType,
+			}
+			baselineWindows := BaselineModePrevWindow.windows(start, now, time.Time{})
+			current, baselineResults := queryWithBaseline(ctx, "metrics_related", params, baselineWindows,
+				func(p gcpdata.QueryTimeSeriesParams) ([]gcpdata.MetricTimeSeries, gcpdata.QueryWarnings, error) {
+					return d.Querier.QueryTimeSeriesAggregated(ctx, p, relAggSpec)
 				})
-				completed++
-				progress := completed
-				mu.Unlock()
-				sendProgress(ctx, req, progress, totalSignals, fmt.Sprintf("Queried %s", relMetric))
-			}(relMetric)
+
+			addWarningNote(reportQueryWarnings(ctx, req, "metrics_related", relMetric, "current", current.warnings))
+			if current.err != nil {
+				mcpLog(ctx, req, logLevelWarning, "metrics_related",
+					fmt.Sprintf("current window query failed for %s: %v", relMetric, current.err))
+				reason, benign := classifyErr(current.err)
+				addSkip(relMetric, fmt.Sprintf("query failed: %s", reason), benign)
+				return nil
+			}
+
+			currentPoints := mergePoints(current.series)
+			if len(currentPoints) == 0 {
+				addSkip(relMetric, gcpdata.EmptyWindowReason(relDesc.Kind), true)
+				return nil
+			}
+
+			baseline := baselineResults[0]
+			addWarningNote(reportQueryWarnings(ctx, req, "metrics_related", relMetric, baselineWindows[0].label, baseline.warnings))
+			if baseline.err != nil {
+				mcpLog(ctx, req, logLevelWarning, "metrics_related",
+					fmt.Sprintf("baseline query failed for %s: %v", relMetric, baseline.err))
+				reason, benign := classifyErr(baseline.err)
+				addSkip(relMetric, fmt.Sprintf("baseline query failed: %s", reason), benign)
+				return nil
+			}
+			expectedBaseline := expectedPointsForWindow(windowDur, int(stepSeconds))
+
+			f := metrics.Process(currentPoints, mergePoints(baseline.series), relMeta, int(stepSeconds), expectedBaseline, metrics.Window{Start: start, End: now})
+
+			mu.Lock()
+			signals = append(signals, RelatedSignal{
+				MetricType:               relMetric,
+				Kind:                     string(relMeta.Kind),
+				Current:                  f.Current,
+				Baseline:                 f.Baseline,
+				DeltaPct:                 f.DeltaPct,
+				Trend:                    string(f.Trend),
+				TrendScore:               f.TrendScore,
+				CV:                       f.CV,
+				Classification:           string(f.Classification),
+				ClassificationConfidence: string(f.Confidence),
+				Anomaly:                  f.Classification.IsAnomalous(),
+				NonFinitePoints:          current.warnings.NonFinitePoints + baseline.warnings.NonFinitePoints,
+			})
+			completed++
+			progress := completed
+			mu.Unlock()
+			sendProgress(ctx, req, progress, totalSignals, fmt.Sprintf("Queried %s", relMetric))
+			return nil
+		})
+		// The task reports its own skips; a returned error is a recovered
+		// panic or a cancellation before the task started.
+		for i, err := range errs {
+			if err == nil {
+				continue
+			}
+			var pe *panicError
+			if errors.As(err, &pe) {
+				mcpLog(ctx, req, logLevelError, "metrics_related", fmt.Sprintf("panic querying %s: %v", related[i], pe.value))
+				addSkip(related[i], fmt.Sprintf("internal error: %v", pe.value), false)
+				continue
+			}
+			reason, benign := classifyErr(err)
+			addSkip(related[i], reason, benign)
 		}
-		wg.Wait()
 
 		sort.Slice(signals, func(i, j int) bool {
 			return signals[i].MetricType < signals[j].MetricType

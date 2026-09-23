@@ -2,9 +2,9 @@ package tools
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"time"
 
@@ -65,7 +65,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 		now := time.Now().UTC()
 		start := now.Add(-windowDur)
 
-		sendProgress(ctx, req, 1, 4, "Looking up metric descriptor")
+		sendProgress(ctx, req, 1, 3, "Looking up metric descriptor")
 
 		descriptor, errRes := lookupMetricDescriptor(ctx, req, d.Querier, "metrics_top_contributors", project, in.MetricType)
 		if errRes != nil {
@@ -84,7 +84,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 		}
 		reducer := gcpdata.ReducerToGCP(aggSpec.AcrossGroups)
 
-		sendProgress(ctx, req, 2, 4, "Querying current window grouped by "+in.Dimension)
+		sendProgress(ctx, req, 2, 3, "Querying current window grouped by "+in.Dimension+" and baseline ("+string(baselineMode)+")")
 
 		currentParams := gcpdata.QueryTimeSeriesParams{
 			Project:       project,
@@ -98,22 +98,21 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 			GroupByFields: []string{in.Dimension},
 			Reducer:       reducer,
 		}
-		currentSeries, err := d.Querier.QueryTimeSeries(ctx, currentParams)
-		if err != nil {
+		baselineWindows := baselineMode.windows(start, now, eventTime)
+		current, baselineResults := queryWithBaseline(ctx, "metrics_top_contributors", currentParams, baselineWindows,
+			func(p gcpdata.QueryTimeSeriesParams) ([]gcpdata.MetricTimeSeries, gcpdata.QueryWarnings, error) {
+				return d.Querier.QueryTimeSeries(ctx, p)
+			})
+
+		currentWarningsNote := reportQueryWarnings(ctx, req, "metrics_top_contributors", in.MetricType, "current", current.warnings)
+		if err := current.err; err != nil {
 			mcpLog(ctx, req, logLevelError, "metrics_top_contributors", fmt.Sprintf("current window query failed: %v", err))
 			if isInvalidFilterError(err) {
 				return errResult(enrichInvalidFilterError(ctx, req, d.Querier, project, in.MetricType, in.Filter, err)), nil, nil
 			}
 			return errResult(fmt.Sprintf("Failed to query metric: %v", err)), nil, nil
 		}
-		currentSeries, truncated := stripTruncatedSeries(currentSeries)
-		if truncated {
-			mcpLog(ctx, req, logLevelWarning, "metrics_top_contributors",
-				fmt.Sprintf("metric %q (current): query hit the server-side time-series cap (%d series); contributors are computed from a partial set of series only. Narrow the filter or choose a lower-cardinality dimension before trusting shares.",
-					in.MetricType, gcpdata.MaxTimeSeries))
-		}
-		unsupportedCount := reportUnsupportedPoints(ctx, req, "metrics_top_contributors", in.MetricType, currentSeries)
-		nonFiniteCount := reportNonFinitePoints(ctx, req, "metrics_top_contributors", in.MetricType, "current", currentSeries)
+		currentSeries := current.series
 
 		if len(currentSeries) == 0 {
 			msg := emptyWindowMessage(in.MetricType, windowStr, descriptor.Kind, in.Filter)
@@ -122,25 +121,46 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 				Dimension:       in.Dimension,
 				Contributors:    []Contributor{},
 				NoData:          true,
-				Note:            msg,
+				Note:            joinNote(msg, currentWarningsNote),
 				AvailableLabels: availableLabels,
-				NonFinitePoints: nonFiniteCount,
+				NonFinitePoints: current.warnings.NonFinitePoints,
 			}
 			return nil, r, nil
 		}
 
-		sendProgress(ctx, req, 3, 4, "Querying baseline ("+string(baselineMode)+")")
+		sendProgress(ctx, req, 3, 3, "Processing results")
 
-		var baselineErrNote string
-		baselineByLabel, baselinePartialNote, err := queryContributorBaselines(ctx, req, d.Querier, currentParams, windowDur, baselineMode, eventTime, in.Dimension)
+		// Without usable baseline data every delta is 0, so contributors are
+		// ranked by current value instead.
+		var baselineErrNote, noBaselineDataNote string
+		rankByCurrent := false
+		baselineNote, err := collectBaseline(ctx, req, "metrics_top_contributors", in.MetricType, baselineMode, baselineWindows, baselineResults)
+		baselineByLabel := map[string][][]metrics.Point{}
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "metrics_top_contributors", fmt.Sprintf("baseline query failed: %v", err))
-			baselineByLabel = map[string]contributorBaseline{}
 			baselineErrNote = fmt.Sprintf("Baseline query (%s) failed: %v. Returning current-window contributors only; delta_pct and share_of_anomaly are not meaningful.",
 				string(baselineMode), err)
+			rankByCurrent = true
+		} else if !slices.ContainsFunc(baselineResults, windowResult.hasPoints) {
+			// Every baseline query succeeded but returned no data (e.g. a
+			// service or label value younger than the baseline window).
+			// Without this note every delta_pct is 0, which is
+			// indistinguishable from "nothing changed".
+			noBaselineDataNote = fmt.Sprintf("Baseline (%s) had no data in any of its %d window(s); delta_pct and share_of_anomaly are 0 and contributors are ranked by current value.",
+				string(baselineMode), len(baselineWindows))
+			rankByCurrent = true
+		} else {
+			baselineByLabel = contributorBaselines(baselineResults, in.Dimension)
 		}
 
-		expectedPerWindow := expectedPointsForWindow(windowDur, int(stepSeconds))
+		// Every window of a mode has the same span. pre_event contributors
+		// are judged without an expected point count, only the absolute
+		// minimum.
+		span := baselineWindows[0].end.Sub(baselineWindows[0].start)
+		expectedPerWindow := expectedPointsForWindow(span, int(stepSeconds))
+		if baselineMode == BaselineModePreEvent {
+			expectedPerWindow = 0
+		}
 
 		type contribData struct {
 			label   string
@@ -159,7 +179,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 			attributed = append(attributed, contribData{
 				label:   lv,
 				current: s.Points,
-				base:    baselineByLabel[lv].toBaselineStats(baselineMode, expectedPerWindow),
+				base:    metrics.ComputeRobustBaselineStats(baselineByLabel[lv], expectedPerWindow),
 			})
 		}
 
@@ -199,7 +219,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 					DeltaPct:                 f.DeltaPct,
 					CV:                       f.CV,
 					SLOBreach:                f.SLOBreach,
-					Classification:           safeClassification(f.Classification),
+					Classification:           string(f.Classification),
 					ClassificationConfidence: string(f.Confidence),
 					BaselineReliable:         f.BaselineReliable,
 				},
@@ -216,7 +236,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 			results = append(results, c)
 		}
 
-		if baselineErrNote != "" {
+		if rankByCurrent {
 			sort.Slice(results, func(i, j int) bool {
 				return results[i].Current > results[j].Current
 			})
@@ -230,29 +250,19 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 			results = results[:limit]
 		}
 
-		var twoStageNote, truncatedNote, unsupportedNote string
+		var twoStageNote string
 		if aggSpec.IsTwoStage() {
 			twoStageNote = fmt.Sprintf("This metric uses two-stage aggregation in the registry (group_by=%v, within_group=%s, across_groups=%s). `metrics_top_contributors` applies only %s across the requested dimension %q and does not run the within_group dedup stage, so contributor totals may differ from `metrics_snapshot` and `metrics_compare`.",
 				aggSpec.GroupBy, aggSpec.WithinGroup, aggSpec.AcrossGroups, aggSpec.AcrossGroups, in.Dimension)
 		}
-		if truncated {
-			truncatedNote = fmt.Sprintf("Query hit the server-side time-series cap (%d series). Contributors and share_of_anomaly are computed from a partial set of series only; narrow the filter or dimension cardinality before trusting the ranking.", gcpdata.MaxTimeSeries)
-		}
-		if unsupportedCount > 0 {
-			unsupportedNote = fmt.Sprintf("Dropped %d points with unsupported or malformed value types during decode (see server log).", unsupportedCount)
-		}
-		var nonFiniteNote string
-		if nonFiniteCount > 0 {
-			nonFiniteNote = fmt.Sprintf("Discarded %d non-finite point(s) from the current window.", nonFiniteCount)
-		}
-		note := joinNote(baselineErrNote, baselinePartialNote, partialCoverageNote, twoStageNote, truncatedNote, unsupportedNote, nonFiniteNote)
+		note := joinNote(baselineErrNote, baselineNote, noBaselineDataNote, partialCoverageNote, twoStageNote, currentWarningsNote)
 
 		return nil, &TopContributorsResult{
 			Dimension:       in.Dimension,
 			Contributors:    results,
 			Note:            note,
 			AvailableLabels: availableLabels,
-			NonFinitePoints: nonFiniteCount,
+			NonFinitePoints: current.warnings.NonFinitePoints,
 		}, nil
 	})
 }
@@ -284,133 +294,24 @@ type Contributor struct {
 	BaselineReliable bool `json:"baseline_reliable"`
 }
 
-type contributorBaseline struct {
-	buckets [][]metrics.Point
-}
-
-func (c contributorBaseline) toBaselineStats(mode BaselineMode, expectedPerWindow int) metrics.BaselineStats {
-	if mode == BaselineModeSameWeekdayHour {
-		return metrics.ComputeRobustBaselineStats(c.buckets, expectedPerWindow)
-	}
-	if len(c.buckets) == 0 {
-		return metrics.BaselineStats{}
-	}
-	expected := expectedPerWindow
-	if mode == BaselineModePreEvent {
-		expected = 0
-	}
-	return metrics.ComputeBaselineStats(c.buckets[0], expected)
-}
-
-// queryContributorBaselines returns (baseline map, partialNote, error).
-// partialNote is non-empty when some weekly queries failed but enough
-// data remains (same_weekday_hour only); the caller surfaces it in Note.
-func queryContributorBaselines(
-	ctx context.Context,
-	req *mcp.CallToolRequest,
-	querier gcpdata.MetricsQuerier,
-	currentParams gcpdata.QueryTimeSeriesParams,
-	windowDur time.Duration,
-	mode BaselineMode,
-	eventTime time.Time,
-	dimension string,
-) (map[string]contributorBaseline, string, error) {
-	result := make(map[string]contributorBaseline)
-	var partialNote string
-
-	addBucket := func(idx, total int, series []gcpdata.MetricTimeSeries) {
-		byLabel := make(map[string][]metrics.Point)
-		for _, s := range series {
+// contributorBaselines groups the successful baseline windows' points by the
+// dimension's label value: one bucket per window, nil where the label value
+// had no series or the window failed.
+func contributorBaselines(results []windowResult, dimension string) map[string][][]metrics.Point {
+	byLabel := make(map[string][][]metrics.Point)
+	for i, r := range results {
+		if r.err != nil {
+			continue
+		}
+		for _, s := range r.series {
 			lv := labelValueFromSeries(s, dimension)
-			byLabel[lv] = append(byLabel[lv], s.Points...)
-		}
-		for lv, pts := range byLabel {
-			cb := result[lv]
-			if cb.buckets == nil {
-				cb.buckets = make([][]metrics.Point, total)
+			if byLabel[lv] == nil {
+				byLabel[lv] = make([][]metrics.Point, len(results))
 			}
-			cb.buckets[idx] = pts
-			result[lv] = cb
+			byLabel[lv][i] = append(byLabel[lv][i], s.Points...)
 		}
 	}
-
-	switch mode {
-	case BaselineModeSameWeekdayHour:
-		perWeek := make([][]gcpdata.MetricTimeSeries, weeklyBaselineWeeks)
-
-		errs := runWeeklyBaseline(ctx, "metrics_top_contributors", func(weeksBack int) error {
-			p := currentParams
-			p.Start = currentParams.Start.AddDate(0, 0, -7*weeksBack)
-			p.End = currentParams.End.AddDate(0, 0, -7*weeksBack)
-			series, err := querier.QueryTimeSeries(ctx, p)
-			if err != nil {
-				return err
-			}
-			series, truncated := stripTruncatedSeries(series)
-			if truncated {
-				mcpLog(ctx, req, logLevelWarning, "metrics_top_contributors",
-					fmt.Sprintf("baseline week -%d: time series result was truncated at server limit; baseline may be incomplete", weeksBack))
-			}
-			perWeek[weeksBack-1] = series
-			return nil
-		})
-
-		nonEmpty := 0
-		for i, ws := range perWeek {
-			if len(ws) == 0 {
-				continue
-			}
-			nonEmpty++
-			addBucket(i, weeklyBaselineWeeks, ws)
-		}
-		if nonEmpty == 0 && len(errs) > 0 {
-			return nil, "", fmt.Errorf("all %d baseline queries failed; first error: %w", len(errs), errors.Join(errs...))
-		}
-		if nonEmpty == 0 {
-			// Every weekly query succeeded but returned no data (e.g. a service
-			// or label value younger than the baseline window). Without this
-			// note every contributor gets delta_pct 0 and the ranking falls back
-			// to current value, which is indistinguishable from "nothing
-			// changed" — so say so explicitly.
-			partialNote = fmt.Sprintf("Baseline (%s) had no data in any of the %d prior weeks; delta_pct and share_of_anomaly are 0 and contributors are ranked by current value.",
-				string(BaselineModeSameWeekdayHour), weeklyBaselineWeeks)
-			return result, partialNote, nil
-		}
-		partialNote = weeklyBaselinePartialNote(ctx, req, "metrics_top_contributors", errs, nonEmpty)
-		return result, partialNote, nil
-
-	case BaselineModePreEvent:
-		p := currentParams
-		p.End = eventTime
-		p.Start = eventTime.Add(-30 * time.Minute)
-		series, err := querier.QueryTimeSeries(ctx, p)
-		if err != nil {
-			return nil, "", fmt.Errorf("querying pre_event baseline: %w", err)
-		}
-		series, truncated := stripTruncatedSeries(series)
-		if truncated {
-			mcpLog(ctx, req, logLevelWarning, "metrics_top_contributors",
-				"pre_event baseline: time series result was truncated at server limit; baseline may be incomplete")
-		}
-		addBucket(0, 1, series)
-		return result, "", nil
-
-	default: // prev_window
-		p := currentParams
-		p.End = currentParams.Start
-		p.Start = currentParams.Start.Add(-windowDur)
-		series, err := querier.QueryTimeSeries(ctx, p)
-		if err != nil {
-			return nil, "", fmt.Errorf("querying prev_window baseline: %w", err)
-		}
-		series, truncated := stripTruncatedSeries(series)
-		if truncated {
-			mcpLog(ctx, req, logLevelWarning, "metrics_top_contributors",
-				"prev_window baseline: time series result was truncated at server limit; baseline may be incomplete")
-		}
-		addBucket(0, 1, series)
-		return result, "", nil
-	}
+	return byLabel
 }
 
 const missingDimensionLabel = "(missing_dimension)"

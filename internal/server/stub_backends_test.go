@@ -103,11 +103,11 @@ func (stubBackends) ListMetricDescriptors(context.Context, string, string, int) 
 	panic("stubBackends: handler not invoked in this test")
 }
 
-func (stubBackends) QueryTimeSeries(context.Context, gcpdata.QueryTimeSeriesParams) ([]gcpdata.MetricTimeSeries, error) {
+func (stubBackends) QueryTimeSeries(context.Context, gcpdata.QueryTimeSeriesParams) ([]gcpdata.MetricTimeSeries, gcpdata.QueryWarnings, error) {
 	panic("stubBackends: handler not invoked in this test")
 }
 
-func (stubBackends) QueryTimeSeriesAggregated(context.Context, gcpdata.QueryTimeSeriesParams, metrics.AggregationSpec) ([]gcpdata.MetricTimeSeries, gcpdata.AggregationWarnings, error) {
+func (stubBackends) QueryTimeSeriesAggregated(context.Context, gcpdata.QueryTimeSeriesParams, metrics.AggregationSpec) ([]gcpdata.MetricTimeSeries, gcpdata.QueryWarnings, error) {
 	panic("stubBackends: handler not invoked in this test")
 }
 
