@@ -136,7 +136,10 @@ func TestUserPoolSingleflight(t *testing.T) {
 	pool := newUserPool(context.Background(), b.builder(), discardLogger())
 	ts := newPoolServer(t, pool)
 
-	const n = 10
+	// n stays within the per-user concurrent-call limit: once the build
+	// finishes all n requests are served at once, and any beyond the limit
+	// would be rejected with 429 by design.
+	const n = maxConcurrentUserCalls
 	var wg sync.WaitGroup
 	var okCount atomic.Int64
 	for range n {
@@ -149,7 +152,13 @@ func TestUserPoolSingleflight(t *testing.T) {
 			}
 		}()
 	}
-	time.Sleep(50 * time.Millisecond) // let requests pile up on the build
+	// Release the build only once every request is waiting on the same entry.
+	require.Eventually(t, func() bool {
+		pool.mu.Lock()
+		defer pool.mu.Unlock()
+		e, ok := pool.entries["alice"]
+		return ok && e.inflight.Load() == n
+	}, 10*time.Second, time.Millisecond)
 	close(b.block)
 	wg.Wait()
 

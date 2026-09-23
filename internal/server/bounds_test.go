@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -61,7 +62,7 @@ func TestPropertyToolResultNeverEmitsNonFiniteJSON(t *testing.T) {
 		next := func(context.Context, string, mcp.Request) (mcp.Result, error) {
 			return &mcp.CallToolResult{StructuredContent: map[string]any{"nested": []any{map[string]any{"value": value}}}}, nil
 		}
-		handler := toolLimitsMiddleware(make(chan struct{}, 4), make(chan struct{}, 2), logger)(next)
+		handler := toolLimitsMiddleware(make(chan struct{}, 4), make(chan struct{}, 2), gcpdata.ProfilerScanTimeout, logger)(next)
 		result, err := handler(context.Background(), "tools/call", &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Name: "property"}})
 		if math.IsNaN(value) || math.IsInf(value, 0) {
 			assert.Error(t, err)
@@ -79,7 +80,7 @@ func TestToolResultBudgetReturnsActionableToolError(t *testing.T) {
 	next := func(context.Context, string, mcp.Request) (mcp.Result, error) {
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: strings.Repeat("x", maxEncodedToolResultBytes)}}}, nil
 	}
-	handler := toolLimitsMiddleware(make(chan struct{}, 4), make(chan struct{}, 2), logger)(next)
+	handler := toolLimitsMiddleware(make(chan struct{}, 4), make(chan struct{}, 2), gcpdata.ProfilerScanTimeout, logger)(next)
 	result, err := handler(context.Background(), "tools/call", &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Name: "oversized"}})
 	require.NoError(t, err)
 	call, ok := result.(*mcp.CallToolResult)
@@ -127,7 +128,7 @@ func TestToolSlotWaitTimeoutNamesTheTool(t *testing.T) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), wait)
 		defer cancel()
-		res, err := toolLimitsMiddleware(userCalls, profilerCalls, logger)(next)(
+		res, err := toolLimitsMiddleware(userCalls, profilerCalls, gcpdata.ProfilerScanTimeout, logger)(next)(
 			ctx, "tools/call", &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Name: tool}})
 		require.NoError(t, err)
 		call, ok := res.(*mcp.CallToolResult)
@@ -185,7 +186,7 @@ func TestProfileScanToolsRunUnderProfilerLimits(t *testing.T) {
 				hasDeadline = ok && time.Until(deadline) <= gcpdata.ProfilerScanTimeout
 				return &mcp.CallToolResult{}, nil
 			}
-			_, err := toolLimitsMiddleware(userCalls, profilerCalls, logger)(next)(
+			_, err := toolLimitsMiddleware(userCalls, profilerCalls, gcpdata.ProfilerScanTimeout, logger)(next)(
 				context.Background(), "tools/call", &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Name: spec.name}})
 			require.NoError(t, err)
 			assert.Equal(t, spec.profileScan, heldProfilerSlot)
@@ -194,6 +195,84 @@ func TestProfileScanToolsRunUnderProfilerLimits(t *testing.T) {
 			assert.Empty(t, profilerCalls)
 		})
 	}
+}
+
+// signalWriter discards log output and closes seen the first time a write
+// contains msg.
+type signalWriter struct {
+	msg  string
+	seen chan struct{}
+	once sync.Once
+}
+
+func (w *signalWriter) Write(p []byte) (int, error) {
+	if strings.Contains(string(p), w.msg) {
+		w.once.Do(func() { close(w.seen) })
+	}
+	return len(p), nil
+}
+
+// TestProfilerBudgetIncludesSlotWait pins that one profiler budget, measured
+// from the start of the call, covers both the wait for a profiler slot and
+// the scan.
+func TestProfilerBudgetIncludesSlotWait(t *testing.T) {
+	profilerTop := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Name: "profiler_top"}}
+
+	t.Run("deadline counts the slot wait", func(t *testing.T) {
+		const budget = time.Hour
+		saturated := &signalWriter{msg: "msg=profiler_saturation", seen: make(chan struct{})}
+		logger := slog.New(slog.NewTextHandler(saturated, nil))
+		profilerCalls := make(chan struct{}, 1)
+		profilerCalls <- struct{}{}
+		var deadline time.Time
+		next := func(ctx context.Context, _ string, _ mcp.Request) (mcp.Result, error) {
+			deadline, _ = ctx.Deadline()
+			return &mcp.CallToolResult{}, nil
+		}
+		start := time.Now()
+		done := make(chan error, 1)
+		go func() {
+			_, err := toolLimitsMiddleware(make(chan struct{}, 4), profilerCalls, budget, logger)(next)(
+				context.Background(), "tools/call", profilerTop)
+			done <- err
+		}()
+		<-saturated.seen // the call is waiting for the profiler slot
+		released := time.Now()
+		<-profilerCalls
+		require.NoError(t, <-done)
+		assert.False(t, deadline.Before(start.Add(budget)), "deadline %s is before call start + budget", deadline)
+		assert.True(t, deadline.Before(released.Add(budget)), "deadline %s restarts after the slot wait", deadline)
+	})
+	t.Run("scan timeout carries the budget cause", func(t *testing.T) {
+		next := func(ctx context.Context, _ string, _ mcp.Request) (mcp.Result, error) {
+			<-ctx.Done()
+			return nil, context.Cause(ctx)
+		}
+		_, err := toolLimitsMiddleware(make(chan struct{}, 4), make(chan struct{}, 2), 20*time.Millisecond, slog.New(slog.DiscardHandler))(next)(
+			context.Background(), "tools/call", profilerTop)
+		require.ErrorIs(t, err, gcpdata.ErrProfilerScanBudget)
+	})
+	t.Run("slot wait timeout is a slot error", func(t *testing.T) {
+		profilerCalls := make(chan struct{}, 1)
+		profilerCalls <- struct{}{}
+		called := false
+		next := func(context.Context, string, mcp.Request) (mcp.Result, error) {
+			called = true
+			return &mcp.CallToolResult{}, nil
+		}
+		res, err := toolLimitsMiddleware(make(chan struct{}, 4), profilerCalls, 20*time.Millisecond, slog.New(slog.DiscardHandler))(next)(
+			context.Background(), "tools/call", profilerTop)
+		require.NoError(t, err)
+		call, ok := res.(*mcp.CallToolResult)
+		require.True(t, ok)
+		require.True(t, call.IsError)
+		require.Len(t, call.Content, 1)
+		text, ok := call.Content[0].(*mcp.TextContent)
+		require.True(t, ok)
+		assert.Contains(t, text.Text, "tool profiler_top never got a profiler slot (limit 1) after waiting")
+		assert.NotContains(t, text.Text, gcpdata.ErrProfilerScanBudget.Error())
+		assert.False(t, called)
+	})
 }
 
 func TestToolResultBudgetCompactsAutomaticStructuredContentDuplication(t *testing.T) {
@@ -205,7 +284,7 @@ func TestToolResultBudgetCompactsAutomaticStructuredContentDuplication(t *testin
 			StructuredContent: structured,
 		}, nil
 	}
-	handler := toolLimitsMiddleware(make(chan struct{}, 4), make(chan struct{}, 2), logger)(next)
+	handler := toolLimitsMiddleware(make(chan struct{}, 4), make(chan struct{}, 2), gcpdata.ProfilerScanTimeout, logger)(next)
 	result, err := handler(context.Background(), "tools/call", &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Name: "large-structured"}})
 	require.NoError(t, err)
 	call, ok := result.(*mcp.CallToolResult)

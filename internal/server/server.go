@@ -135,7 +135,7 @@ func (s *Server) newMCPInstance(completer *promptCompleter) *mcp.Server {
 		},
 	)
 	srv.AddReceivingMiddleware(panicRecoveryMiddleware(s.logger))
-	srv.AddReceivingMiddleware(toolLimitsMiddleware(make(chan struct{}, 4), s.profiler, s.logger))
+	srv.AddReceivingMiddleware(toolLimitsMiddleware(make(chan struct{}, 4), s.profiler, gcpdata.ProfilerScanTimeout, s.logger))
 	return srv
 }
 
@@ -144,12 +144,13 @@ const structuredResultContentNotice = "The complete result is available in struc
 
 // toolLimitsMiddleware bounds tools/call: at most cap(userCalls) concurrent
 // calls per server instance, profiler-scanning tools (profileScanTools) share
-// the process-wide cap(profilerCalls) limit and, once they hold a profiler
-// slot, run under gcpdata.ProfilerScanTimeout with gcpdata.ErrProfilerScanBudget
-// as the cause, and every result must encode within maxEncodedToolResultBytes.
-// A call that never gets a slot and an over-budget result are both reported
-// as tool errors.
-func toolLimitsMiddleware(userCalls, profilerCalls chan struct{}, logger *slog.Logger) func(mcp.MethodHandler) mcp.MethodHandler {
+// the process-wide cap(profilerCalls) limit and must finish within
+// profilerBudget of the call's start, waiting for a profiler slot included,
+// and every result must encode within maxEncodedToolResultBytes. The scan runs
+// with gcpdata.ErrProfilerScanBudget as the cause of that deadline. A call
+// that never gets a slot and an over-budget result are both reported as tool
+// errors.
+func toolLimitsMiddleware(userCalls, profilerCalls chan struct{}, profilerBudget time.Duration, logger *slog.Logger) func(mcp.MethodHandler) mcp.MethodHandler {
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
 			if method != "tools/call" {
@@ -164,16 +165,22 @@ func toolLimitsMiddleware(userCalls, profilerCalls chan struct{}, logger *slog.L
 			}
 			defer func() { <-userCalls }()
 			if profileScanTools[tool] {
+				// One deadline bounds the slot wait and the scan together. Both
+				// contexts derive from ctx, so a scan that runs out of time ends
+				// with the budget cause rather than the wait context's.
+				deadline := time.Now().Add(profilerBudget)
+				waitCtx, cancelWait := context.WithDeadline(ctx, deadline)
+				defer cancelWait()
 				if len(profilerCalls) == cap(profilerCalls) {
 					logger.Warn("profiler_saturation", "limit", cap(profilerCalls), "tool", tool)
 				}
-				if err := acquireToolSlot(ctx, profilerCalls, "profiler", tool, logger); err != nil {
+				if err := acquireToolSlot(waitCtx, profilerCalls, "profiler", tool, logger); err != nil {
 					return tools.ErrorResult(err.Error()), nil
 				}
 				defer func() { <-profilerCalls }()
-				budgetCtx, cancel := context.WithTimeoutCause(ctx, gcpdata.ProfilerScanTimeout, gcpdata.ErrProfilerScanBudget)
-				defer cancel()
-				ctx = budgetCtx
+				scanCtx, cancelScan := context.WithDeadlineCause(ctx, deadline, gcpdata.ErrProfilerScanBudget)
+				defer cancelScan()
+				ctx = scanCtx
 			}
 			result, err := next(ctx, method, req)
 			if err != nil || result == nil {

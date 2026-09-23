@@ -25,11 +25,11 @@ import (
 )
 
 // ProfilerScanTimeout is the time budget of one profiler_* tool call, which
-// the server applies to every such call once it holds a profiler slot. The
-// Cloud Profiler Export API returns profile bytes inline and offers no
-// server-side filter (see ListProfiles), so a call must page through and
-// download many profiles client-side and can legitimately run for minutes on
-// large projects. The tool layer keeps the MCP client's request alive across
+// the server applies to every such call, the wait for a profiler slot
+// included. The Cloud Profiler Export API returns profile bytes inline and
+// offers no server-side filter (see ListProfiles), so a call must page through
+// and download many profiles client-side and can legitimately run for minutes
+// on large projects. The tool layer keeps the MCP client's request alive across
 // this window with progress heartbeats, and maxScan still bounds the total
 // work examined.
 const ProfilerScanTimeout = 8 * time.Minute
