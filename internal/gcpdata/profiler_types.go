@@ -175,6 +175,7 @@ type ProfileTrendsResult struct {
 	Functions         []TrendsFunctionSeries `json:"functions"`
 	DownloadErrors    int                    `json:"download_errors,omitempty"`
 	LastDownloadError string                 `json:"last_download_error,omitempty"`
+	ParseErrors       int                    `json:"parse_errors,omitempty"`
 	Warning           string                 `json:"warning,omitempty"`
 	Truncated         bool                   `json:"truncated,omitempty"`
 	TruncationHint    string                 `json:"truncation_hint,omitempty"`

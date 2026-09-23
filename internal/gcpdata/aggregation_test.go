@@ -440,6 +440,25 @@ func TestFoldGroupSeriesDropsPostAggregationOverflow(t *testing.T) {
 	assert.Equal(t, 1, stats.NonFinitePoints)
 }
 
+// TestFoldGroupSeriesDroppedBucketsStayOutOfCoverage pins that a bucket
+// dropped as non-finite is not counted as a carry-forward bucket, so the
+// coverage counters never exceed TotalBuckets.
+func TestFoldGroupSeriesDroppedBucketsStayOutOfCoverage(t *testing.T) {
+	t1, t2 := time.Unix(60, 0), time.Unix(120, 0)
+	series := []MetricTimeSeries{
+		{Points: []metrics.Point{{Timestamp: t1, Value: math.MaxFloat64}}},
+		{Points: []metrics.Point{{Timestamp: t1, Value: 0}, {Timestamp: t2, Value: math.MaxFloat64}}},
+	}
+	var stats QueryWarnings
+	points := foldGroupSeries(series, metrics.ReducerSum, &stats)
+	// t2 sums the fresh MaxFloat64 with the first series' carried MaxFloat64
+	// and overflows, so only t1 survives.
+	require.Len(t, points, 1)
+	assert.Equal(t, 1, stats.TotalBuckets)
+	assert.Equal(t, 1, stats.NonFinitePoints)
+	assert.Zero(t, stats.CarryForwardBuckets)
+}
+
 // TestBuildAggregatedParams pins the single-vs-two-stage path selection
 // at the real function boundary that QueryTimeSeriesAggregated depends
 // on. Going through a fakeQuerier (as the snapshot/compare/related
@@ -575,7 +594,7 @@ func TestQueryTimeSeriesAggregatedInvalidSpec(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid aggregation spec")
 	// The error must wrap the sentinel so tool handlers can escalate
-	// registry misconfiguration to LoggingLevelError instead of lumping
+	// registry misconfiguration to logLevelError instead of lumping
 	// it with transient GCP failures.
 	assert.True(t, errors.Is(err, metrics.ErrInvalidAggregationSpec))
 }

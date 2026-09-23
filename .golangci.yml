@@ -36,8 +36,6 @@ linters:
         - .WithMessage(
         - .WithMessagef(
         - .WithStack(
-        # errgroup tasks wrap their own errors; Wait only relays the first one.
-        - (*golang.org/x/sync/errgroup.Group).Wait(
       ignore-package-globs:
         - github.com/tolmachov/mcp-gcp-observability/*
 

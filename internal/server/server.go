@@ -349,7 +349,7 @@ func (s *Server) buildDeps(client *gcpclient.Client, reg *metrics.Registry) tool
 		Logs:     gcpdata.NewLoggingQuerier(client.LoggingClient()),
 		Errors:   gcpdata.NewErrorReportingQuerier(client.ErrorsClient()),
 		Traces:   gcpdata.NewCloudTraceQuerier(client.TraceClient()),
-		Profiler: gcpdata.NewCloudProfilerQuerier(client.ProfilerService()),
+		Profiler: gcpdata.NewCloudProfilerQuerier(client.ProfilerService(), s.logger),
 		Querier:  gcpdata.NewMonitoringQuerier(client.MonitoringClient()),
 		Registry: reg,
 		Project:  s.project,

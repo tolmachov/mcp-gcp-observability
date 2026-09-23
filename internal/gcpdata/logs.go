@@ -68,10 +68,7 @@ func (q *LoggingQuerier) QueryLogsByRequestID(ctx context.Context, project, requ
 	return q.QueryLogs(ctx, project, AppendFilter(requestIDFilter(requestID), timeFilter), limit, "asc", pageToken)
 }
 
-// FindRequests finds HTTP requests matching the given URL pattern.
-// FindRequestsParams bundles the filter/paging arguments for FindRequests,
-// replacing a run of same-typed positional args (three strings, an int, a bool)
-// that were easy to transpose at the call site.
+// FindRequestsParams bundles the filter and paging arguments for FindRequests.
 type FindRequestsParams struct {
 	Project    string
 	URLPattern string
@@ -82,6 +79,7 @@ type FindRequestsParams struct {
 	Limit      int
 }
 
+// FindRequests finds HTTP requests matching the given URL pattern.
 func (q *LoggingQuerier) FindRequests(ctx context.Context, params FindRequestsParams) (*RequestList, error) {
 	ctx, cancel := context.WithTimeout(ctx, logQueryTimeout)
 	defer cancel()

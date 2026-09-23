@@ -2,6 +2,7 @@ package gcpdata
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	cloudprofiler "cloud.google.com/go/cloudprofiler/apiv2"
@@ -15,8 +16,8 @@ import (
 // cloud trace, cloud profiler) plus a concrete implementation that wraps the
 // corresponding SDK client. It mirrors MetricsQuerier/MonitoringQuerier: tool
 // handlers depend on the interface so they can be unit-tested with fakes, while
-// the concrete querier types implement the operations as methods on the SDK
-// client they wrap.
+// the concrete querier types implement the operations as methods that call the
+// SDK client they wrap.
 
 // LogsQuerier abstracts Cloud Logging read operations used by tool handlers.
 type LogsQuerier interface {
@@ -95,17 +96,22 @@ func NewCloudTraceQuerier(client *cloudtrace.Client) *CloudTraceQuerier {
 // CloudProfilerQuerier implements ProfilerQuerier against a real Cloud Profiler
 // export client. It owns the profile cache shared across all profiler calls.
 type CloudProfilerQuerier struct {
-	svc   *cloudprofiler.ExportClient
-	cache *ProfileCache
+	svc    *cloudprofiler.ExportClient
+	cache  *ProfileCache
+	logger *slog.Logger
 }
 
 // NewCloudProfilerQuerier wraps a Cloud Profiler export client and owns a
-// byte-bounded compressed-profile cache until Close.
-func NewCloudProfilerQuerier(svc *cloudprofiler.ExportClient) *CloudProfilerQuerier {
+// byte-bounded compressed-profile cache until Close. logger records profiles
+// the cache rejects.
+func NewCloudProfilerQuerier(svc *cloudprofiler.ExportClient, logger *slog.Logger) *CloudProfilerQuerier {
 	if svc == nil {
 		panic("NewCloudProfilerQuerier: svc must not be nil")
 	}
-	return &CloudProfilerQuerier{svc: svc, cache: NewProfileCache()}
+	if logger == nil {
+		panic("NewCloudProfilerQuerier: logger must not be nil")
+	}
+	return &CloudProfilerQuerier{svc: svc, cache: NewProfileCache(), logger: logger}
 }
 
 func (q *CloudProfilerQuerier) Close() error {

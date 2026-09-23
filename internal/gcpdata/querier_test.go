@@ -113,31 +113,124 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
+// blockingDescriptors is a listDescriptors fake whose calls announce
+// themselves on started and then block until release is closed.
+type blockingDescriptors struct {
+	calls   atomic.Int32
+	started chan struct{}
+	release chan struct{}
+	err     error
+}
+
+func newBlockingDescriptors(err error) *blockingDescriptors {
+	return &blockingDescriptors{started: make(chan struct{}, 8), release: make(chan struct{}), err: err}
+}
+
+func (b *blockingDescriptors) list(ctx context.Context, _ *monitoring.MetricClient, _ string) ([]MonitoredResourceDescriptor, error) {
+	b.calls.Add(1)
+	b.started <- struct{}{}
+	<-b.release
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if b.err != nil {
+		return nil, b.err
+	}
+	return []MonitoredResourceDescriptor{{Type: "gce_instance", Labels: []string{"instance_id"}}}, nil
+}
+
 // TestGetResourceLabels_SharedAcrossQueriers pins the process-wide contract:
-// queriers built per user share one fetch per project, and projects are
-// cached independently.
+// concurrent misses on one querier share one fetch, its success serves every
+// querier through the shared cache, and projects are cached independently.
+// The fetch count does not depend on scheduling: a caller that arrives after
+// the fetch finished hits the cache instead of fetching again.
 func TestGetResourceLabels_SharedAcrossQueriers(t *testing.T) {
 	cache := newResourceLabelsCache()
-	var calls atomic.Int32
-	list := func(ctx context.Context, _ *monitoring.MetricClient, _ string) ([]MonitoredResourceDescriptor, error) {
-		calls.Add(1)
-		return []MonitoredResourceDescriptor{{Type: "gce_instance", Labels: []string{"instance_id"}}}, nil
-	}
-	a := &MonitoringQuerier{resourceLabels: cache, listDescriptors: list}
-	b := &MonitoringQuerier{resourceLabels: cache, listDescriptors: list}
+	fake := newBlockingDescriptors(nil)
+	a := &MonitoringQuerier{resourceLabels: cache, listDescriptors: fake.list}
+	b := &MonitoringQuerier{resourceLabels: cache, listDescriptors: fake.list}
 
 	var wg sync.WaitGroup
-	for _, q := range []*MonitoringQuerier{a, b, a, b} {
-		wg.Go(func() {
-			labels, err := q.GetResourceLabels(context.Background(), "proj", "gce_instance")
-			assert.NoError(t, err)
-			assert.Equal(t, []string{"instance_id"}, labels)
-		})
+	lookup := func() {
+		labels, err := a.GetResourceLabels(context.Background(), "proj", "gce_instance")
+		assert.NoError(t, err)
+		assert.Equal(t, []string{"instance_id"}, labels)
 	}
+	wg.Go(lookup)
+	<-fake.started // the fetch is in flight and blocked
+	for range 3 {
+		wg.Go(lookup)
+	}
+	close(fake.release)
 	wg.Wait()
-	assert.Equal(t, int32(1), calls.Load(), "one fetch per project across queriers")
+	assert.Equal(t, int32(1), fake.calls.Load(), "one fetch for concurrent misses on a querier")
 
-	_, err := b.GetResourceLabels(context.Background(), "other-proj", "gce_instance")
+	labels, err := b.GetResourceLabels(context.Background(), "proj", "gce_instance")
 	require.NoError(t, err)
-	assert.Equal(t, int32(2), calls.Load(), "a different project is fetched separately")
+	assert.Equal(t, []string{"instance_id"}, labels)
+	assert.Equal(t, int32(1), fake.calls.Load(), "another querier reuses the cached success")
+
+	_, err = b.GetResourceLabels(context.Background(), "other-proj", "gce_instance")
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), fake.calls.Load(), "a different project is fetched separately")
+}
+
+// TestGetResourceLabels_LeaderCancelDoesNotFailWaiter guards against the
+// shared fetch inheriting the first caller's cancellation: the caller that
+// started it gives up, the one waiting on it still gets the labels.
+func TestGetResourceLabels_LeaderCancelDoesNotFailWaiter(t *testing.T) {
+	fake := newBlockingDescriptors(nil)
+	q := &MonitoringQuerier{resourceLabels: newResourceLabelsCache(), listDescriptors: fake.list}
+
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	leaderErr := make(chan error, 1)
+	go func() {
+		_, err := q.GetResourceLabels(leaderCtx, "proj", "gce_instance")
+		leaderErr <- err
+	}()
+	<-fake.started
+
+	waiter := make(chan []string, 1)
+	go func() {
+		labels, err := q.GetResourceLabels(context.Background(), "proj", "gce_instance")
+		assert.NoError(t, err)
+		waiter <- labels
+	}()
+
+	cancelLeader()
+	require.ErrorIs(t, <-leaderErr, context.Canceled, "the leader returns on its own cancellation")
+	close(fake.release)
+	assert.Equal(t, []string{"instance_id"}, <-waiter)
+	assert.Equal(t, int32(1), fake.calls.Load())
+}
+
+// TestGetResourceLabels_FailureStaysWithItsQuerier guards the shared
+// deployment: a user whose credentials cannot list descriptors must not hand
+// that error to a concurrent user whose client works.
+func TestGetResourceLabels_FailureStaysWithItsQuerier(t *testing.T) {
+	cache := newResourceLabelsCache()
+	denied := errors.New("permission denied")
+	failing := newBlockingDescriptors(denied)
+	working := newBlockingDescriptors(nil)
+	a := &MonitoringQuerier{resourceLabels: cache, listDescriptors: failing.list}
+	b := &MonitoringQuerier{resourceLabels: cache, listDescriptors: working.list}
+
+	aErr := make(chan error, 1)
+	go func() {
+		_, err := a.GetResourceLabels(context.Background(), "proj", "gce_instance")
+		aErr <- err
+	}()
+	<-failing.started
+	bLabels := make(chan []string, 1)
+	go func() {
+		labels, err := b.GetResourceLabels(context.Background(), "proj", "gce_instance")
+		assert.NoError(t, err)
+		bLabels <- labels
+	}()
+	<-working.started // both fetches are in flight at once
+
+	close(failing.release)
+	require.ErrorIs(t, <-aErr, denied)
+	close(working.release)
+	assert.Equal(t, []string{"instance_id"}, <-bLabels)
 }

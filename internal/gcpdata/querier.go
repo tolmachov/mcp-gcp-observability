@@ -29,8 +29,8 @@ type MetricsQuerier interface {
 	// single-stage vs two-stage semantics. snapshot/compare/related should
 	// prefer this over QueryTimeSeries to honor per-metric aggregation
 	// declared in the registry instead of silently falling back to mean.
-	// The warnings additionally cover the fold (single-group collapse,
-	// ragged buckets).
+	// The warnings additionally cover the fold (SingleGroup,
+	// CarryForwardBuckets, DepartedGroupBuckets, DepartedSeries).
 	QueryTimeSeriesAggregated(ctx context.Context, params QueryTimeSeriesParams, spec metrics.AggregationSpec) ([]MetricTimeSeries, QueryWarnings, error)
 
 	// GetResourceLabels returns the label keys defined for a monitored
@@ -50,6 +50,8 @@ type MonitoringQuerier struct {
 	// resourceLabels caches the listDescriptors result; shared process-wide
 	// by NewMonitoringQuerier, overridable for tests.
 	resourceLabels *resourceLabelsCache
+	// labelFetches dedupes this querier's concurrent resource-label misses.
+	labelFetches singleflight.Group
 }
 
 // NewMonitoringQuerier wraps a Cloud Monitoring client as a MetricsQuerier.
@@ -67,17 +69,59 @@ func NewMonitoringQuerier(client *monitoring.MetricClient) *MonitoringQuerier {
 // GetResourceLabels returns label keys for a monitored resource type, or
 // (nil, nil) if the type is not found. Returns a defensive copy.
 func (q *MonitoringQuerier) GetResourceLabels(ctx context.Context, project, resourceType string) ([]string, error) {
-	byType, err := q.resourceLabels.get(ctx, project, func(ctx context.Context) ([]MonitoredResourceDescriptor, error) {
-		return q.listDescriptors(ctx, q.client, project)
-	})
+	byType, err := q.resourceLabelsFor(ctx, project)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("resource labels for project %q: %w", project, err)
 	}
 	labels, ok := byType[resourceType]
 	if !ok {
 		return nil, nil
 	}
 	return slices.Clone(labels), nil
+}
+
+// resourceLabelsFor returns the project's resource type → label keys map from
+// the shared cache, fetching it with this querier's client on a miss.
+//
+// Only successes are shared across queriers: concurrent misses on one querier
+// share a single fetch, but queriers (one per user in the shared deployment)
+// never join each other's fetch, so one user's permission error is never
+// delivered to another. The fetch is detached from the caller's cancellation
+// and bounded by its own timeout, so a caller that gives up cannot fail the
+// others waiting on it; each caller still returns as soon as its own ctx is
+// done. A failed fetch is not cached, so the next call retries.
+func (q *MonitoringQuerier) resourceLabelsFor(ctx context.Context, project string) (map[string][]string, error) {
+	if byType, ok := q.resourceLabels.load(project); ok {
+		return byType, nil
+	}
+	fetched := q.labelFetches.DoChan(project, func() (any, error) {
+		// A fetch that completed after the load above has already stored the
+		// result; re-checking keeps a late caller from fetching again.
+		if byType, ok := q.resourceLabels.load(project); ok {
+			return byType, nil
+		}
+		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), metricsQueryTimeout)
+		defer cancel()
+		descs, err := q.listDescriptors(fetchCtx, q.client, project)
+		if err != nil {
+			return nil, err
+		}
+		byType := make(map[string][]string, len(descs))
+		for _, d := range descs {
+			byType[d.Type] = d.Labels
+		}
+		q.resourceLabels.store(project, byType)
+		return byType, nil
+	})
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("waiting for resource descriptors: %w", ctx.Err())
+	case r := <-fetched:
+		if r.Err != nil {
+			return nil, r.Err
+		}
+		return r.Val.(map[string][]string), nil
+	}
 }
 
 // sharedResourceLabels is the process-wide resource-label cache used by every
@@ -88,42 +132,25 @@ func (q *MonitoringQuerier) GetResourceLabels(ctx context.Context, project, reso
 var sharedResourceLabels = newResourceLabelsCache()
 
 // resourceLabelsCache maps project → monitored resource type → label keys.
-// Each project is fetched once: concurrent misses share one RPC through the
-// singleflight group, the RPC runs without holding mu, and a failed fetch is
-// not cached so the next call retries.
+// It holds successful fetches only.
 type resourceLabelsCache struct {
 	mu        sync.Mutex
 	byProject map[string]map[string][]string
-	fetches   singleflight.Group
 }
 
 func newResourceLabelsCache() *resourceLabelsCache {
 	return &resourceLabelsCache{byProject: make(map[string]map[string][]string)}
 }
 
-func (c *resourceLabelsCache) get(ctx context.Context, project string, fetch func(context.Context) ([]MonitoredResourceDescriptor, error)) (map[string][]string, error) {
+func (c *resourceLabelsCache) load(project string) (map[string][]string, bool) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	byType, ok := c.byProject[project]
-	c.mu.Unlock()
-	if ok {
-		return byType, nil
-	}
-	v, err, _ := c.fetches.Do(project, func() (any, error) {
-		descs, err := fetch(ctx)
-		if err != nil {
-			return nil, err
-		}
-		byType := make(map[string][]string, len(descs))
-		for _, d := range descs {
-			byType[d.Type] = d.Labels
-		}
-		c.mu.Lock()
-		c.byProject[project] = byType
-		c.mu.Unlock()
-		return byType, nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("resource labels for project %q: %w", project, err)
-	}
-	return v.(map[string][]string), nil
+	return byType, ok
+}
+
+func (c *resourceLabelsCache) store(project string, byType map[string][]string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.byProject[project] = byType
 }

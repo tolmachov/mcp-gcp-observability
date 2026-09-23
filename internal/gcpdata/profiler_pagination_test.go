@@ -2,6 +2,7 @@ package gcpdata
 
 import (
 	"context"
+	"log/slog"
 	"net"
 	"testing"
 	"time"
@@ -54,23 +55,31 @@ func (s *pagedProfilerServer) ListProfiles(_ context.Context, req *cloudprofiler
 
 func newPagedProfilerQuerier(t *testing.T) (*CloudProfilerQuerier, *pagedProfilerServer) {
 	t.Helper()
+	service := &pagedProfilerServer{}
+	return newFakeProfilerQuerier(t, service, slog.New(slog.DiscardHandler)), service
+}
+
+// newFakeProfilerQuerier serves service over an in-memory gRPC connection and
+// returns a CloudProfilerQuerier backed by it.
+func newFakeProfilerQuerier(t *testing.T, service cloudprofilerpb.ExportServiceServer, logger *slog.Logger) *CloudProfilerQuerier {
+	t.Helper()
 	listener := bufconn.Listen(1 << 20)
 	grpcServer := grpc.NewServer()
-	service := &pagedProfilerServer{}
 	cloudprofilerpb.RegisterExportServiceServer(grpcServer, service)
 	go func() { _ = grpcServer.Serve(listener) }()
 	t.Cleanup(grpcServer.Stop)
 	conn, err := grpc.NewClient("passthrough:///bufnet",
 		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(2*maxCompressedProfileBytes)))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
 	client, err := cloudprofiler.NewExportClient(context.Background(), option.WithGRPCConn(conn))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = client.Close() })
-	q := NewCloudProfilerQuerier(client)
+	q := NewCloudProfilerQuerier(client, logger)
 	t.Cleanup(func() { _ = q.Close() })
-	return q, service
+	return q
 }
 
 func TestProfilerPaginationResumesInsideAPIPage(t *testing.T) {

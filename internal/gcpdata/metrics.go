@@ -188,11 +188,8 @@ func (q *MonitoringQuerier) ListMetricDescriptors(ctx context.Context, project, 
 // listMonitoredResourceDescriptors returns all monitored resource descriptors
 // visible to the project, each with its defined label keys. Results are
 // globally stable (the resource schema is part of the Cloud Monitoring API,
-// not per-project state), so callers should cache.
+// not per-project state), so callers should cache. The caller bounds ctx.
 func listMonitoredResourceDescriptors(ctx context.Context, client *monitoring.MetricClient, project string) ([]MonitoredResourceDescriptor, error) {
-	ctx, cancel := context.WithTimeout(ctx, metricsQueryTimeout)
-	defer cancel()
-
 	req := &monitoringpb.ListMonitoredResourceDescriptorsRequest{
 		Name: fmt.Sprintf("projects/%s", project),
 	}
@@ -386,9 +383,9 @@ type QueryWarnings struct {
 	// log line can name a concrete number of suspect entities.
 	DepartedSeries int
 
-	// TotalBuckets is the total number of folded buckets that the
-	// CarryForward / DepartedGroup counters are measured against. Zero
-	// if the fold produced no buckets.
+	// TotalBuckets is the number of buckets the fold returned (non-finite
+	// results excluded); CarryForwardBuckets and DepartedGroupBuckets
+	// count a subset of them. Zero if the fold produced no buckets.
 	TotalBuckets int
 
 	// GroupCount is the number of per-group series the first stage
@@ -484,18 +481,15 @@ func (q *MonitoringQuerier) QueryTimeSeriesAggregated(ctx context.Context, param
 
 // maxCarryForwardBuckets bounds how many consecutive buckets a per-group
 // series may be carried forward after its last fresh point before it is
-// treated as genuinely gone. Three buckets ≈ 180s at the
-// metrics.DefaultStepSeconds (60s) alignment period used by every tool
-// caller unless metrics_snapshot is given step_seconds. Wide enough to bridge a rolling-deploy
-// replica handoff, narrow enough that a truly departed group (leader-
-// lock lost, tenant deprovisioned, instance terminated) stops
-// contributing its last value within one metrics snapshot window.
-// Without this bound, a single fresh point at the start of the window
-// would inflate every bucket until the end of time and silently
-// misrepresent steady-state presence for departed groups. If a future
-// caller uses a smaller alignment period the absolute bound shrinks
-// proportionally — re-evaluate this constant if step ever drops below
-// 30s. See the foldGroupSeries docblock for rationale.
+// treated as genuinely gone. The bound is in buckets, so its duration scales
+// with the alignment period: 180s at metrics.DefaultStepSeconds (60s), and
+// 30s at the 10s minimum step metrics_snapshot accepts. Wide enough to bridge
+// a rolling-deploy replica handoff, narrow enough that a truly departed group
+// (leader lock lost, tenant deprovisioned, instance terminated) stops
+// contributing its last value within one metrics snapshot window. Without
+// this bound, a single fresh point at the start of the window would inflate
+// every later bucket and misrepresent steady-state presence for departed
+// groups. See the foldGroupSeries docblock for rationale.
 const maxCarryForwardBuckets = 3
 
 // foldGroupSeries combines multiple per-group series into a single series
@@ -507,7 +501,8 @@ const maxCarryForwardBuckets = 3
 // Output contract: the returned []metrics.Point is sorted ascending by
 // timestamp. This is load-bearing — downstream trend/spike detection in
 // metrics.Process walks the series in order and would fabricate deltas
-// from an unsorted input. TestFoldSortsOutput pins this invariant with
+// from an unsorted input. testFoldSortsOutput (a TestFoldGroupSeries
+// subtest) pins this invariant with
 // enough timestamps that Go's randomized map iteration reliably scrambles
 // the natural order.
 //
@@ -527,10 +522,12 @@ const maxCarryForwardBuckets = 3
 // within the bounded window, so a genuinely departed group stops
 // inflating the sum instead of fabricating steady-state presence forever.
 //
-// Ragged buckets — timestamps where at least one series contributed via
-// carry-forward, or where a departed series was excluded — are counted into
-// w (together with TotalBuckets and any non-finite fold results) so callers
-// can log the coverage gap. Common causes: a series that starts mid-window,
+// Buckets where at least one series contributed via carry-forward, or where a
+// departed series was excluded, are counted into w.CarryForwardBuckets and
+// w.DepartedGroupBuckets (with w.DepartedSeries naming the distinct departed
+// series) so callers can log the coverage gap. Buckets whose reduced value is
+// non-finite are dropped and counted only in w.NonFinitePoints, so both
+// bucket counters stay within w.TotalBuckets, the number of returned points. Common causes: a series that starts mid-window,
 // a gap in one group, or a deploy cutting publishing from one replica.
 func foldGroupSeries(series []MetricTimeSeries, reducer metrics.Reducer, w *QueryWarnings) []metrics.Point {
 	// Collect every distinct timestamp across all input series.
@@ -615,6 +612,11 @@ func foldGroupSeries(series []MetricTimeSeries, reducer metrics.Reducer, w *Quer
 		if len(values) == 0 {
 			continue
 		}
+		value := applyReducer(values, reducer)
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			w.NonFinitePoints++
+			continue
+		}
 		// Count the bucket against whichever signal is active. Departed
 		// buckets are the more serious symptom (the group permanently
 		// stopped contributing), so a bucket with both carries and
@@ -624,11 +626,6 @@ func foldGroupSeries(series []MetricTimeSeries, reducer metrics.Reducer, w *Quer
 			w.DepartedGroupBuckets++
 		} else if carriedCount > 0 {
 			w.CarryForwardBuckets++
-		}
-		value := applyReducer(values, reducer)
-		if math.IsNaN(value) || math.IsInf(value, 0) {
-			w.NonFinitePoints++
-			continue
 		}
 		points = append(points, metrics.Point{
 			Timestamp: time.Unix(0, ts),
