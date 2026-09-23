@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/pprof/profile"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
@@ -399,6 +400,27 @@ func requireProfiler(q gcpdata.ProfilerQuerier) {
 	if q == nil {
 		panic("nil ProfilerQuerier")
 	}
+}
+
+// loadProfile resolves the project and fetches the profile (or the
+// request-local current-minus-base diff when baseProfileID is set) for
+// profiler_top, profiler_peek and profiler_flamegraph. On failure it returns
+// the tool error result to send back.
+func loadProfile(ctx context.Context, req *mcp.CallToolRequest, d Deps, tool, projectID, profileID, baseProfileID string) (*profile.Profile, gcpdata.ProfileMeta, *mcp.CallToolResult) {
+	project, err := d.Project.Resolve(projectID)
+	if err != nil {
+		return nil, gcpdata.ProfileMeta{}, errResult(err.Error())
+	}
+	// Fetching an uncached profile scans the Export API and can run long on
+	// large projects; heartbeat progress keeps the client request alive.
+	stopHeartbeat := startProgressHeartbeat(ctx, req, "Downloading profile…")
+	p, meta, err := d.Profiler.GetProfileOrDiff(ctx, project, profileID, baseProfileID)
+	stopHeartbeat()
+	if err != nil {
+		mcpLog(ctx, req, logLevelError, tool, fmt.Sprintf("fetch profile failed: %v", err))
+		return nil, gcpdata.ProfileMeta{}, errResult(fmt.Sprintf("Failed to fetch profile: %v", err))
+	}
+	return p, meta, nil
 }
 
 // requireQuerier/requireRegistry guard the two dependencies every metrics tool

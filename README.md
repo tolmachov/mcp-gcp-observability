@@ -106,7 +106,7 @@ Built-in prompts are `investigate-errors`, `trace-request`, `investigate-metrics
 
 - HTTP headers: 64 KiB; MCP request body: 1 MiB; encoded tool result: 2 MiB.
 - Logs: at most 200 entries and 8 KiB normalized JSON per entry. Truncation reports `entry_truncated`, `omitted_bytes`, and `truncated_fields`.
-- Flamegraphs: at most 1,000 nodes, with `truncated` and `omitted_nodes` metadata.
+- Flamegraphs: at most 1,000 nodes; children cut by `max_depth`, `min_pct` or the node limit are counted in `pruned_nodes`.
 - Compressed source profile: 16 MiB; decompressed profile: 64 MiB.
 - Profiler cache: compressed sources only, 16 MiB per user and 64 MiB per process. Parsed graphs are request-local.
 - Four concurrent tool calls per user and two profiler operations per process.

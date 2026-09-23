@@ -30,40 +30,26 @@ func RegisterProfilerTop(s *mcp.Server, d Deps) {
 		),
 		OutputSchema: outputSchemaFor[gcpdata.ProfileTopResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerTopInput) (*mcp.CallToolResult, *gcpdata.ProfileTopResult, error) {
-		project, err := d.Project.Resolve(in.ProjectID)
-		if err != nil {
-			return errResult(err.Error()), nil, nil
-		}
-
 		limit := clampLimit(in.Limit, 20, 50)
 
-		// Fetching an uncached profile scans the Export API and can run long on
-		// large projects; heartbeat progress keeps the client request alive.
-		stopHeartbeat := startProgressHeartbeat(ctx, req, "Downloading profile…")
-		p, meta, err := d.Profiler.GetProfileOrDiff(ctx, project, in.ProfileID, in.BaseProfileID)
-		stopHeartbeat()
-		if err != nil {
-			mcpLog(ctx, req, logLevelError, "profiler_top", fmt.Sprintf("fetch profile failed: %v", err))
-			return errResult(fmt.Sprintf("Failed to fetch profile: %v", err)), nil, nil
+		p, meta, errRes := loadProfile(ctx, req, d, "profiler_top", in.ProjectID, in.ProfileID, in.BaseProfileID)
+		if errRes != nil {
+			return errRes, nil, nil
 		}
 
 		sendProgress(ctx, req, 1, 2, "Analyzing profile...")
-
-		vt := gcpdata.ProfileValueTypes(p)
-		if in.ValueIndex >= len(vt) {
-			return errResult(fmt.Sprintf("value_index %d out of range (profile has %d value types)", in.ValueIndex, len(vt))), nil, nil
-		}
-		valueType := vt[in.ValueIndex]
 
 		topFuncs, total, truncated, err := gcpdata.TopFunctions(p, in.ValueIndex, limit, in.SortBy, in.Filter)
 		if err != nil {
 			mcpLog(ctx, req, logLevelWarning, "profiler_top", fmt.Sprintf("analysis failed: %v", err))
 			return errResult(fmt.Sprintf("Failed to analyze profile: %v", err)), nil, nil
 		}
+		// TopFunctions validated in.ValueIndex against the profile's value types.
+		vt := gcpdata.ProfileValueTypes(p)
 
 		result := &gcpdata.ProfileTopResult{
 			ProfileMeta:     meta,
-			ValueType:       valueType,
+			ValueType:       vt[in.ValueIndex],
 			AvailableValues: vt,
 			TotalValue:      total,
 			TopFunctions:    topFuncs,

@@ -22,6 +22,7 @@ import (
 	cloudprofiler "cloud.google.com/go/cloudprofiler/apiv2"
 	"cloud.google.com/go/cloudprofiler/apiv2/cloudprofilerpb"
 	"github.com/google/pprof/profile"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/api/iterator"
 )
 
@@ -114,6 +115,7 @@ func ListProfiles(ctx context.Context, svc *cloudprofiler.ExportClient, params L
 	if err != nil {
 		return nil, err
 	}
+	filter := newProfileFilter(params)
 	result := &ProfileListResult{Summary: ProfileSummary{CountByType: map[string]int{}, CountByTarget: map[string]int{}}}
 	targetsSeen := map[string]int{}
 	const maxScan = 20_000
@@ -143,7 +145,7 @@ func ListProfiles(ctx context.Context, svc *cloudprofiler.ExportClient, params L
 			if meta.Target != "" {
 				targetsSeen[meta.Target]++
 			}
-			match, parseErr := matchesProfileFilter(meta, params.ProfileType, params.Target, params.StartTime, params.EndTime)
+			match, parseErr := filter.match(meta)
 			if parseErr {
 				result.ExcludedCount++
 			}
@@ -201,31 +203,11 @@ func availableTargetsHint(seen map[string]int) string {
 	if len(seen) == 0 {
 		return ""
 	}
-	type tc struct {
-		name  string
-		count int
-	}
-	targets := make([]tc, 0, len(seen))
-	for name, count := range seen {
-		targets = append(targets, tc{name, count})
-	}
-	sort.Slice(targets, func(i, j int) bool {
-		if targets[i].count != targets[j].count {
-			return targets[i].count > targets[j].count
-		}
-		return targets[i].name < targets[j].name
-	})
 	const maxList = 20
-	names := make([]string, 0, maxList)
-	for _, t := range targets {
-		if len(names) >= maxList {
-			break
-		}
-		names = append(names, t.name)
-	}
+	names := topNBy(seen, maxList, func(name string, _ int) string { return name })
 	hint := ", available targets: " + strings.Join(names, ", ")
-	if len(targets) > maxList {
-		hint += fmt.Sprintf(" (+%d more)", len(targets)-maxList)
+	if len(seen) > maxList {
+		hint += fmt.Sprintf(" (+%d more)", len(seen)-maxList)
 	}
 	return hint
 }
@@ -248,27 +230,36 @@ func normalizeIdent(s string) string {
 	return b.String()
 }
 
-// targetMatches reports whether metaTarget satisfies the user's target filter,
-// comparing case- and separator-insensitively and treating the filter as a
-// substring so partial service names ("steam") still discover profiles.
-func targetMatches(metaTarget, filter string) bool {
-	if filter == "" {
-		return true
-	}
-	return strings.Contains(normalizeIdent(metaTarget), normalizeIdent(filter))
+// profileFilter is the client-side filter ListProfiles applies to every scanned
+// profile. The target is normalized once per call rather than per profile.
+type profileFilter struct {
+	profileType string
+	target      string // normalizeIdent of the requested target; "" matches all
+	start, end  time.Time
 }
 
-// matchesProfileFilter returns whether the profile matches all filters.
-// parseErr is true when the profile was excluded due to an unparseable timestamp
-// (so the caller can track how many were excluded for user feedback).
-func matchesProfileFilter(meta ProfileMeta, profileType, target string, startT, endT time.Time) (match, parseErr bool) {
-	if profileType != "" && meta.ProfileType != profileType {
+func newProfileFilter(params ListProfilesParams) profileFilter {
+	return profileFilter{
+		profileType: params.ProfileType,
+		target:      normalizeIdent(params.Target),
+		start:       params.StartTime,
+		end:         params.EndTime,
+	}
+}
+
+// match returns whether the profile matches all filters. The target compares
+// case- and separator-insensitively and as a substring, so partial service
+// names ("steam") still discover profiles. parseErr is true when the profile
+// was excluded due to an unparseable timestamp (so the caller can track how
+// many were excluded for user feedback).
+func (f profileFilter) match(meta ProfileMeta) (match, parseErr bool) {
+	if f.profileType != "" && meta.ProfileType != f.profileType {
 		return false, false
 	}
-	if !targetMatches(meta.Target, target) {
+	if f.target != "" && !strings.Contains(normalizeIdent(meta.Target), f.target) {
 		return false, false
 	}
-	hasTimeFilter := !startT.IsZero() || !endT.IsZero()
+	hasTimeFilter := !f.start.IsZero() || !f.end.IsZero()
 	if hasTimeFilter && meta.StartTime == "" {
 		return false, true // exclude: no timestamp to compare against
 	}
@@ -279,10 +270,10 @@ func matchesProfileFilter(meta ProfileMeta, profileType, target string, startT, 
 			// is active — including them would silently bypass the filter.
 			return false, true
 		}
-		if !startT.IsZero() && mt.Before(startT) {
+		if !f.start.IsZero() && mt.Before(f.start) {
 			return false, false
 		}
-		if !endT.IsZero() && mt.After(endT) {
+		if !f.end.IsZero() && mt.After(f.end) {
 			return false, false
 		}
 	}
@@ -405,72 +396,36 @@ func parseSourceProfile(data []byte) (*profile.Profile, error) {
 }
 
 // TopFunctions computes a flat ranking of functions by self or cumulative cost.
+// filter is a substring matched against the function name or file.
 // Returns the ranked functions, the total value, whether results were truncated, and any error.
 func TopFunctions(p *profile.Profile, valueIndex, limit int, sortBy, filter string) ([]TopFunction, int64, bool, error) {
-	if err := validateValueIndex(p, valueIndex); err != nil {
+	costs, total, err := scanFunctionCosts(p, valueIndex, "", nil)
+	if err != nil {
 		return nil, 0, false, err
 	}
 
-	type funcStats struct {
-		name       string
-		file       string
-		self       int64
-		cumulative int64
-	}
-	stats := make(map[string]*funcStats)
-	var total int64
-
-	for _, sample := range p.Sample {
-		value := sample.Value[valueIndex]
-		total += value
-		seen := make(map[string]bool)
-		for i, loc := range sample.Location {
-			for _, line := range loc.Line {
-				if line.Function == nil {
-					continue
-				}
-				fname := line.Function.Name
-				s, ok := stats[fname]
-				if !ok {
-					s = &funcStats{name: fname, file: line.Function.Filename}
-					stats[fname] = s
-				}
-				if i == 0 { // leaf
-					s.self += value
-				}
-				if !seen[fname] {
-					s.cumulative += value
-					seen[fname] = true
-				}
-			}
-		}
-	}
-
 	var result []TopFunction
-	for _, s := range stats {
-		if filter != "" && !strings.Contains(s.name, filter) && !strings.Contains(s.file, filter) {
+	for name, c := range costs {
+		if filter != "" && !strings.Contains(name, filter) && !strings.Contains(c.file, filter) {
 			continue
 		}
 		result = append(result, TopFunction{
-			FunctionName:    s.name,
-			File:            s.file,
-			SelfValue:       s.self,
-			SelfPct:         safePercent(s.self, total),
-			CumulativeValue: s.cumulative,
-			CumulativePct:   safePercent(s.cumulative, total),
+			FunctionName:    name,
+			File:            c.file,
+			SelfValue:       c.self,
+			SelfPct:         safePercent(c.self, total),
+			CumulativeValue: c.cumulative,
+			CumulativePct:   safePercent(c.cumulative, total),
 		})
 	}
 
-	switch sortBy {
-	case "self":
-		sort.Slice(result, func(i, j int) bool {
-			return absInt64(result[i].SelfValue) > absInt64(result[j].SelfValue)
-		})
-	default: // "cumulative"
-		sort.Slice(result, func(i, j int) bool {
-			return absInt64(result[i].CumulativeValue) > absInt64(result[j].CumulativeValue)
-		})
+	rank := func(f TopFunction) int64 { return absInt64(f.CumulativeValue) }
+	if sortBy == "self" {
+		rank = func(f TopFunction) int64 { return absInt64(f.SelfValue) }
 	}
+	slices.SortFunc(result, func(a, b TopFunction) int {
+		return cmp.Or(cmp.Compare(rank(b), rank(a)), cmp.Compare(a.FunctionName, b.FunctionName))
+	})
 
 	truncated := limit > 0 && len(result) > limit
 	if truncated {
@@ -597,9 +552,10 @@ type trieNode struct {
 }
 
 // Flamegraph builds a bounded call tree rooted at a function (or the profile root),
-// pruned by maxDepth and minPct. Returns the tree, total profile value, count of
-// pruned nodes, and any error.
-func Flamegraph(p *profile.Profile, rootFunction string, valueIndex, maxDepth int, minPct float64) (*FlamegraphNode, int64, int, error) {
+// pruned by maxDepth, minPct and a budget of maxNodes returned nodes (the root
+// included; children are kept depth-first in descending cost order). Returns the
+// tree, total profile value, count of pruned children, and any error.
+func Flamegraph(p *profile.Profile, rootFunction string, valueIndex, maxDepth, maxNodes int, minPct float64) (*FlamegraphNode, int64, int, error) {
 	if err := validateValueIndex(p, valueIndex); err != nil {
 		return nil, 0, 0, err
 	}
@@ -654,8 +610,9 @@ func Flamegraph(p *profile.Profile, rootFunction string, valueIndex, maxDepth in
 		subtreeRoot = root
 	}
 
-	// Convert trie to FlamegraphNode with depth/pct pruning.
+	// Convert trie to FlamegraphNode with depth/pct/node-budget pruning.
 	pruned := 0
+	remaining := maxNodes - 1 // the subtree root is always returned
 	var convert func(node *trieNode, depth int) FlamegraphNode
 	convert = func(node *trieNode, depth int) FlamegraphNode {
 		fn := FlamegraphNode{
@@ -665,18 +622,17 @@ func Flamegraph(p *profile.Profile, rootFunction string, valueIndex, maxDepth in
 			Cumulative: node.cumulative,
 			Pct:        safePercent(node.cumulative, totalValue),
 		}
-		if depth < maxDepth {
-			for _, child := range sortedChildren(node) {
-				childPct := safePercent(child.cumulative, totalValue)
-				if math.Abs(childPct) < minPct {
-					pruned++
-					continue
-				}
-				childNode := convert(child, depth+1)
-				fn.Children = append(fn.Children, childNode)
-			}
-		} else {
+		if depth >= maxDepth {
 			pruned += len(node.children)
+			return fn
+		}
+		for _, child := range sortedChildren(node) {
+			if remaining <= 0 || math.Abs(safePercent(child.cumulative, totalValue)) < minPct {
+				pruned++
+				continue
+			}
+			remaining--
+			fn.Children = append(fn.Children, convert(child, depth+1))
 		}
 		return fn
 	}
@@ -685,7 +641,7 @@ func Flamegraph(p *profile.Profile, rootFunction string, valueIndex, maxDepth in
 	return &result, totalValue, pruned, nil
 }
 
-// CompareProfiles creates a diff profile (current - base) and returns comparison results.
+// CompareProfiles ranks per-function cumulative deltas (current - base).
 func CompareProfiles(
 	ctx context.Context,
 	svc *cloudprofiler.ExportClient,
@@ -693,13 +649,9 @@ func CompareProfiles(
 	project, currentID, baseID string,
 	valueIndex, topN int,
 ) (*ProfileCompareResult, error) {
-	currentProfile, currentMeta, err := GetOrFetchProfile(ctx, svc, cache, project, currentID)
+	currentProfile, baseProfile, currentMeta, baseMeta, err := fetchProfilePair(ctx, svc, cache, project, currentID, baseID)
 	if err != nil {
-		return nil, fmt.Errorf("fetching current profile: %w", err)
-	}
-	baseProfile, baseMeta, err := GetOrFetchProfile(ctx, svc, cache, project, baseID)
-	if err != nil {
-		return nil, fmt.Errorf("fetching base profile: %w", err)
+		return nil, err
 	}
 
 	if err := validateValueIndex(currentProfile, valueIndex); err != nil {
@@ -717,11 +669,11 @@ func CompareProfiles(
 			valueIndex, curVT.Type, curVT.Unit, baseVT.Type, baseVT.Unit)
 	}
 
-	currentTop, currentTotal, _, err := TopFunctions(currentProfile, valueIndex, 0, "cumulative", "")
+	currentCosts, currentTotal, err := scanFunctionCosts(currentProfile, valueIndex, "", nil)
 	if err != nil {
 		return nil, fmt.Errorf("analyzing current profile: %w", err)
 	}
-	baseTop, baseTotal, _, err := TopFunctions(baseProfile, valueIndex, 0, "cumulative", "")
+	baseCosts, baseTotal, err := scanFunctionCosts(baseProfile, valueIndex, "", nil)
 	if err != nil {
 		return nil, fmt.Errorf("analyzing base profile: %w", err)
 	}
@@ -733,16 +685,16 @@ func CompareProfiles(
 		delta int64
 	}
 	deltas := make(map[string]*deltaEntry)
-	for _, f := range currentTop {
-		deltas[f.FunctionName] = &deltaEntry{name: f.FunctionName, file: f.File, delta: f.CumulativeValue}
+	for name, c := range currentCosts {
+		deltas[name] = &deltaEntry{name: name, file: c.file, delta: c.cumulative}
 	}
-	for _, f := range baseTop {
-		e, ok := deltas[f.FunctionName]
+	for name, c := range baseCosts {
+		e, ok := deltas[name]
 		if !ok {
-			e = &deltaEntry{name: f.FunctionName, file: f.File}
-			deltas[f.FunctionName] = e
+			e = &deltaEntry{name: name, file: c.file}
+			deltas[name] = e
 		}
-		e.delta -= f.CumulativeValue
+		e.delta -= c.cumulative
 	}
 
 	var regressions, improvements []CompareTopEntry
@@ -799,13 +751,12 @@ func CompareProfiles(
 
 // GetProfileOrDiff computes a request-local diff when baseID is present.
 func GetProfileOrDiff(ctx context.Context, svc *cloudprofiler.ExportClient, cache *ProfileCache, project, profileID, baseID string) (*profile.Profile, ProfileMeta, error) {
-	current, meta, err := GetOrFetchProfile(ctx, svc, cache, project, profileID)
-	if err != nil || baseID == "" {
-		return current, meta, err
+	if baseID == "" {
+		return GetOrFetchProfile(ctx, svc, cache, project, profileID)
 	}
-	base, _, err := GetOrFetchProfile(ctx, svc, cache, project, baseID)
+	current, base, meta, _, err := fetchProfilePair(ctx, svc, cache, project, profileID, baseID)
 	if err != nil {
-		return nil, ProfileMeta{}, fmt.Errorf("fetching base profile: %w", err)
+		return nil, ProfileMeta{}, err
 	}
 	diff, err := buildDiffProfile(current, base)
 	if err != nil {
@@ -815,23 +766,47 @@ func GetProfileOrDiff(ctx context.Context, svc *cloudprofiler.ExportClient, cach
 	return diff, meta, nil
 }
 
-// buildDiffProfile creates a diff profile by combining current and negated base samples.
-// Both profiles are copied first: base is negated in-place before merging, and both
-// originals may come from the shared cache, so we must not modify them.
-func buildDiffProfile(current, base *profile.Profile) (*profile.Profile, error) {
-	currentCopy := current.Copy()
-	baseCopy := base.Copy()
-	for _, s := range baseCopy.Sample {
-		for i := range s.Value {
-			s.Value[i] = -s.Value[i]
+// fetchProfilePair fetches the current and base profiles concurrently: each
+// uncached fetch is its own paginated Export API scan.
+func fetchProfilePair(
+	ctx context.Context,
+	svc *cloudprofiler.ExportClient,
+	cache *ProfileCache,
+	project, currentID, baseID string,
+) (current, base *profile.Profile, currentMeta, baseMeta ProfileMeta, err error) {
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		var err error
+		current, currentMeta, err = GetOrFetchProfile(gctx, svc, cache, project, currentID)
+		if err != nil {
+			return fmt.Errorf("fetching current profile: %w", err)
 		}
+		return nil
+	})
+	g.Go(func() error {
+		var err error
+		base, baseMeta, err = GetOrFetchProfile(gctx, svc, cache, project, baseID)
+		if err != nil {
+			return fmt.Errorf("fetching base profile: %w", err)
+		}
+		return nil
+	})
+	if err := g.Wait(); err != nil {
+		return nil, nil, ProfileMeta{}, ProfileMeta{}, err
 	}
+	return current, base, currentMeta, baseMeta, nil
+}
 
-	merged, err := profile.Merge([]*profile.Profile{currentCopy, baseCopy})
+// buildDiffProfile merges current with the negated base, as pprof -diff_base
+// does. Merge returns a new profile and leaves its inputs untouched; only base
+// is negated in place, so it is copied first to keep the caller's profile intact.
+func buildDiffProfile(current, base *profile.Profile) (*profile.Profile, error) {
+	negBase := base.Copy()
+	negBase.Scale(-1)
+	merged, err := profile.Merge([]*profile.Profile{current, negBase})
 	if err != nil {
 		return nil, fmt.Errorf("merging profiles: %w", err)
 	}
-
 	return merged, nil
 }
 
@@ -844,9 +819,10 @@ type prefetchResult struct {
 }
 
 // prefetchProfiles does a single paginated scan of the List API with profileBytes
-// included in the response, parsing and caching each profile that appears in the
+// included in the response, caching the compressed bytes of each profile in the
 // wanted set. This avoids O(n) individual List scans when ComputeTrends needs many
 // profiles that were already discovered via a metadata-only ListProfiles call.
+// Profiles are not parsed here; a corrupt profile fails when it is analyzed.
 func prefetchProfiles(
 	ctx context.Context,
 	svc *cloudprofiler.ExportClient,
@@ -881,7 +857,7 @@ func prefetchProfiles(
 			continue
 		}
 		key := profileCacheKey(project, meta.ProfileID)
-		if _, _, ok := cache.Get(key); ok {
+		if cache.Has(key) {
 			remaining--
 			res.Cached++
 			continue
@@ -890,12 +866,6 @@ func prefetchProfiles(
 			res.Errors++
 			res.Last = fmt.Errorf("profile %s: empty profile bytes", meta.ProfileID)
 			remaining-- // can't satisfy this entry; stop waiting for it
-			continue
-		}
-		_, err = parseSourceProfile(p.ProfileBytes)
-		if err != nil {
-			res.Errors++
-			res.Last = fmt.Errorf("profile %s: pprof parse: %w", meta.ProfileID, err)
 			continue
 		}
 		if !cache.Put(key, p.ProfileBytes, meta) {
@@ -979,36 +949,10 @@ func ComputeTrends(
 	}
 	pf := prefetchProfiles(ctx, svc, cache, project, wanted)
 
-	// If no function_filter, discover target functions from the first profile.
+	// Without function_filter, the top functions of the first non-empty profile
+	// become the tracked set; that profile is analyzed in the same pass.
+	discover := functionFilter == ""
 	targetFunctions := map[string]bool{} // empty = track all matching functionFilter
-	if functionFilter == "" {
-		var discovered bool
-		var lastErr error
-		for _, meta := range profiles.Profiles {
-			p, _, err := GetOrFetchProfile(ctx, svc, cache, project, meta.ProfileID)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-			topFuncs, _, _, err := TopFunctions(p, valueIndex, maxFunctions, "cumulative", "")
-			if err != nil {
-				// Analysis errors (e.g. invalid valueIndex) are deterministic —
-				// retrying with another profile won't help.
-				return nil, fmt.Errorf("analyzing profile for function discovery: %w", err)
-			}
-			if len(topFuncs) == 0 {
-				continue // empty profile, try the next one
-			}
-			for _, f := range topFuncs {
-				targetFunctions[f.FunctionName] = true
-			}
-			discovered = true
-			break
-		}
-		if !discovered {
-			return nil, fmt.Errorf("failed to discover top functions: could not download or analyze any profile (last error: %w)", lastErr)
-		}
-	}
 
 	type funcInfo struct {
 		file string
@@ -1040,6 +984,21 @@ func ComputeTrends(
 			vts := ProfileValueTypes(p)
 			if valueIndex < len(vts) {
 				resolvedValueType = &vts[valueIndex]
+			}
+		}
+
+		if discover && len(targetFunctions) == 0 {
+			topFuncs, _, _, err := TopFunctions(p, valueIndex, maxFunctions, "cumulative", "")
+			if err != nil {
+				// Analysis errors (e.g. invalid valueIndex) are deterministic —
+				// retrying with another profile won't help.
+				return nil, fmt.Errorf("analyzing profile for function discovery: %w", err)
+			}
+			if len(topFuncs) == 0 {
+				continue // empty profile, discover from the next one
+			}
+			for _, f := range topFuncs {
+				targetFunctions[f.FunctionName] = true
 			}
 		}
 
@@ -1144,9 +1103,10 @@ func ComputeTrends(
 }
 
 // scanFunctionCosts does a single pass over profile samples, computing self and
-// cumulative costs only for functions that match the filter or target set. Uses
-// less memory and fewer map operations than TopFunctions when tracking a small
-// subset of functions, since non-matching functions are skipped during accumulation.
+// cumulative costs per function. When targets is non-empty only those functions
+// are accumulated; otherwise filter (a function-name substring, "" = all) applies.
+// Skipping non-matching functions during accumulation keeps tracking a small
+// subset cheap.
 func scanFunctionCosts(p *profile.Profile, valueIndex int, filter string, targets map[string]bool) (map[string]*funcCost, int64, error) {
 	if err := validateValueIndex(p, valueIndex); err != nil {
 		return nil, 0, err
@@ -1155,10 +1115,11 @@ func scanFunctionCosts(p *profile.Profile, valueIndex int, filter string, target
 	var total int64
 
 	useTargets := len(targets) > 0
+	seen := make(map[string]bool) // functions already counted in the current sample
 	for _, sample := range p.Sample {
 		value := sample.Value[valueIndex]
 		total += value
-		seen := make(map[string]bool)
+		clear(seen)
 		for i, loc := range sample.Location {
 			for _, line := range loc.Line {
 				if line.Function == nil {
@@ -1290,18 +1251,18 @@ func findMatchingFunctions(p *profile.Profile, substring string) []string {
 	return matches
 }
 
+// findInTrie returns the only non-root node whose name contains name, nil when
+// none does, or an error listing the candidates when several do.
 func findInTrie(root *trieNode, name string) (*trieNode, error) {
-	// BFS to find nodes matching name (substring match).
-	// Uses sortedChildren for deterministic traversal order.
 	var matches []*trieNode
-	queue := []*trieNode{root}
-	for len(queue) > 0 {
-		node := queue[0]
-		queue = queue[1:]
-		if strings.Contains(node.name, name) && node != root {
+	stack := slices.Collect(maps.Values(root.children))
+	for len(stack) > 0 {
+		node := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if strings.Contains(node.name, name) {
 			matches = append(matches, node)
 		}
-		queue = append(queue, sortedChildren(node)...)
+		stack = slices.AppendSeq(stack, maps.Values(node.children))
 	}
 	switch len(matches) {
 	case 0:
@@ -1309,7 +1270,8 @@ func findInTrie(root *trieNode, name string) (*trieNode, error) {
 	case 1:
 		return matches[0], nil
 	default:
-		names := make([]string, 0, len(matches))
+		slices.SortFunc(matches, compareByCost)
+		names := make([]string, 0, 10)
 		for _, m := range matches {
 			if len(names) >= 10 {
 				break
@@ -1325,9 +1287,13 @@ func findInTrie(root *trieNode, name string) (*trieNode, error) {
 }
 
 func sortedChildren(node *trieNode) []*trieNode {
-	return slices.SortedFunc(maps.Values(node.children), func(a, b *trieNode) int {
-		return cmp.Compare(absInt64(b.cumulative), absInt64(a.cumulative))
-	})
+	return slices.SortedFunc(maps.Values(node.children), compareByCost)
+}
+
+// compareByCost orders trie nodes by descending absolute cumulative cost, then
+// by name, so equal-cost siblings keep a deterministic order.
+func compareByCost(a, b *trieNode) int {
+	return cmp.Or(cmp.Compare(absInt64(b.cumulative), absInt64(a.cumulative)), cmp.Compare(a.name, b.name))
 }
 
 func safePercent(value, total int64) float64 {

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -482,7 +481,8 @@ func extractErrorMessage(entry *loggingpb.LogEntry) string {
 	return msg
 }
 
-// topNBy returns the top N entries from a string->int count map, sorted descending by count.
+// topNBy returns the top N entries from a string->int count map, sorted
+// descending by count with ties broken by key so the output is deterministic.
 // The convert function transforms each key-count pair into the desired result type.
 func topNBy[T any](counts map[string]int, n int, convert func(string, int) T) []T {
 	type kv struct {
@@ -493,7 +493,9 @@ func topNBy[T any](counts map[string]int, n int, convert func(string, int) T) []
 	for k, v := range counts {
 		sorted = append(sorted, kv{k, v})
 	}
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].count > sorted[j].count })
+	slices.SortFunc(sorted, func(a, b kv) int {
+		return cmp.Or(cmp.Compare(b.count, a.count), cmp.Compare(a.key, b.key))
+	})
 	if len(sorted) > n {
 		sorted = sorted[:n]
 	}

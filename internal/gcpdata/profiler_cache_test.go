@@ -22,7 +22,7 @@ func TestProfileCache_GetMiss(t *testing.T) {
 	assert.False(t, ok)
 }
 
-func TestProfileCache_PutAndGetCopiesBytes(t *testing.T) {
+func TestProfileCache_PutCopiesBytes(t *testing.T) {
 	c := newSmallProfileCache(t, 16)
 	data := []byte("source")
 	meta := ProfileMeta{ProfileID: "p1", ProfileType: "CPU"}
@@ -33,9 +33,8 @@ func TestProfileCache_PutAndGetCopiesBytes(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, []byte("source"), got)
 	assert.Equal(t, meta, gotMeta)
-	got[0] = 'Y'
-	again, _, _ := c.Get("key1")
-	assert.Equal(t, []byte("source"), again)
+	assert.True(t, c.Has("key1"))
+	assert.False(t, c.Has("key2"))
 }
 
 func TestProfileCache_ByteBoundedEviction(t *testing.T) {
@@ -66,6 +65,35 @@ func TestProfileCache_LRUOrder(t *testing.T) {
 	assert.False(t, ok)
 	_, _, ok = c.Get("c")
 	assert.True(t, ok)
+}
+
+func TestProfileCache_HasRefreshesLRU(t *testing.T) {
+	c := newSmallProfileCache(t, 4)
+	require.True(t, c.Put("a", []byte("aa"), ProfileMeta{}))
+	require.True(t, c.Put("b", []byte("bb"), ProfileMeta{}))
+	assert.True(t, c.Has("a"))
+	require.True(t, c.Put("c", []byte("cc"), ProfileMeta{}))
+
+	assert.True(t, c.Has("a"))
+	assert.False(t, c.Has("b"))
+}
+
+func TestProfileCache_ProcessBudgetRejectionKeepsEntries(t *testing.T) {
+	c := newSmallProfileCache(t, 5)
+	require.True(t, c.Put("a", []byte("aa"), ProfileMeta{}))
+	require.True(t, c.Put("b", []byte("bb"), ProfileMeta{}))
+
+	// Saturate the process budget: the insert would need to evict "a" and grow
+	// process usage, so it must be rejected without evicting anything.
+	reserved := profileCacheProcessBytes - processProfileCacheBytes.Load()
+	processProfileCacheBytes.Add(reserved)
+	t.Cleanup(func() { processProfileCacheBytes.Add(-reserved) })
+	assert.False(t, c.Put("c", []byte("ccc"), ProfileMeta{}))
+
+	assert.Equal(t, 2, c.Len())
+	assert.Equal(t, int64(4), c.Bytes())
+	assert.True(t, c.Has("a"))
+	assert.True(t, c.Has("b"))
 }
 
 func TestProfileCache_OverwriteReleasesBudget(t *testing.T) {

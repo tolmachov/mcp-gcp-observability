@@ -170,7 +170,7 @@ func TestPeekFunction_Ambiguous(t *testing.T) {
 
 func TestFlamegraph_FullTree(t *testing.T) {
 	p := buildTestProfile()
-	root, total, pruned, err := Flamegraph(p, "", 0, 10, 0)
+	root, total, pruned, err := Flamegraph(p, "", 0, 10, 1000, 0)
 	require.NoError(t, err)
 	assert.Equal(t, int64(100), total)
 	assert.Equal(t, 0, pruned)
@@ -188,7 +188,7 @@ func TestFlamegraph_FullTree(t *testing.T) {
 
 func TestFlamegraph_DepthLimit(t *testing.T) {
 	p := buildTestProfile()
-	root, _, pruned, err := Flamegraph(p, "", 0, 1, 0)
+	root, _, pruned, err := Flamegraph(p, "", 0, 1, 1000, 0)
 	require.NoError(t, err)
 
 	// Depth 1 means root has children but children don't.
@@ -200,7 +200,7 @@ func TestFlamegraph_DepthLimit(t *testing.T) {
 
 func TestFlamegraph_MinPct(t *testing.T) {
 	p := buildTestProfile()
-	root, _, pruned, err := Flamegraph(p, "", 0, 10, 25)
+	root, _, pruned, err := Flamegraph(p, "", 0, 10, 1000, 25)
 	require.NoError(t, err)
 
 	// logger (20%) should be pruned. handler (80%) should remain.
@@ -210,9 +210,35 @@ func TestFlamegraph_MinPct(t *testing.T) {
 	assert.Greater(t, pruned, 0)
 }
 
+func TestFlamegraph_NodeBudget(t *testing.T) {
+	p := buildTestProfile()
+	full, _, _, err := Flamegraph(p, "", 0, 10, 1000, 0)
+	require.NoError(t, err)
+	require.Greater(t, flamegraphNodeCount(full), 3)
+
+	root, _, pruned, err := Flamegraph(p, "", 0, 10, 3, 0)
+	require.NoError(t, err)
+	assert.Equal(t, 3, flamegraphNodeCount(root))
+	// (root) → main.main → handler (the costlier child), depth-first.
+	require.Len(t, root.Children, 1)
+	mainNode := root.Children[0]
+	require.Len(t, mainNode.Children, 1)
+	assert.Equal(t, "myapp/handler.Handle", mainNode.Children[0].Name)
+	assert.Empty(t, mainNode.Children[0].Children)
+	assert.Equal(t, 3, pruned) // handler's two children and logger
+}
+
+func flamegraphNodeCount(node *FlamegraphNode) int {
+	count := 1
+	for i := range node.Children {
+		count += flamegraphNodeCount(&node.Children[i])
+	}
+	return count
+}
+
 func TestFlamegraph_Subtree(t *testing.T) {
 	p := buildTestProfile()
-	root, _, _, err := Flamegraph(p, "handler.Handle", 0, 10, 0)
+	root, _, _, err := Flamegraph(p, "handler.Handle", 0, 10, 1000, 0)
 	require.NoError(t, err)
 
 	assert.Equal(t, "myapp/handler.Handle", root.Name)
@@ -222,7 +248,7 @@ func TestFlamegraph_Subtree(t *testing.T) {
 
 func TestFlamegraph_SubtreeNotFound(t *testing.T) {
 	p := buildTestProfile()
-	_, _, _, err := Flamegraph(p, "nonexistent", 0, 10, 0)
+	_, _, _, err := Flamegraph(p, "nonexistent", 0, 10, 1000, 0)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not found in profile call tree")
 }
@@ -292,7 +318,7 @@ func TestMatchesProfileFilter(t *testing.T) {
 
 	check := func(wantMatch, wantParseErr bool, profileType, target string, s, e time.Time, m ProfileMeta) {
 		t.Helper()
-		match, parseErr := matchesProfileFilter(m, profileType, target, s, e)
+		match, parseErr := newProfileFilter(ListProfilesParams{ProfileType: profileType, Target: target, StartTime: s, EndTime: e}).match(m)
 		assert.Equal(t, wantMatch, match, "match")
 		assert.Equal(t, wantParseErr, parseErr, "parseErr")
 	}
@@ -466,7 +492,7 @@ func TestPeekFunction_ManyAmbiguous(t *testing.T) {
 
 func TestFlamegraph_SelfCosts(t *testing.T) {
 	p := buildTestProfile()
-	root, _, _, err := Flamegraph(p, "", 0, 10, 0)
+	root, _, _, err := Flamegraph(p, "", 0, 10, 1000, 0)
 	require.NoError(t, err)
 
 	mainNode := root.Children[0]
@@ -505,7 +531,7 @@ func TestFlamegraph_NegativeValues(t *testing.T) {
 		Function: []*profile.Function{fn1, fn2},
 	}
 
-	root, total, _, err := Flamegraph(p, "", 0, 10, 0)
+	root, total, _, err := Flamegraph(p, "", 0, 10, 1000, 0)
 	require.NoError(t, err)
 	assert.Equal(t, int64(-20), total)
 	require.Len(t, root.Children, 1)
@@ -615,17 +641,16 @@ func TestCompareProfiles_DeltaComputation(t *testing.T) {
 
 func TestMatchesProfileFilter_EmptyStartTimeExcludedWithTimeFilter(t *testing.T) {
 	startT, _ := time.Parse(time.RFC3339, "2024-06-01T00:00:00Z")
-	zero := time.Time{}
 
 	meta := ProfileMeta{ProfileType: "CPU", Target: "svc", StartTime: ""}
 
 	// Empty StartTime with time filter → excluded (parseErr=true).
-	match, parseErr := matchesProfileFilter(meta, "", "", startT, zero)
+	match, parseErr := newProfileFilter(ListProfilesParams{StartTime: startT}).match(meta)
 	assert.False(t, match, "empty StartTime should be excluded when time filter is active")
 	assert.True(t, parseErr, "should report parseErr for empty StartTime")
 
 	// Empty StartTime without time filter → included.
-	match, parseErr = matchesProfileFilter(meta, "", "", zero, zero)
+	match, parseErr = newProfileFilter(ListProfilesParams{}).match(meta)
 	assert.True(t, match, "empty StartTime should pass when no time filter")
 	assert.False(t, parseErr)
 }
@@ -648,7 +673,7 @@ func TestFlamegraph_SubtreeAmbiguous(t *testing.T) {
 		Function: []*profile.Function{fn1, fn2, fn3},
 	}
 
-	_, _, _, err := Flamegraph(p, "Marshal", 0, 10, 0)
+	_, _, _, err := Flamegraph(p, "Marshal", 0, 10, 1000, 0)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "matches 2 nodes")
 	assert.Contains(t, err.Error(), "json.Marshal")
@@ -671,7 +696,7 @@ func TestFlamegraph_ZeroTotalValue(t *testing.T) {
 		Function: []*profile.Function{fn1, fn2},
 	}
 
-	root, total, _, err := Flamegraph(p, "", 0, 10, 0)
+	root, total, _, err := Flamegraph(p, "", 0, 10, 1000, 0)
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), total)
 	// Root should exist even with zero total.
@@ -778,7 +803,11 @@ func TestProfileFromAPI(t *testing.T) {
 	})
 }
 
-func TestTargetMatches(t *testing.T) {
+func TestProfileFilterTarget(t *testing.T) {
+	targetMatches := func(metaTarget, filter string) bool {
+		match, _ := newProfileFilter(ListProfilesParams{Target: filter}).match(ProfileMeta{Target: metaTarget})
+		return match
+	}
 	// The real-world case that motivated fuzzy matching: user types the
 	// hyphenated name, the deployment target has no hyphen.
 	assert.True(t, targetMatches("cryptosteam", "crypto-steam"))

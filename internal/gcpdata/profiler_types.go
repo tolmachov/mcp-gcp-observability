@@ -104,16 +104,15 @@ type FlamegraphNode struct {
 
 // ProfileFlamegraphResult is the response for profiler_flamegraph.
 type ProfileFlamegraphResult struct {
-	ProfileMeta  ProfileMeta    `json:"profile_meta"`
-	ValueType    ValueTypeInfo  `json:"value_type"`
-	TotalValue   int64          `json:"total_value"`
-	Root         FlamegraphNode `json:"root"`
-	MaxDepth     int            `json:"max_depth"`
-	MinPct       float64        `json:"min_pct"`
-	PrunedNodes  int            `json:"pruned_nodes,omitempty"`
-	Truncated    bool           `json:"truncated,omitempty"`
-	OmittedNodes int            `json:"omitted_nodes,omitempty"`
-	Warning      string         `json:"warning,omitempty"`
+	ProfileMeta ProfileMeta    `json:"profile_meta"`
+	ValueType   ValueTypeInfo  `json:"value_type"`
+	TotalValue  int64          `json:"total_value"`
+	Root        FlamegraphNode `json:"root"`
+	MaxDepth    int            `json:"max_depth"`
+	MinPct      float64        `json:"min_pct"`
+	// PrunedNodes counts children cut by max_depth, min_pct or the node budget.
+	PrunedNodes int    `json:"pruned_nodes,omitempty"`
+	Warning     string `json:"warning,omitempty"`
 }
 
 // CompareTopEntry is a function entry in the compare result showing the delta.
