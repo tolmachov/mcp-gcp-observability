@@ -15,11 +15,7 @@ func RegisterLogsFindRequests(s *mcp.Server, d Deps) {
 		Name: "logs_find_requests",
 		Description: applyMode(d.Mode, "Find examples of HTTP requests by URL pattern. "+
 			"Returns trace_id and request_id for each request, enabling deeper investigation with logs_by_trace, logs_by_request_id, or trace_get."),
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			OpenWorldHint:  new(true),
-			IdempotentHint: true,
-		},
+		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[LogsFindRequestsInput](d.Project,
 			nonEmptyProp("url_pattern"),
 			enumProp("method", httpMethods),
@@ -53,7 +49,7 @@ func RegisterLogsFindRequests(s *mcp.Server, d Deps) {
 		})
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "logs_find_requests", fmt.Sprintf("find requests failed: %v", err))
-			return errResult(fmt.Sprintf("Failed to find requests: %v. Verify the project_id and that the URL pattern is correct.", err)), nil, nil
+			return gcpErrorResult(fmt.Sprintf("Failed to find requests: %v", err), err, "Verify the project_id and that the URL pattern is correct."), nil, nil
 		}
 
 		return nil, result, nil

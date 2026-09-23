@@ -297,7 +297,7 @@ func TestBuildSingleVariantServerUnknownVariant(t *testing.T) {
 		version:   "test",
 		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	_, err := s.buildSingleVariantServer(VariantID("bogus"), nil, tools.Deps{}, s.completer)
+	_, err := s.buildSingleVariantServer(VariantID("bogus"), tools.Deps{}, s.completer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "bogus")
 	assert.Contains(t, err.Error(), "must be one of")
@@ -335,14 +335,10 @@ func listToolsViaInMemory(t *testing.T, srv *mcp.Server) []*mcp.Tool {
 	return result.Tools
 }
 
-// TestRegisterAllToolsCount pins allToolsCount against the tools that
-// registerAllTools actually registers. Every variant Description string
-// interpolates allToolsCount, so this test is the choke point that keeps
-// the constant honest.
-func TestRegisterAllToolsCount(t *testing.T) {
-	s := testServer(t)
-	srv := s.newMCPInstance(s.completer)
-	registerAllTools(srv, tools.Deps{
+// testToolDeps returns Deps with stub backends that satisfy every tool's
+// registration guards; handlers are never invoked.
+func testToolDeps() tools.Deps {
+	return tools.Deps{
 		Logs:     stubBackends{},
 		Errors:   stubBackends{},
 		Traces:   stubBackends{},
@@ -351,11 +347,52 @@ func TestRegisterAllToolsCount(t *testing.T) {
 		Registry: metrics.NewRegistry(),
 		Project:  tools.MustProjectPolicy("test-project"),
 		Mode:     tools.ModeStandard,
-	})
+	}
+}
 
-	tls := listToolsViaInMemory(t, srv)
-	assert.Len(t, tls, allToolsCount,
-		"registerAllTools registered %d tools; update allToolsCount if the change is intentional", len(tls))
+// registeredToolNames registers tools via register and returns the listed names.
+func registeredToolNames(t *testing.T, register func(*mcp.Server, tools.Deps)) []string {
+	t.Helper()
+	s := testServer(t)
+	srv := s.newMCPInstance(s.completer)
+	register(srv, testToolDeps())
+	var names []string
+	for _, tool := range listToolsViaInMemory(t, srv) {
+		names = append(names, tool.Name)
+	}
+	return names
+}
+
+// TestToolSpecsMatchRegisteredTools pins every toolSpecs name to the tool its
+// register function actually registers: the variant descriptions and the
+// profiler limit key on those names.
+func TestToolSpecsMatchRegisteredTools(t *testing.T) {
+	for _, spec := range toolSpecs {
+		assert.Equal(t, []string{spec.name}, registeredToolNames(t, spec.register))
+	}
+	assert.Len(t, registeredToolNames(t, registerAllTools), len(toolSpecs))
+}
+
+// TestToolTableMembership pins the monitoring variant's tools and the
+// profiler-limited tools to explicit lists.
+func TestToolTableMembership(t *testing.T) {
+	assert.ElementsMatch(t, []string{
+		"logs_summary", "logs_services",
+		"errors_list", "errors_get",
+		"metrics_snapshot", "metrics_top_contributors",
+		"trace_list", "trace_get",
+		"profiler_list", "profiler_top",
+	}, registeredToolNames(t, registerCoreTools))
+	assert.ElementsMatch(t, coreToolNames, registeredToolNames(t, registerCoreTools))
+
+	var scanning []string
+	for name := range profileScanTools {
+		scanning = append(scanning, name)
+	}
+	assert.ElementsMatch(t, []string{
+		"profiler_list", "profiler_top", "profiler_peek",
+		"profiler_flamegraph", "profiler_compare", "profiler_trends",
+	}, scanning)
 }
 
 // TestVariantDescriptionsInterpolateCounts guards the buildVariantSpecs
@@ -363,23 +400,23 @@ func TestRegisterAllToolsCount(t *testing.T) {
 // left behind, %%d escaping regression) would silently ship a malformed
 // description to clients.
 func TestVariantDescriptionsInterpolateCounts(t *testing.T) {
-	allCountStr := fmt.Sprintf("(%d)", allToolsCount)
-	coreCountStr := fmt.Sprintf("(%d)", tools.CoreToolsCount)
+	allCountStr := fmt.Sprintf("(%d)", len(toolSpecs))
+	coreCountStr := fmt.Sprintf("(%d): %s.", len(coreToolNames), strings.Join(coreToolNames, ", "))
 
 	full, ok := findVariantSpec(string(VariantFull))
 	require.True(t, ok)
 	assert.Contains(t, full.description, allCountStr,
-		"full variant description must interpolate allToolsCount")
+		"full variant description must interpolate the tool count")
 
 	compact, ok := findVariantSpec(string(VariantCompact))
 	require.True(t, ok)
 	assert.Contains(t, compact.description, allCountStr,
-		"compact variant description must interpolate allToolsCount")
+		"compact variant description must interpolate the tool count")
 
 	monitoring, ok := findVariantSpec(string(VariantMonitoring))
 	require.True(t, ok)
 	assert.Contains(t, monitoring.description, coreCountStr,
-		"monitoring variant description must interpolate tools.CoreToolsCount")
+		"monitoring variant description must interpolate the core tool count and names")
 }
 
 // TestVariantSpecsIntegrity guards the "table is the single source of truth"
@@ -408,17 +445,7 @@ func TestVariantSpecsIntegrity(t *testing.T) {
 // the unknown-variant error path of buildSingleVariantServer.
 func TestBuildVariantsServerHappyPath(t *testing.T) {
 	s := testServer(t)
-	client := gcpclient.NewForTesting(gcpclient.Config{DefaultProject: "test"})
-	deps := tools.Deps{
-		Logs:     stubBackends{},
-		Errors:   stubBackends{},
-		Traces:   stubBackends{},
-		Profiler: stubBackends{},
-		Querier:  stubBackends{},
-		Registry: metrics.NewRegistry(),
-		Project:  tools.MustProjectPolicy("test-project"),
-	}
-	vs, err := s.buildVariantsServer(client, deps, s.completer)
+	vs, err := s.buildVariantsServer(testToolDeps(), s.completer)
 	require.NoError(t, err)
 	require.NotNil(t, vs)
 	t.Cleanup(func() {
@@ -437,16 +464,7 @@ func TestBuildVariantsServerHappyPath(t *testing.T) {
 func TestCompactModeRealDescriptionsSane(t *testing.T) {
 	s := testServer(t)
 	srv := s.newMCPInstance(s.completer)
-	registerAllTools(srv, tools.Deps{
-		Logs:     stubBackends{},
-		Errors:   stubBackends{},
-		Traces:   stubBackends{},
-		Profiler: stubBackends{},
-		Querier:  stubBackends{},
-		Registry: metrics.NewRegistry(),
-		Project:  tools.MustProjectPolicy("test-project"),
-		Mode:     tools.ModeCompact,
-	})
+	registerAllTools(srv, testToolDeps().WithMode(tools.ModeCompact))
 
 	tls := listToolsViaInMemory(t, srv)
 	require.NotEmpty(t, tls)

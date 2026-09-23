@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
-	"strings"
 
 	"github.com/modelcontextprotocol/experimental-ext-variants/go/sdk/variants"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -135,7 +134,6 @@ func (s *Server) newMCPInstance(completer *promptCompleter) *mcp.Server {
 		},
 	)
 	srv.AddReceivingMiddleware(panicRecoveryMiddleware(s.logger))
-	srv.AddReceivingMiddleware(authErrorHintMiddleware())
 	srv.AddReceivingMiddleware(toolLimitsMiddleware(make(chan struct{}, 4), s.profiler, s.logger))
 	return srv
 }
@@ -143,6 +141,11 @@ func (s *Server) newMCPInstance(completer *promptCompleter) *mcp.Server {
 const maxEncodedToolResultBytes = 2 << 20
 const structuredResultContentNotice = "The complete result is available in structuredContent."
 
+// toolLimitsMiddleware bounds tools/call: at most cap(userCalls) concurrent
+// calls per server instance, profiler-scanning tools (profileScanTools) share
+// the process-wide cap(profilerCalls) limit and run under
+// gcpdata.ProfilerScanTimeout, and every result must encode within
+// maxEncodedToolResultBytes.
 func toolLimitsMiddleware(userCalls, profilerCalls chan struct{}, logger *slog.Logger) func(mcp.MethodHandler) mcp.MethodHandler {
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
@@ -155,8 +158,7 @@ func toolLimitsMiddleware(userCalls, profilerCalls chan struct{}, logger *slog.L
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
-			var releaseProfiler func()
-			if call, ok := req.(*mcp.CallToolRequest); ok && call.Params != nil && strings.HasPrefix(call.Params.Name, "profiler_") {
+			if call, ok := req.(*mcp.CallToolRequest); ok && call.Params != nil && profileScanTools[call.Params.Name] {
 				profilerCtx, cancel := context.WithTimeout(ctx, gcpdata.ProfilerScanTimeout)
 				defer cancel()
 				ctx = profilerCtx
@@ -165,21 +167,18 @@ func toolLimitsMiddleware(userCalls, profilerCalls chan struct{}, logger *slog.L
 				}
 				select {
 				case profilerCalls <- struct{}{}:
-					releaseProfiler = func() { <-profilerCalls }
+					defer func() { <-profilerCalls }()
 				case <-ctx.Done():
 					return nil, ctx.Err()
 				}
-			}
-			if releaseProfiler != nil {
-				defer releaseProfiler()
 			}
 			result, err := next(ctx, method, req)
 			if err != nil || result == nil {
 				return result, err
 			}
-			encoded, marshalErr := json.Marshal(result)
-			if marshalErr != nil {
-				return nil, fmt.Errorf("serialize tool result: %w", marshalErr)
+			size, sizeErr := encodedSize(result)
+			if sizeErr != nil {
+				return nil, fmt.Errorf("serialize tool result: %w", sizeErr)
 			}
 			// The typed MCP helper mirrors structuredContent into a JSON text
 			// content block. For large but valid results that duplication alone
@@ -187,14 +186,14 @@ func toolLimitsMiddleware(userCalls, profilerCalls chan struct{}, logger *slog.L
 			// auto-generated duplicate, then measure the actual response again.
 			// Custom human-facing content (for example metric analysis without
 			// chart points) is never rewritten.
-			if len(encoded) > maxEncodedToolResultBytes && compactDuplicatedStructuredContent(result) {
-				encoded, marshalErr = json.Marshal(result)
-				if marshalErr != nil {
-					return nil, fmt.Errorf("serialize compacted tool result: %w", marshalErr)
+			if size > maxEncodedToolResultBytes && compactDuplicatedStructuredContent(result) {
+				size, sizeErr = encodedSize(result)
+				if sizeErr != nil {
+					return nil, fmt.Errorf("serialize compacted tool result: %w", sizeErr)
 				}
 			}
-			if len(encoded) > maxEncodedToolResultBytes {
-				logger.Error("response_budget_violation", "method", method, "bytes", len(encoded), "limit", maxEncodedToolResultBytes)
+			if size > maxEncodedToolResultBytes {
+				logger.Error("response_budget_violation", "method", method, "bytes", size, "limit", maxEncodedToolResultBytes)
 				return nil, fmt.Errorf("tool result exceeds the %d-byte response budget", maxEncodedToolResultBytes)
 			}
 			return result, nil
@@ -208,15 +207,59 @@ func compactDuplicatedStructuredContent(result mcp.Result) bool {
 		return false
 	}
 	textContent, ok := call.Content[0].(*mcp.TextContent)
-	if !ok {
-		return false
-	}
-	structured, err := json.Marshal(call.StructuredContent)
-	if err != nil || textContent.Text != string(structured) {
+	if !ok || !encodesTo(call.StructuredContent, textContent.Text) {
 		return false
 	}
 	call.Content = []mcp.Content{&mcp.TextContent{Text: structuredResultContentNotice}}
 	return true
+}
+
+// encodedSize returns the length of v's JSON encoding, counting the bytes as
+// they stream out of the encoder instead of buffering the encoding.
+func encodedSize(v any) (int, error) {
+	var w countingWriter
+	if err := json.NewEncoder(&w).Encode(v); err != nil {
+		return 0, fmt.Errorf("encoding JSON: %w", err)
+	}
+	return w.n - 1, nil // Encode terminates the value with a newline
+}
+
+type countingWriter struct{ n int }
+
+func (w *countingWriter) Write(p []byte) (int, error) {
+	w.n += len(p)
+	return len(p), nil
+}
+
+// encodesTo reports whether v's JSON encoding equals s, comparing the bytes
+// as they stream out of the encoder and stopping at the first difference.
+func encodesTo(v any, s string) bool {
+	w := &compareWriter{rest: s}
+	return json.NewEncoder(w).Encode(v) == nil && w.rest == "" && w.newline
+}
+
+// compareWriter consumes rest as matching bytes are written, then accepts
+// the single newline json.Encoder appends after the value.
+type compareWriter struct {
+	rest    string
+	newline bool
+}
+
+var errEncodingDiffers = errors.New("encoding differs")
+
+func (w *compareWriter) Write(p []byte) (int, error) {
+	k := min(len(p), len(w.rest))
+	if w.rest[:k] != string(p[:k]) {
+		return 0, errEncodingDiffers
+	}
+	w.rest = w.rest[k:]
+	if tail := p[k:]; len(tail) > 0 {
+		if w.newline || string(tail) != "\n" {
+			return 0, errEncodingDiffers
+		}
+		w.newline = true
+	}
+	return len(p), nil
 }
 
 // RunOptions selects the transport and its settings for Server.Run.
@@ -275,8 +318,8 @@ func (s *Server) Run(ctx context.Context, opts RunOptions) error {
 		}
 	}()
 
-	s.wireCompleter(s.completer, reg, client)
 	deps := s.buildDeps(client, reg)
+	s.wireCompleter(s.completer, deps)
 	defer func() {
 		if closeErr := deps.Profiler.Close(); closeErr != nil {
 			s.logger.Warn("failed to close profiler cache", "err", closeErr)
@@ -284,7 +327,7 @@ func (s *Server) Run(ctx context.Context, opts RunOptions) error {
 	}()
 
 	if opts.VariantID != "" {
-		srv, buildErr := s.buildSingleVariantServer(VariantID(opts.VariantID), client, deps, s.completer)
+		srv, buildErr := s.buildSingleVariantServer(VariantID(opts.VariantID), deps, s.completer)
 		if buildErr != nil {
 			return fmt.Errorf("building variant server: %w", buildErr)
 		}
@@ -292,7 +335,7 @@ func (s *Server) Run(ctx context.Context, opts RunOptions) error {
 		return s.runStdio(ctx, srv)
 	}
 
-	vs, err := s.buildVariantsServer(client, deps, s.completer)
+	vs, err := s.buildVariantsServer(deps, s.completer)
 	if err != nil {
 		return fmt.Errorf("building variants server: %w", err)
 	}
@@ -324,12 +367,12 @@ func (s *Server) userAssemblyBuilder(reg *metrics.Registry, variantID string) us
 		if err != nil {
 			return nil, nil, fmt.Errorf("creating per-user GCP client: %w", err)
 		}
-		completer := &promptCompleter{}
-		s.wireCompleter(completer, reg, client)
 		deps := s.buildDeps(client, reg)
+		completer := &promptCompleter{}
+		s.wireCompleter(completer, deps)
 
 		if variantID != "" {
-			srv, buildErr := s.buildSingleVariantServer(VariantID(variantID), client, deps, completer)
+			srv, buildErr := s.buildSingleVariantServer(VariantID(variantID), deps, completer)
 			if buildErr != nil {
 				return nil, nil, errors.Join(fmt.Errorf("building variant server: %w", buildErr), deps.Profiler.Close(), client.Close())
 			}
@@ -337,7 +380,7 @@ func (s *Server) userAssemblyBuilder(reg *metrics.Registry, variantID string) us
 			return handler, multiCloser{deps.Profiler, client}, nil
 		}
 
-		vs, buildErr := s.buildVariantsServer(client, deps, completer)
+		vs, buildErr := s.buildVariantsServer(deps, completer)
 		if buildErr != nil {
 			return nil, nil, errors.Join(fmt.Errorf("building variants server: %w", buildErr), deps.Profiler.Close(), client.Close())
 		}
@@ -345,18 +388,18 @@ func (s *Server) userAssemblyBuilder(reg *metrics.Registry, variantID string) us
 	}
 }
 
-// wireCompleter binds a completer to a registry and a GCP client set. The
-// service-list cache lives inside the closure, so each completer (one per
-// user in HTTP auth mode) caches independently.
-func (s *Server) wireCompleter(c *promptCompleter, reg *metrics.Registry, client *gcpclient.Client) {
-	c.metricTypes = metricTypeCandidates(reg)
+// wireCompleter binds a completer to the registry and log backend of one GCP
+// client set. The service-list cache lives inside the closure, so each
+// completer (one per user in HTTP auth mode) caches independently.
+func (s *Server) wireCompleter(c *promptCompleter, d tools.Deps) {
+	c.metricTypes = metricTypeCandidates(d.Registry)
 	c.project = s.project
 	if !s.project.Pinned() {
 		c.loadServices = nil
 		return
 	}
 	c.loadServices = newCachedServiceLister(func(ctx context.Context) (*gcpdata.ServiceList, error) {
-		return gcpdata.ListServices(ctx, client.LoggingClient(), s.project.Project(), "")
+		return d.Logs.ListServices(ctx, s.project.Project(), "")
 	}, s.logger)
 }
 

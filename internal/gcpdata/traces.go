@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	cloudtrace "cloud.google.com/go/trace/apiv1"
 	"cloud.google.com/go/trace/apiv1/tracepb"
 	"google.golang.org/api/iterator"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -20,11 +19,11 @@ const traceQueryTimeout = 30 * time.Second
 
 // GetTrace retrieves a trace with all its spans by trace ID,
 // returning spans as a tree based on parent-child relationships.
-func GetTrace(ctx context.Context, client *cloudtrace.Client, project, traceID string) (*TraceDetail, error) {
+func (q *CloudTraceQuerier) GetTrace(ctx context.Context, project, traceID string) (*TraceDetail, error) {
 	ctx, cancel := context.WithTimeout(ctx, traceQueryTimeout)
 	defer cancel()
 
-	trace, err := client.GetTrace(ctx, &tracepb.GetTraceRequest{
+	trace, err := q.client.GetTrace(ctx, &tracepb.GetTraceRequest{
 		ProjectId: project,
 		TraceId:   traceID,
 	})
@@ -45,9 +44,8 @@ func GetTrace(ctx context.Context, client *cloudtrace.Client, project, traceID s
 
 // ListTraces searches for traces matching the given criteria.
 // startTime and endTime are required by the Cloud Trace API.
-func ListTraces(
+func (q *CloudTraceQuerier) ListTraces(
 	ctx context.Context,
-	client *cloudtrace.Client,
 	project string,
 	filter string,
 	view string,
@@ -76,7 +74,7 @@ func ListTraces(
 		req.PageToken = pageToken
 	}
 
-	it := client.ListTraces(ctx, req)
+	it := q.client.ListTraces(ctx, req)
 	it.PageInfo().MaxSize = pageSize
 
 	var traces []TraceSummary

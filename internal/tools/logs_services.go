@@ -17,11 +17,7 @@ func RegisterLogsServices(s *mcp.Server, d Deps) {
 			"Discovers Kubernetes containers, Cloud Run, Cloud Functions, App Engine, and Compute Engine instances. "+
 			"Useful as a first step to discover services before querying their logs. "+
 			"Returns service names you can use as filters in logs_k8s or logs_query."),
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			OpenWorldHint:  new(true),
-			IdempotentHint: true,
-		},
+		Annotations:  readOnlyAnnotations,
 		InputSchema:  projectInputSchema[LogsServicesInput](d.Project),
 		OutputSchema: outputSchemaFor[gcpdata.ServiceList](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsServicesInput) (*mcp.CallToolResult, *gcpdata.ServiceList, error) {
@@ -40,7 +36,7 @@ func RegisterLogsServices(s *mcp.Server, d Deps) {
 		result, err := d.Logs.ListServices(ctx, project, timeFilter)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "logs_services", fmt.Sprintf("list services failed for project %s: %v", project, err))
-			return errResult(fmt.Sprintf("Failed to list services: %v. Verify the project_id and that Cloud Logging API is enabled.", err)), nil, nil
+			return gcpErrorResult(fmt.Sprintf("Failed to list services: %v", err), err, "Verify the project_id and that Cloud Logging API is enabled."), nil, nil
 		}
 
 		return nil, result, nil

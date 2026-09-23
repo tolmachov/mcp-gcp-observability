@@ -56,11 +56,7 @@ func RegisterProfilerFlamegraph(s *mcp.Server, d Deps) {
 			"Use root_function to focus on a specific subtree (omit for full profile). "+
 			"Use profiler_top first to identify interesting functions, then drill down here. "+
 			"Add base_profile_id to render a request-local diff."),
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			OpenWorldHint:  new(true),
-			IdempotentHint: true,
-		},
+		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[ProfilerFlamegraphInput](d.Project,
 			nonEmptyProp("profile_id"),
 			nonNegativeValueIndex,

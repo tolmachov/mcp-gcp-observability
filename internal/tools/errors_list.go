@@ -17,11 +17,7 @@ func RegisterErrorsList(s *mcp.Server, d Deps) {
 			"Returns aggregated errors with group IDs, not individual log entries. "+
 			"Use errors_get with a group_id from these results to see individual error events and stack traces. "+
 			"The window is one exact Error Reporting period ending at now: 1h, 6h, 24h, 7d, or 30d."),
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			OpenWorldHint:  new(true),
-			IdempotentHint: true,
-		},
+		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[ErrorsListInput](d.Project,
 			enumProp("window", gcpdata.ErrorWindows()),
 		),
@@ -41,7 +37,7 @@ func RegisterErrorsList(s *mcp.Server, d Deps) {
 		result, err := d.Errors.ListErrors(ctx, project, window, limit, in.ServiceFilter, in.VersionFilter)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "errors_list", fmt.Sprintf("list errors failed for project %s: %v", project, err))
-			return errResult(fmt.Sprintf("Failed to list errors: %v. Verify the project_id and that Error Reporting API is enabled.", err)), nil, nil
+			return gcpErrorResult(fmt.Sprintf("Failed to list errors: %v", err), err, "Verify the project_id and that Error Reporting API is enabled."), nil, nil
 		}
 
 		return nil, result, nil

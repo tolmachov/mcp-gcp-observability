@@ -124,9 +124,9 @@ type MetricDescriptorBasic struct {
 
 // GetMetricDescriptor returns kind, value_type, labels, and resource types.
 // Kind+ValueType determine the valid aligner (e.g., ALIGN_RATE rejected for DELTA+DISTRIBUTION).
-func GetMetricDescriptor(ctx context.Context, client *monitoring.MetricClient, project, metricType string) (MetricDescriptorBasic, error) {
+func (q *MonitoringQuerier) GetMetricDescriptor(ctx context.Context, project, metricType string) (MetricDescriptorBasic, error) {
 	filter := fmt.Sprintf(`metric.type = "%s"`, EscapeFilterValue(metricType))
-	descriptors, err := ListMetricDescriptors(ctx, client, project, filter, 1)
+	descriptors, err := q.ListMetricDescriptors(ctx, project, filter, 1)
 	if err != nil {
 		return MetricDescriptorBasic{}, err
 	}
@@ -142,7 +142,7 @@ func GetMetricDescriptor(ctx context.Context, client *monitoring.MetricClient, p
 	}, nil
 }
 
-func ListMetricDescriptors(ctx context.Context, client *monitoring.MetricClient, project, filter string, limit int) ([]MetricDescriptorInfo, error) {
+func (q *MonitoringQuerier) ListMetricDescriptors(ctx context.Context, project, filter string, limit int) ([]MetricDescriptorInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, metricsQueryTimeout)
 	defer cancel()
 
@@ -156,7 +156,7 @@ func ListMetricDescriptors(ctx context.Context, client *monitoring.MetricClient,
 	}
 
 	var result []MetricDescriptorInfo
-	it := client.ListMetricDescriptors(ctx, req)
+	it := q.client.ListMetricDescriptors(ctx, req)
 	for i := 0; limit <= 0 || i < limit; i++ {
 		desc, err := it.Next()
 		if errors.Is(err, iterator.Done) {
@@ -185,11 +185,11 @@ func ListMetricDescriptors(ctx context.Context, client *monitoring.MetricClient,
 	return result, nil
 }
 
-// ListMonitoredResourceDescriptors returns all monitored resource descriptors
+// listMonitoredResourceDescriptors returns all monitored resource descriptors
 // visible to the project, each with its defined label keys. Results are
 // globally stable (the resource schema is part of the Cloud Monitoring API,
 // not per-project state), so callers should cache.
-func ListMonitoredResourceDescriptors(ctx context.Context, client *monitoring.MetricClient, project string) ([]MonitoredResourceDescriptor, error) {
+func listMonitoredResourceDescriptors(ctx context.Context, client *monitoring.MetricClient, project string) ([]MonitoredResourceDescriptor, error) {
 	ctx, cancel := context.WithTimeout(ctx, metricsQueryTimeout)
 	defer cancel()
 
@@ -249,7 +249,7 @@ type QueryTimeSeriesParams struct {
 // QueryTimeSeries fetches time series data from Cloud Monitoring. It returns
 // at most MaxTimeSeries series; the warnings report whether the result was
 // cut off there and how many points were dropped during decoding.
-func QueryTimeSeries(ctx context.Context, client *monitoring.MetricClient, params QueryTimeSeriesParams) ([]MetricTimeSeries, QueryWarnings, error) {
+func (q *MonitoringQuerier) QueryTimeSeries(ctx context.Context, params QueryTimeSeriesParams) ([]MetricTimeSeries, QueryWarnings, error) {
 	ctx, cancel := context.WithTimeout(ctx, metricsQueryTimeout)
 	defer cancel()
 
@@ -273,7 +273,7 @@ func QueryTimeSeries(ctx context.Context, client *monitoring.MetricClient, param
 
 	var result []MetricTimeSeries
 	var warnings QueryWarnings
-	it := client.ListTimeSeries(ctx, req)
+	it := q.client.ListTimeSeries(ctx, req)
 	for {
 		ts, err := it.Next()
 		if errors.Is(err, iterator.Done) {
@@ -430,7 +430,7 @@ func buildAggregatedParams(params QueryTimeSeriesParams, spec metrics.Aggregatio
 // QueryTimeSeriesAggregated runs a time-series query with AggregationSpec.
 // Single-stage: applies AcrossGroups directly. Two-stage: groups then folds
 // across groups in Go. Returns single synthetic series and non-fatal warnings.
-func QueryTimeSeriesAggregated(ctx context.Context, client *monitoring.MetricClient, params QueryTimeSeriesParams, spec metrics.AggregationSpec) ([]MetricTimeSeries, QueryWarnings, error) {
+func (q *MonitoringQuerier) QueryTimeSeriesAggregated(ctx context.Context, params QueryTimeSeriesParams, spec metrics.AggregationSpec) ([]MetricTimeSeries, QueryWarnings, error) {
 	if err := spec.Validate(); err != nil {
 		return nil, QueryWarnings{}, fmt.Errorf("%w: %w", metrics.ErrInvalidAggregationSpec, err)
 	}
@@ -439,11 +439,11 @@ func QueryTimeSeriesAggregated(ctx context.Context, client *monitoring.MetricCli
 
 	if !spec.IsTwoStage() {
 		// Single-stage: let Cloud Monitoring do the work.
-		return QueryTimeSeries(ctx, client, p)
+		return q.QueryTimeSeries(ctx, p)
 	}
 
 	// Two-stage: query with first-stage reducer, then fold in Go.
-	groupSeries, warnings, err := QueryTimeSeries(ctx, client, p)
+	groupSeries, warnings, err := q.QueryTimeSeries(ctx, p)
 	if err != nil {
 		return nil, warnings, err
 	}

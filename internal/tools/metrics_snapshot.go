@@ -225,11 +225,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 			"After getting a snapshot, use metrics_top_contributors to drill down by dimension, "+
 			"or metrics_related to check correlated signals. "+
 			"For comparing two specific time windows (e.g. before/after deploy), use metrics_compare instead."),
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			OpenWorldHint:  new(true),
-			IdempotentHint: true,
-		},
+		Annotations: readOnlyAnnotations,
 		// Static UI resource URI — signals chart support to the host for prefetch.
 		// Per-call data is delivered via structuredContent through the MCP Apps bridge.
 		Meta: mcp.Meta{"ui": map[string]any{"resourceUri": chartStaticURI}},
@@ -306,7 +302,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 			if isInvalidFilterError(err) {
 				return errResult(enrichInvalidFilterError(ctx, req, d.Querier, project, in.MetricType, in.Filter, err)), nil, nil
 			}
-			return errResult(fmt.Sprintf("Failed to query metric: %v", err)), nil, nil
+			return gcpErrorResult(fmt.Sprintf("Failed to query metric: %v", err), err, ""), nil, nil
 		}
 
 		currentPoints := mergePoints(current.series)

@@ -132,21 +132,18 @@ func (p *promptCompleter) candidatesFor(ctx context.Context, refType, refName, a
 	return completionCandidates{}
 }
 
-// promptArgCandidates maps a (prompt, argument) pair to its completion source.
-// The pairs mirror the arguments declared in registerPrompts: metric_type on
-// investigate-metrics, profile_type on investigate-profile, and service on the
-// three prompts that accept a service filter.
+// promptArgCandidates returns the completion source promptSpecs declares for
+// the prompt's argument, or none for unknown prompts, undeclared arguments and
+// arguments without a source.
 func (p *promptCompleter) promptArgCandidates(ctx context.Context, prompt, arg string) completionCandidates {
-	switch {
-	case prompt == "investigate-metrics" && arg == "metric_type":
-		return p.metricTypes
-	case arg == "service" && (prompt == "investigate-errors" || prompt == "investigate-metrics" || prompt == "investigate-profile"):
-		if p.loadServices == nil {
-			return completionCandidates{}
+	spec, ok := findPromptSpec(prompt)
+	if !ok {
+		return completionCandidates{}
+	}
+	for _, a := range spec.args {
+		if a.name == arg && a.complete != nil {
+			return a.complete(ctx, p)
 		}
-		return newCompletionCandidates(p.loadServices(ctx))
-	case prompt == "investigate-profile" && arg == "profile_type":
-		return profileTypeCandidates
 	}
 	return completionCandidates{}
 }

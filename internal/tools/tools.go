@@ -92,25 +92,12 @@ func (d Deps) WithMode(m RegistrationMode) Deps {
 	return d
 }
 
-// CoreToolsCount is the number of tools RegisterCore registers. Single
-// source of truth for the "monitoring" variant's tool-count claim; pinned
-// by TestRegisterCoreToolCount.
-const CoreToolsCount = 10
-
-// RegisterCore registers the core monitoring tools: logs_summary, logs_services,
-// errors_list, errors_get, metrics_snapshot, metrics_top_contributors, trace_list,
-// trace_get, profiler_list, profiler_top. Count is CoreToolsCount.
-func RegisterCore(s *mcp.Server, d Deps) {
-	RegisterLogsSummary(s, d)
-	RegisterLogsServices(s, d)
-	RegisterErrorsList(s, d)
-	RegisterErrorsGet(s, d)
-	RegisterMetricsSnapshot(s, d)
-	RegisterMetricsTop(s, d)
-	RegisterTraceList(s, d)
-	RegisterTraceGet(s, d)
-	RegisterProfilerList(s, d)
-	RegisterProfilerTop(s, d)
+// readOnlyAnnotations is shared by every tool: all of them only read GCP
+// observability data, so calls are idempotent and reach an open world.
+var readOnlyAnnotations = &mcp.ToolAnnotations{
+	ReadOnlyHint:   true,
+	OpenWorldHint:  new(true),
+	IdempotentHint: true,
 }
 
 // Logging level constants for MCP log notifications.
@@ -292,7 +279,7 @@ func lookupMetricDescriptor(ctx context.Context, req *mcp.CallToolRequest, q gcp
 	descriptor, err := q.GetMetricDescriptor(ctx, project, metricType)
 	if err != nil {
 		mcpLog(ctx, req, logLevelError, tool, fmt.Sprintf("metric descriptor lookup failed: %v", err))
-		return descriptor, errResult(fmt.Sprintf("Failed to look up metric descriptor: %v. Verify the metric_type.", err))
+		return descriptor, gcpErrorResult(fmt.Sprintf("Failed to look up metric descriptor: %v", err), err, "Verify the metric_type.")
 	}
 	return descriptor, nil
 }
@@ -418,7 +405,7 @@ func loadProfile(ctx context.Context, req *mcp.CallToolRequest, d Deps, tool, pr
 	stopHeartbeat()
 	if err != nil {
 		mcpLog(ctx, req, logLevelError, tool, fmt.Sprintf("fetch profile failed: %v", err))
-		return nil, gcpdata.ProfileMeta{}, errResult(fmt.Sprintf("Failed to fetch profile: %v", err))
+		return nil, gcpdata.ProfileMeta{}, gcpErrorResult(fmt.Sprintf("Failed to fetch profile: %v", err), err, "")
 	}
 	return p, meta, nil
 }

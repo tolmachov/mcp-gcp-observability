@@ -18,11 +18,7 @@ func RegisterProfilerPeek(s *mcp.Server, d Deps) {
 			"Use function names from profiler_top results. Substring matching is used. "+
 			"If the name is ambiguous, the error will list matching candidates — use a more specific name. "+
 			"Add base_profile_id to inspect a request-local diff."),
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			OpenWorldHint:  new(true),
-			IdempotentHint: true,
-		},
+		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[ProfilerPeekInput](d.Project,
 			nonEmptyProp("profile_id"),
 			nonEmptyProp("function_name"),

@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -32,11 +33,7 @@ func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 			"Returns mean values, delta, trend shift, and classification for each window. "+
 			"Also renders an interactive dual-series chart inline in the chat (hosts that support MCP app widgets). "+
 			"For automatic baseline comparison (prev_window, same_weekday_hour), use metrics_snapshot instead."),
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			OpenWorldHint:  new(true),
-			IdempotentHint: true,
-		},
+		Annotations: readOnlyAnnotations,
 		// Meta here and in chartCallResult both carry the same URI deliberately:
 		// this declaration lets hosts prefetch the resource from tools/list;
 		// the per-call Meta binds the widget for hosts that skip tools/list caching.
@@ -146,7 +143,7 @@ func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 			if isInvalidFilterError(errA) || isInvalidFilterError(errB) {
 				return errResult(enrichInvalidFilterError(ctx, req, d.Querier, project, in.MetricType, in.Filter, errors.Join(errA, errB))), nil, nil
 			}
-			return errResult(fmt.Sprintf("Failed to query: %s", msg)), nil, nil
+			return gcpErrorResult("Failed to query: "+msg, cmp.Or(errA, errB), ""), nil, nil
 		}
 
 		pointsA := mergePoints(results[0].series)

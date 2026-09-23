@@ -18,11 +18,7 @@ func RegisterProfilerCompare(s *mcp.Server, d Deps) {
 			"Pass the same profile_id and base_profile_id to profiler_top, profiler_peek, or profiler_flamegraph "+
 			"to recompute and navigate the diff in one stateless request. "+
 			"Useful for before/after deploy comparisons and regression hunting."),
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			OpenWorldHint:  new(true),
-			IdempotentHint: true,
-		},
+		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[ProfilerCompareInput](d.Project,
 			nonEmptyProp("profile_id"),
 			nonEmptyProp("base_profile_id"),
@@ -44,7 +40,7 @@ func RegisterProfilerCompare(s *mcp.Server, d Deps) {
 		stopHeartbeat()
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "profiler_compare", fmt.Sprintf("compare profiles failed: %v", err))
-			return errResult(fmt.Sprintf("Failed to compare profiles: %v", err)), nil, nil
+			return gcpErrorResult(fmt.Sprintf("Failed to compare profiles: %v", err), err, ""), nil, nil
 		}
 
 		if result.Warning != "" {

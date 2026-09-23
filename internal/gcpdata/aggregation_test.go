@@ -569,9 +569,9 @@ func TestBuildAggregationReduceNoneIsOptOut(t *testing.T) {
 // client: an invalid spec must be rejected up front with a wrapped error
 // so callers never reach the RPC path with nonsense aggregation.
 func TestQueryTimeSeriesAggregatedInvalidSpec(t *testing.T) {
-	// Passing nil client is intentional: QueryTimeSeriesAggregated validates
+	// A querier without a client is intentional: QueryTimeSeriesAggregated validates
 	// the AggregationSpec before making any RPC calls, so the client is never used.
-	_, _, err := QueryTimeSeriesAggregated(context.Background(), nil, QueryTimeSeriesParams{}, metrics.AggregationSpec{}) //nolint:GoMaybeNil
+	_, _, err := (&MonitoringQuerier{}).QueryTimeSeriesAggregated(context.Background(), QueryTimeSeriesParams{}, metrics.AggregationSpec{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid aggregation spec")
 	// The error must wrap the sentinel so tool handlers can escalate

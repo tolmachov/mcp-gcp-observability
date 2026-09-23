@@ -18,11 +18,7 @@ func RegisterProfilerTop(s *mcp.Server, d Deps) {
 			"Use profile_id from profiler_list; add base_profile_id to analyze a request-local diff. "+
 			"Start here to identify hotspots, then use profiler_peek for caller/callee context. "+
 			"For multi-value profiles (e.g. HEAP with alloc_space and alloc_objects), check available_values in the response."),
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			OpenWorldHint:  new(true),
-			IdempotentHint: true,
-		},
+		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[ProfilerTopInput](d.Project,
 			nonEmptyProp("profile_id"),
 			nonNegativeValueIndex,

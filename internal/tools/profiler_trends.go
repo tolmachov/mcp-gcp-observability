@@ -18,11 +18,7 @@ func RegisterProfilerTrends(s *mcp.Server, d Deps) {
 			"self and cumulative cost for top functions. Useful for detecting performance regressions "+
 			"or improvements over time. Both profile_type and target are required. "+
 			"Use function_filter to focus on specific functions from profiler_top results."),
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			OpenWorldHint:  new(true),
-			IdempotentHint: true,
-		},
+		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[ProfilerTrendsInput](d.Project,
 			nonEmptyProp("target"),
 			nonNegativeValueIndex,
@@ -53,7 +49,7 @@ func RegisterProfilerTrends(s *mcp.Server, d Deps) {
 		}, progressFn)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "profiler_trends", fmt.Sprintf("compute trends failed: %v", err))
-			return errResult(fmt.Sprintf("Failed to compute trends: %v", err)), nil, nil
+			return gcpErrorResult(fmt.Sprintf("Failed to compute trends: %v", err), err, ""), nil, nil
 		}
 
 		return nil, result, nil

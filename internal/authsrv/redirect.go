@@ -1,7 +1,9 @@
 package authsrv
 
 import (
+	"maps"
 	"net"
+	"net/http"
 	"net/url"
 	"slices"
 	"strings"
@@ -83,4 +85,24 @@ func matchRegistered(registered []string, raw string) bool {
 		}
 	}
 	return false
+}
+
+// redirectWithParams redirects to redirectURI with params, plus state when
+// non-empty, merged into its query. Callers pass only redirect URIs already
+// validated against the client's registration and the redirect policy (see
+// handleAuthorize) or recovered from encrypted server-side state (see
+// handleCallback).
+func redirectWithParams(w http.ResponseWriter, r *http.Request, redirectURI, state string, params url.Values) {
+	u, err := url.Parse(redirectURI)
+	if err != nil {
+		http.Error(w, "invalid redirect", http.StatusBadRequest)
+		return
+	}
+	q := u.Query()
+	maps.Copy(q, params)
+	if state != "" {
+		q.Set("state", state)
+	}
+	u.RawQuery = q.Encode()
+	http.Redirect(w, r, u.String(), http.StatusFound) //nolint:gosec // G710: pre-validated redirect target
 }

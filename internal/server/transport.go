@@ -172,23 +172,23 @@ func buildAuthMux(as *authsrv.AuthServer, issuerURL string, mcpHandler http.Hand
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	requireBearer := auth.RequireBearerToken(as.Verifier(), &auth.RequireBearerTokenOptions{
+	requireBearer := as.RequireBearerToken(&auth.RequireBearerTokenOptions{
 		ResourceMetadataURL: issuerURL + authsrv.ProtectedResourceMetadataPath,
 	})
-	ready := as.RequireStoreAvailable(requireBearer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ready := requireBearer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := as.CheckStore(r.Context()); err != nil {
 			http.Error(w, "OAuth state store unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ready"))
-	})))
+	}))
 	mux.Handle("GET "+readyzPath, ready)
 	// Cloud Armor and the load balancer route this path to the no-traffic
 	// revision's tagged serverless NEG. It has exactly the same bearer and
 	// Firestore checks as the normal readiness endpoint.
 	mux.Handle("GET "+candidateReadyzPath, ready)
-	mux.Handle("/", as.RequireStoreAvailable(requireBearer(mcpHandler)))
+	mux.Handle("/", requireBearer(mcpHandler))
 	return mux
 }
 

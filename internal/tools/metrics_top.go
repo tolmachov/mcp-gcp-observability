@@ -26,11 +26,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 			"if you're unsure which namespace a label is in. "+
 			"Use this after metrics_snapshot shows a regression — it answers 'which route/instance/status_code is responsible?' "+
 			"For comparing time windows (e.g. before/after deploy), use metrics_compare instead."),
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			OpenWorldHint:  new(true),
-			IdempotentHint: true,
-		},
+		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[MetricsTopInput](d.Project,
 			nonEmptyProp("metric_type"),
 			nonEmptyProp("dimension"),
@@ -110,7 +106,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 			if isInvalidFilterError(err) {
 				return errResult(enrichInvalidFilterError(ctx, req, d.Querier, project, in.MetricType, in.Filter, err)), nil, nil
 			}
-			return errResult(fmt.Sprintf("Failed to query metric: %v", err)), nil, nil
+			return gcpErrorResult(fmt.Sprintf("Failed to query metric: %v", err), err, ""), nil, nil
 		}
 		currentSeries := current.series
 

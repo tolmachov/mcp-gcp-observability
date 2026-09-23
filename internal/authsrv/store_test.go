@@ -127,7 +127,7 @@ func TestStoreOutageIs503Not401(t *testing.T) {
 	require.NoError(t, err)
 
 	called := false
-	handler := a.RequireStoreAvailable(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
+	handler := a.RequireBearerToken(nil)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
 	req := httptest.NewRequest(http.MethodPost, testIssuer, nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	recorder := httptest.NewRecorder()

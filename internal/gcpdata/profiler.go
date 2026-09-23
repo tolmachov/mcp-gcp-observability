@@ -19,7 +19,6 @@ import (
 	"strings"
 	"time"
 
-	cloudprofiler "cloud.google.com/go/cloudprofiler/apiv2"
 	"cloud.google.com/go/cloudprofiler/apiv2/cloudprofilerpb"
 	"github.com/google/pprof/profile"
 	"golang.org/x/sync/errgroup"
@@ -107,7 +106,7 @@ func decodeProfileCursor(raw, fingerprint string) (profileCursor, error) {
 
 // ListProfiles advances through the Export API page by page. Its opaque cursor
 // can resume inside an API page and is bound to the exact filter set.
-func ListProfiles(ctx context.Context, svc *cloudprofiler.ExportClient, params ListProfilesParams) (*ProfileListResult, error) {
+func (q *CloudProfilerQuerier) ListProfiles(ctx context.Context, params ListProfilesParams) (*ProfileListResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, ProfilerScanTimeout)
 	defer cancel()
 	fingerprint := profileFilterFingerprint(params)
@@ -124,7 +123,7 @@ func ListProfiles(ctx context.Context, svc *cloudprofiler.ExportClient, params L
 	resumeToken, resumeOffset := pageStart, offset
 	scanned := 0
 	for scanned < maxScan {
-		it := svc.ListProfiles(ctx, &cloudprofilerpb.ListProfilesRequest{Parent: "projects/" + params.Project, PageSize: 1000, PageToken: pageStart})
+		it := q.svc.ListProfiles(ctx, &cloudprofilerpb.ListProfilesRequest{Parent: "projects/" + params.Project, PageSize: 1000, PageToken: pageStart})
 		pager := iterator.NewPager(it, 1000, pageStart)
 		var page []*cloudprofilerpb.Profile
 		nextToken, pageErr := pager.NextPage(&page)
@@ -284,14 +283,12 @@ func (f profileFilter) match(meta ProfileMeta) (match, parseErr bool) {
 // Cloud Profiler API v2 has no direct GET endpoint; profiles are found by
 // scanning list results. The ExportClient always returns the profile name
 // (resource ID) in list responses, so no synthetic ID fallback is needed.
-func GetOrFetchProfile(
+func (q *CloudProfilerQuerier) GetOrFetchProfile(
 	ctx context.Context,
-	svc *cloudprofiler.ExportClient,
-	cache *ProfileCache,
 	project, profileName string,
 ) (*profile.Profile, ProfileMeta, error) {
 	key := profileCacheKey(project, profileName)
-	if data, meta, ok := cache.Get(key); ok {
+	if data, meta, ok := q.cache.Get(key); ok {
 		p, err := parseSourceProfile(data)
 		if err != nil {
 			return nil, ProfileMeta{}, fmt.Errorf("parsing cached pprof data: %w", err)
@@ -316,7 +313,7 @@ func GetOrFetchProfile(
 	scanned := 0
 	exhausted := false
 
-	it := svc.ListProfiles(ctx, &cloudprofilerpb.ListProfilesRequest{
+	it := q.svc.ListProfiles(ctx, &cloudprofilerpb.ListProfilesRequest{
 		Parent:   "projects/" + project,
 		PageSize: 1000,
 	})
@@ -364,7 +361,7 @@ func GetOrFetchProfile(
 		return nil, ProfileMeta{}, fmt.Errorf("parsing pprof data: %w", err)
 	}
 
-	cache.Put(key, found.ProfileBytes, foundMeta)
+	q.cache.Put(key, found.ProfileBytes, foundMeta)
 	return p, foundMeta, nil
 }
 
@@ -642,14 +639,12 @@ func Flamegraph(p *profile.Profile, rootFunction string, valueIndex, maxDepth, m
 }
 
 // CompareProfiles ranks per-function cumulative deltas (current - base).
-func CompareProfiles(
+func (q *CloudProfilerQuerier) CompareProfiles(
 	ctx context.Context,
-	svc *cloudprofiler.ExportClient,
-	cache *ProfileCache,
 	project, currentID, baseID string,
 	valueIndex, topN int,
 ) (*ProfileCompareResult, error) {
-	currentProfile, baseProfile, currentMeta, baseMeta, err := fetchProfilePair(ctx, svc, cache, project, currentID, baseID)
+	currentProfile, baseProfile, currentMeta, baseMeta, err := q.fetchProfilePair(ctx, project, currentID, baseID)
 	if err != nil {
 		return nil, err
 	}
@@ -750,11 +745,11 @@ func CompareProfiles(
 }
 
 // GetProfileOrDiff computes a request-local diff when baseID is present.
-func GetProfileOrDiff(ctx context.Context, svc *cloudprofiler.ExportClient, cache *ProfileCache, project, profileID, baseID string) (*profile.Profile, ProfileMeta, error) {
+func (q *CloudProfilerQuerier) GetProfileOrDiff(ctx context.Context, project, profileID, baseID string) (*profile.Profile, ProfileMeta, error) {
 	if baseID == "" {
-		return GetOrFetchProfile(ctx, svc, cache, project, profileID)
+		return q.GetOrFetchProfile(ctx, project, profileID)
 	}
-	current, base, meta, _, err := fetchProfilePair(ctx, svc, cache, project, profileID, baseID)
+	current, base, meta, _, err := q.fetchProfilePair(ctx, project, profileID, baseID)
 	if err != nil {
 		return nil, ProfileMeta{}, err
 	}
@@ -768,16 +763,14 @@ func GetProfileOrDiff(ctx context.Context, svc *cloudprofiler.ExportClient, cach
 
 // fetchProfilePair fetches the current and base profiles concurrently: each
 // uncached fetch is its own paginated Export API scan.
-func fetchProfilePair(
+func (q *CloudProfilerQuerier) fetchProfilePair(
 	ctx context.Context,
-	svc *cloudprofiler.ExportClient,
-	cache *ProfileCache,
 	project, currentID, baseID string,
 ) (current, base *profile.Profile, currentMeta, baseMeta ProfileMeta, err error) {
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		var err error
-		current, currentMeta, err = GetOrFetchProfile(gctx, svc, cache, project, currentID)
+		current, currentMeta, err = q.GetOrFetchProfile(gctx, project, currentID)
 		if err != nil {
 			return fmt.Errorf("fetching current profile: %w", err)
 		}
@@ -785,7 +778,7 @@ func fetchProfilePair(
 	})
 	g.Go(func() error {
 		var err error
-		base, baseMeta, err = GetOrFetchProfile(gctx, svc, cache, project, baseID)
+		base, baseMeta, err = q.GetOrFetchProfile(gctx, project, baseID)
 		if err != nil {
 			return fmt.Errorf("fetching base profile: %w", err)
 		}
@@ -823,10 +816,8 @@ type prefetchResult struct {
 // wanted set. This avoids O(n) individual List scans when ComputeTrends needs many
 // profiles that were already discovered via a metadata-only ListProfiles call.
 // Profiles are not parsed here; a corrupt profile fails when it is analyzed.
-func prefetchProfiles(
+func (q *CloudProfilerQuerier) prefetchProfiles(
 	ctx context.Context,
-	svc *cloudprofiler.ExportClient,
-	cache *ProfileCache,
 	project string,
 	wanted map[string]bool,
 ) prefetchResult {
@@ -834,7 +825,7 @@ func prefetchProfiles(
 	var res prefetchResult
 	remaining := len(wanted)
 
-	it := svc.ListProfiles(ctx, &cloudprofilerpb.ListProfilesRequest{
+	it := q.svc.ListProfiles(ctx, &cloudprofilerpb.ListProfilesRequest{
 		Parent:   "projects/" + project,
 		PageSize: 1000,
 	})
@@ -857,7 +848,7 @@ func prefetchProfiles(
 			continue
 		}
 		key := profileCacheKey(project, meta.ProfileID)
-		if cache.Has(key) {
+		if q.cache.Has(key) {
 			remaining--
 			res.Cached++
 			continue
@@ -868,7 +859,7 @@ func prefetchProfiles(
 			remaining-- // can't satisfy this entry; stop waiting for it
 			continue
 		}
-		if !cache.Put(key, p.ProfileBytes, meta) {
+		if !q.cache.Put(key, p.ProfileBytes, meta) {
 			res.Errors++
 			res.Last = fmt.Errorf("profile %s: cache byte budget exhausted", meta.ProfileID)
 			continue
@@ -908,10 +899,8 @@ type ComputeTrendsParams struct {
 // functions are tracked (cheap: single pass over samples per profile). When empty,
 // the first successfully-downloaded profile is used to discover the top MaxFunctions
 // functions, which are then tracked across all profiles.
-func ComputeTrends(
+func (q *CloudProfilerQuerier) ComputeTrends(
 	ctx context.Context,
-	svc *cloudprofiler.ExportClient,
-	cache *ProfileCache,
 	params ComputeTrendsParams,
 	progressFn func(current, total int, msg string),
 ) (*ProfileTrendsResult, error) {
@@ -922,7 +911,7 @@ func ComputeTrends(
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	profiles, err := ListProfiles(ctx, svc, ListProfilesParams{
+	profiles, err := q.ListProfiles(ctx, ListProfilesParams{
 		Project:     project,
 		ProfileType: profileType,
 		Target:      target,
@@ -947,7 +936,7 @@ func ComputeTrends(
 	for _, meta := range profiles.Profiles {
 		wanted[meta.ProfileID] = true
 	}
-	pf := prefetchProfiles(ctx, svc, cache, project, wanted)
+	pf := q.prefetchProfiles(ctx, project, wanted)
 
 	// Without function_filter, the top functions of the first non-empty profile
 	// become the tracked set; that profile is analyzed in the same pass.
@@ -973,7 +962,7 @@ func ComputeTrends(
 			progressFn(i, total, fmt.Sprintf("Analyzing profile %d/%d...", i+1, total))
 		}
 
-		p, _, err := GetOrFetchProfile(ctx, svc, cache, project, meta.ProfileID)
+		p, _, err := q.GetOrFetchProfile(ctx, project, meta.ProfileID)
 		if err != nil {
 			downloadErrors++
 			lastDownloadErr = err

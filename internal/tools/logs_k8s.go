@@ -17,11 +17,7 @@ func RegisterLogsK8s(s *mcp.Server, d Deps) {
 		Description: applyMode(d.Mode, "Query Kubernetes container logs with convenient filters. "+
 			"Automatically builds Cloud Logging filter for resource.type=\"k8s_container\". "+
 			"Preferred over logs_query for K8s workloads. Results default to newest-first (use order parameter to change)."),
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			OpenWorldHint:  new(true),
-			IdempotentHint: true,
-		},
+		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[LogsK8sInput](d.Project,
 			enumProp("severity", gcpdata.Severities),
 			enumProp("order", sortOrders),
@@ -72,7 +68,7 @@ func RegisterLogsK8s(s *mcp.Server, d Deps) {
 		result, err := d.Logs.QueryLogs(ctx, project, filter, limit, order, in.PageToken)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "logs_k8s", fmt.Sprintf("query failed for project %s: %v", project, err))
-			return errResult(fmt.Sprintf("Failed to query K8s logs: %v. Verify the project_id and that K8s logging is enabled.", err)), nil, nil
+			return gcpErrorResult(fmt.Sprintf("Failed to query K8s logs: %v", err), err, "Verify the project_id and that K8s logging is enabled."), nil, nil
 		}
 
 		return nil, result, nil

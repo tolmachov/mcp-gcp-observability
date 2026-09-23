@@ -18,11 +18,7 @@ func RegisterErrorsTrends(s *mcp.Server, d Deps) {
 			"Returns groups sorted by delta (most worsened first) plus a summary count per category, so you can spot regressions and newly appearing errors at a glance. "+
 			"Use errors_list for a point-in-time snapshot and errors_get with a group_id to drill into individual events. "+
 			"Note: Error Reporting supports only lookback periods ending now, so the comparison is intra-window (first half vs second half), not against an arbitrary historical baseline."),
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			OpenWorldHint:  new(true),
-			IdempotentHint: true,
-		},
+		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[ErrorsListInput](d.Project,
 			enumProp("window", gcpdata.ErrorWindows()),
 		),
@@ -42,7 +38,7 @@ func RegisterErrorsTrends(s *mcp.Server, d Deps) {
 		result, err := d.Errors.AnalyzeErrorTrends(ctx, project, window, limit, in.ServiceFilter, in.VersionFilter)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "errors_trends", fmt.Sprintf("analyze error trends failed for project %s: %v", project, err))
-			return errResult(fmt.Sprintf("Failed to analyze error trends: %v. Verify the project_id and that Error Reporting API is enabled.", err)), nil, nil
+			return gcpErrorResult(fmt.Sprintf("Failed to analyze error trends: %v", err), err, "Verify the project_id and that Error Reporting API is enabled."), nil, nil
 		}
 
 		return nil, result, nil

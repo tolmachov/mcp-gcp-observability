@@ -9,18 +9,16 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
-	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 	"github.com/tolmachov/mcp-gcp-observability/internal/tools"
 )
 
 // registerResources adds MCP resources to srv.
-func (s *Server) registerResources(srv *mcp.Server, client *gcpclient.Client, reg *metrics.Registry) {
+func (s *Server) registerResources(srv *mcp.Server, d tools.Deps) {
 	projectConfig := map[string]any{
 		"project_mode":           "required",
 		"metrics_registry_file":  s.cfg.MetricsRegistryFile,
-		"metrics_registry_count": reg.Count(),
+		"metrics_registry_count": d.Registry.Count(),
 		"logs_hard_limit":        tools.LogsHardLimit,
 		"errors_hard_limit":      tools.ErrorsHardLimit,
 	}
@@ -52,7 +50,7 @@ func (s *Server) registerResources(srv *mcp.Server, client *gcpclient.Client, re
 	)
 
 	tools.RegisterChartResources(srv)
-	s.registerProjectResources(srv, client)
+	s.registerProjectResources(srv, d)
 }
 
 // resourceTemplateTimeout bounds the GCP calls backing the navigable resource
@@ -68,7 +66,7 @@ const resourceTemplateTimeout = 30 * time.Second
 //
 // Pinned deployments expose exact URIs; unpinned deployments expose templates
 // whose project segment is mandatory.
-func (s *Server) registerProjectResources(srv *mcp.Server, client *gcpclient.Client) {
+func (s *Server) registerProjectResources(srv *mcp.Server, d tools.Deps) {
 	type spec struct {
 		scheme, path, name, description string
 		fetch                           func(context.Context, string) (any, error)
@@ -77,18 +75,18 @@ func (s *Server) registerProjectResources(srv *mcp.Server, client *gcpclient.Cli
 		{"gcp-logs", "/recent", "Recent Logs Summary",
 			"Severity distribution, top errors and top services from recent logs for the given project.",
 			func(ctx context.Context, project string) (any, error) {
-				return gcpdata.SummarizeLogs(ctx, client.LoggingClient(), project, "", nil)
+				return d.Logs.SummarizeLogs(ctx, project, "", nil)
 			}},
 		{"gcp-errors", "/groups", "Error Reporting Groups",
 			"Current Error Reporting groups for the given project over the last 24 hours, by count.",
 			func(ctx context.Context, project string) (any, error) {
-				return gcpdata.ListErrors(ctx, client.ErrorsClient(), project, gcpdata.ErrorWindow24H, 50, "", "")
+				return d.Errors.ListErrors(ctx, project, gcpdata.ErrorWindow24H, 50, "", "")
 			}},
 		{"gcp-traces", "/recent", "Recent Traces",
 			"Traces from the last hour for the given project.",
 			func(ctx context.Context, project string) (any, error) {
 				now := time.Now()
-				return gcpdata.ListTraces(ctx, client.TraceClient(), project,
+				return d.Traces.ListTraces(ctx, project,
 					"", "", "", now.Add(-time.Hour), now, 50, "")
 			}},
 	}

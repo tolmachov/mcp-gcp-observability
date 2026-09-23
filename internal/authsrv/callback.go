@@ -141,7 +141,7 @@ func (a *AuthServer) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.logger.Info("login completed", "email", id.Email, "client", sc.ClientID[:min(24, len(sc.ClientID))])
-	redirectWithCode(w, r, sc.RedirectURI, code, sc.ClientState)
+	redirectWithParams(w, r, sc.RedirectURI, sc.ClientState, url.Values{"code": {code}})
 }
 
 // firstMissing returns the first element of want absent from got, or "".
@@ -162,20 +162,4 @@ func grantedScopes(v any) []string {
 		return nil
 	}
 	return strings.Fields(s)
-}
-
-// redirectWithCode sends the authorization code to the client's redirect URI.
-func redirectWithCode(w http.ResponseWriter, r *http.Request, redirectURI, code, state string) {
-	u, err := url.Parse(redirectURI)
-	if err != nil {
-		http.Error(w, "invalid redirect", http.StatusBadRequest)
-		return
-	}
-	q := u.Query()
-	q.Set("code", code)
-	if state != "" {
-		q.Set("state", state)
-	}
-	u.RawQuery = q.Encode()
-	http.Redirect(w, r, u.String(), http.StatusFound)
 }

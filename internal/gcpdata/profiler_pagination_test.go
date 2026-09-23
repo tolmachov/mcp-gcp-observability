@@ -52,7 +52,7 @@ func (s *pagedProfilerServer) ListProfiles(_ context.Context, req *cloudprofiler
 	}
 }
 
-func newPagedProfilerClient(t *testing.T) (*cloudprofiler.ExportClient, *pagedProfilerServer) {
+func newPagedProfilerQuerier(t *testing.T) (*CloudProfilerQuerier, *pagedProfilerServer) {
 	t.Helper()
 	listener := bufconn.Listen(1 << 20)
 	grpcServer := grpc.NewServer()
@@ -68,14 +68,16 @@ func newPagedProfilerClient(t *testing.T) (*cloudprofiler.ExportClient, *pagedPr
 	client, err := cloudprofiler.NewExportClient(context.Background(), option.WithGRPCConn(conn))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = client.Close() })
-	return client, service
+	q := NewCloudProfilerQuerier(client)
+	t.Cleanup(func() { _ = q.Close() })
+	return q, service
 }
 
 func TestProfilerPaginationResumesInsideAPIPage(t *testing.T) {
-	client, service := newPagedProfilerClient(t)
+	q, service := newPagedProfilerQuerier(t)
 	params := ListProfilesParams{Project: "sample-project", ProfileType: "CPU", Target: "svc", PageSize: 1}
 
-	first, err := ListProfiles(context.Background(), client, params)
+	first, err := q.ListProfiles(context.Background(), params)
 	require.NoError(t, err)
 	require.Len(t, first.Profiles, 1)
 	assert.Equal(t, "projects/sample-project/profiles/cpu-a", first.Profiles[0].ProfileID)
@@ -83,14 +85,14 @@ func TestProfilerPaginationResumesInsideAPIPage(t *testing.T) {
 	assert.NotEmpty(t, first.NextPageToken)
 
 	params.PageToken = first.NextPageToken
-	second, err := ListProfiles(context.Background(), client, params)
+	second, err := q.ListProfiles(context.Background(), params)
 	require.NoError(t, err)
 	require.Len(t, second.Profiles, 1)
 	assert.Equal(t, "projects/sample-project/profiles/cpu-b", second.Profiles[0].ProfileID)
 	assert.Equal(t, []string{"", ""}, service.seen, "second logical page must resume in the first API page")
 
 	params.PageToken = second.NextPageToken
-	third, err := ListProfiles(context.Background(), client, params)
+	third, err := q.ListProfiles(context.Background(), params)
 	require.NoError(t, err)
 	require.Len(t, third.Profiles, 1)
 	assert.Equal(t, "projects/sample-project/profiles/cpu-c", third.Profiles[0].ProfileID)
@@ -100,25 +102,25 @@ func TestProfilerPaginationResumesInsideAPIPage(t *testing.T) {
 }
 
 func TestProfilerCursorIsOpaqueAndFilterBound(t *testing.T) {
-	client, _ := newPagedProfilerClient(t)
+	q, _ := newPagedProfilerQuerier(t)
 	params := ListProfilesParams{Project: "sample-project", ProfileType: "CPU", PageSize: 1}
-	first, err := ListProfiles(context.Background(), client, params)
+	first, err := q.ListProfiles(context.Background(), params)
 	require.NoError(t, err)
 
 	params.Target = "different"
 	params.PageToken = first.NextPageToken
-	_, err = ListProfiles(context.Background(), client, params)
+	_, err = q.ListProfiles(context.Background(), params)
 	assert.ErrorContains(t, err, "cursor/filter mismatch")
 
 	params.Target = ""
 	params.PageToken = "api-2"
-	_, err = ListProfiles(context.Background(), client, params)
+	_, err = q.ListProfiles(context.Background(), params)
 	assert.ErrorContains(t, err, "invalid profiler cursor")
 }
 
 func TestProfilerUnfilteredPaginationEndsExplicitly(t *testing.T) {
-	client, _ := newPagedProfilerClient(t)
-	result, err := ListProfiles(context.Background(), client, ListProfilesParams{Project: "sample-project", ProfileType: "CPU", PageSize: 10})
+	q, _ := newPagedProfilerQuerier(t)
+	result, err := q.ListProfiles(context.Background(), ListProfilesParams{Project: "sample-project", ProfileType: "CPU", PageSize: 10})
 	require.NoError(t, err)
 	assert.Len(t, result.Profiles, 3)
 	assert.False(t, result.Truncated)

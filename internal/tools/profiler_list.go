@@ -20,11 +20,7 @@ func RegisterProfilerList(s *mcp.Server, d Deps) {
 			"matched case- and separator-insensitively, so 'crypto-steam' finds 'cryptosteam'). "+
 			"If a target matches nothing, the warning lists the available targets. "+
 			"Requires Cloud Profiler API to be enabled."),
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			OpenWorldHint:  new(true),
-			IdempotentHint: true,
-		},
+		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[ProfilerListInput](d.Project,
 			enumProp("profile_type", gcpdata.ProfileTypes),
 		),
@@ -62,7 +58,7 @@ func RegisterProfilerList(s *mcp.Server, d Deps) {
 		})
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "profiler_list", fmt.Sprintf("list profiles failed: %v", err))
-			return errResult(fmt.Sprintf("Failed to list profiles: %v. Verify the project_id and that Cloud Profiler API is enabled.", err)), nil, nil
+			return gcpErrorResult(fmt.Sprintf("Failed to list profiles: %v", err), err, "Verify the project_id and that Cloud Profiler API is enabled."), nil, nil
 		}
 
 		return nil, result, nil

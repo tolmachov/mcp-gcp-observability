@@ -18,11 +18,7 @@ func RegisterTraceList(s *mcp.Server, d Deps) {
 			"Returns trace summaries with root span info — use trace_get with a returned trace_id for full span details. "+
 			"Supports structured filters (root_name, span_name, min_latency) or raw Cloud Trace filter syntax. "+
 			"Default time range is the last 1 hour. Requires Cloud Trace API to be enabled."),
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			OpenWorldHint:  new(true),
-			IdempotentHint: true,
-		},
+		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[TraceListInput](d.Project,
 			enumProp("order_by", traceOrderBys),
 			enumProp("view", traceViews),
@@ -56,7 +52,7 @@ func RegisterTraceList(s *mcp.Server, d Deps) {
 			filter, in.View, in.OrderBy, startTime, endTime, pageSize, in.PageToken)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "trace_list", fmt.Sprintf("list traces failed: %v", err))
-			return errResult(fmt.Sprintf("Failed to list traces: %v. Verify the project_id, filter syntax, and that Cloud Trace API is enabled.", err)), nil, nil
+			return gcpErrorResult(fmt.Sprintf("Failed to list traces: %v", err), err, "Verify the project_id, filter syntax, and that Cloud Trace API is enabled."), nil, nil
 		}
 		if result.Truncated && result.TruncationHint != "" {
 			mcpLog(ctx, req, logLevelWarning, "trace_list", result.TruncationHint)

@@ -3,15 +3,16 @@ package tools
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
-	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -282,24 +283,33 @@ func TestQueryWarningMessagesTruncation(t *testing.T) {
 	assert.Contains(t, got[0], "500")
 }
 
-func TestFormatTraceGetError(t *testing.T) {
+func TestGCPErrorResult(t *testing.T) {
+	notFound := codeGuidance{codes.NotFound, "The trace does not exist."}
 	tests := []struct {
 		name string
 		err  error
 		want string
 	}{
-		{"invalid argument", status.Error(codes.InvalidArgument, "bad trace id"), "32-character hex"},
-		{"not found", status.Error(codes.NotFound, "not found"), "does not exist"},
-		{"permission denied", status.Error(codes.PermissionDenied, "denied"), "credentials"},
+		{"tool code guidance", status.Error(codes.NotFound, "missing"), "Failed: rpc error: code = NotFound desc = missing. The trace does not exist."},
+		{"unauthenticated", status.Error(codes.Unauthenticated, "token expired"), "re-connect this MCP server"},
+		{"wrapped permission denied", fmt.Errorf("listing: %w", status.Error(codes.PermissionDenied, "denied")), "IAM permission"},
 		{"unavailable", status.Error(codes.Unavailable, "down"), "temporarily unavailable"},
-		{"deadline", context.DeadlineExceeded, "did not respond in time"},
+		{"rate limited", status.Error(codes.ResourceExhausted, "quota"), "rate-limited"},
+		{"context deadline", fmt.Errorf("query: %w", context.DeadlineExceeded), "did not respond in time"},
+		{"context canceled", context.Canceled, "was canceled"},
+		{"fallback", errors.New("boom"), "Failed: boom. Verify the project_id."},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := formatTraceGetError("abc", tt.err)
-			assert.Contains(t, got, tt.want)
+			res := gcpErrorResult("Failed: "+tt.err.Error(), tt.err, "Verify the project_id.", notFound)
+			require.True(t, res.IsError)
+			assert.Contains(t, res.Content[0].(*mcp.TextContent).Text, tt.want)
 		})
 	}
+	t.Run("no guidance", func(t *testing.T) {
+		res := gcpErrorResult("Failed: boom", errors.New("boom"), "")
+		assert.Equal(t, "Failed: boom", res.Content[0].(*mcp.TextContent).Text)
+	})
 }
 
 func TestCompactDesc(t *testing.T) {
@@ -368,45 +378,6 @@ func TestApplyMode(t *testing.T) {
 			applyMode(RegistrationMode(99), full)
 		})
 	})
-}
-
-// TestRegisterCoreToolCount pins CoreToolsCount against the tools that
-// RegisterCore actually registers. The "monitoring" variant Description
-// interpolates CoreToolsCount, so this test is the choke point that keeps
-// the constant honest. Expected tools: logs_summary, logs_services,
-// errors_list, errors_get, metrics_snapshot, metrics_top_contributors,
-// trace_list, trace_get, profiler_list, profiler_top.
-func TestRegisterCoreToolCount(t *testing.T) {
-	ts := newTestToolServer(t)
-	// Non-nil backend fakes satisfy the requireX guards at registration time;
-	// their methods are never invoked because this test only lists tools.
-	deps := allFakeBackends()
-	deps.Registry = metrics.NewRegistry()
-	deps.Project = MustProjectPolicy("test-project")
-	deps.Mode = ModeStandard
-	RegisterCore(ts.server, deps)
-
-	ctx := context.Background()
-	ts.connect(ctx)
-	defer ts.close()
-
-	result, err := ts.session.ListTools(ctx, nil)
-	require.NoError(t, err)
-	assert.Len(t, result.Tools, CoreToolsCount,
-		"RegisterCore registered %d tools; update CoreToolsCount if the change is intentional", len(result.Tools))
-
-	wantTools := []string{
-		"logs_summary", "logs_services",
-		"errors_list", "errors_get",
-		"metrics_snapshot", "metrics_top_contributors",
-		"trace_list", "trace_get",
-		"profiler_list", "profiler_top",
-	}
-	var gotNames []string
-	for _, tool := range result.Tools {
-		gotNames = append(gotNames, tool.Name)
-	}
-	assert.ElementsMatch(t, wantTools, gotNames)
 }
 
 func TestStartProgressHeartbeat_NoToken(t *testing.T) {

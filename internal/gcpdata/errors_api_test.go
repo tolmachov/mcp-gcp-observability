@@ -28,7 +28,7 @@ func (s *captureErrorStatsServer) ListGroupStats(_ context.Context, req *errorre
 	return &errorreportingpb.ListGroupStatsResponse{TimeRangeBegin: timestamppb.New(s.begin)}, nil
 }
 
-func newCaptureErrorStatsClient(t *testing.T) (*errorreporting.ErrorStatsClient, *captureErrorStatsServer) {
+func newCaptureErrorStatsQuerier(t *testing.T) (*ErrorReportingQuerier, *captureErrorStatsServer) {
 	t.Helper()
 	listener := bufconn.Listen(1 << 20)
 	grpcServer := grpc.NewServer()
@@ -44,17 +44,17 @@ func newCaptureErrorStatsClient(t *testing.T) (*errorreporting.ErrorStatsClient,
 	client, err := errorreporting.NewErrorStatsClient(context.Background(), option.WithGRPCConn(conn))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = client.Close() })
-	return client, service
+	return NewErrorReportingQuerier(client), service
 }
 
 func TestErrorWindowsReachAPIExactly(t *testing.T) {
-	client, service := newCaptureErrorStatsClient(t)
+	q, service := newCaptureErrorStatsQuerier(t)
 	for _, window := range ErrorWindows() {
 		t.Run(string(window), func(t *testing.T) {
 			spec, ok := window.Spec()
 			require.True(t, ok)
 
-			listed, err := ListErrors(context.Background(), client, "sample-project", window, 5, "", "")
+			listed, err := q.ListErrors(context.Background(), "sample-project", window, 5, "", "")
 			require.NoError(t, err)
 			require.NotNil(t, service.last)
 			assert.Equal(t, spec.Period, service.last.GetTimeRange().GetPeriod())
@@ -64,7 +64,7 @@ func TestErrorWindowsReachAPIExactly(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, service.begin, listedBegin)
 
-			trends, err := AnalyzeErrorTrends(context.Background(), client, "sample-project", window, 5, "", "")
+			trends, err := q.AnalyzeErrorTrends(context.Background(), "sample-project", window, 5, "", "")
 			require.NoError(t, err)
 			assert.Equal(t, spec.Period, service.last.GetTimeRange().GetPeriod())
 			require.NotNil(t, service.last.TimedCountDuration)

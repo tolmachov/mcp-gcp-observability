@@ -155,22 +155,7 @@ func (a *AuthServer) loadAuthorizationState(ctx context.Context, raw string, con
 
 // redirectError returns a protocol error to an already-validated redirect URI.
 func redirectError(w http.ResponseWriter, r *http.Request, redirectURI, state, code, description string) {
-	u, err := url.Parse(redirectURI)
-	if err != nil {
-		http.Error(w, "invalid redirect", http.StatusBadRequest)
-		return
-	}
-	q := u.Query()
-	q.Set("error", code)
-	q.Set("error_description", description)
-	if state != "" {
-		q.Set("state", state)
-	}
-	u.RawQuery = q.Encode()
-	// Callers pass only redirect URIs already validated against the
-	// client's registration and the redirect policy (see handleAuthorize)
-	// or recovered from encrypted server-side state (see handleCallback).
-	http.Redirect(w, r, u.String(), http.StatusFound) //nolint:gosec // G710: pre-validated redirect target
+	redirectWithParams(w, r, redirectURI, state, url.Values{"error": {code}, "error_description": {description}})
 }
 
 var consentTemplate = sync.OnceValue(func() *template.Template {

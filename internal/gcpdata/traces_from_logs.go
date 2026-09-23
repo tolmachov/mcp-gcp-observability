@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-
-	logging "cloud.google.com/go/logging/apiv2"
 )
 
 // sampleMessageMaxLen caps the sample log line stored per discovered trace.
@@ -27,8 +25,8 @@ var severityRanks = func() map[string]int {
 // bridges the "found something in logs -> inspect its trace" workflow: feed an
 // arbitrary log filter (e.g. severity>=ERROR for a service) and pivot to
 // trace_get on the returned IDs. Entries without a trace are skipped.
-func FindTracesFromLogs(ctx context.Context, client *logging.Client, project, filter, timeFilter string, scanLimit, resultLimit int) (*TraceFromLogsList, error) {
-	logs, err := QueryLogs(ctx, client, project, AppendFilter(filter, timeFilter), scanLimit, "desc", "")
+func (q *LoggingQuerier) FindTracesFromLogs(ctx context.Context, project, filter, timeFilter string, scanLimit, resultLimit int) (*TraceFromLogsList, error) {
+	logs, err := q.QueryLogs(ctx, project, AppendFilter(filter, timeFilter), scanLimit, "desc", "")
 	if err != nil {
 		return nil, err
 	}
@@ -139,17 +137,12 @@ func sampleLogMessage(e *LogEntry) string {
 
 // firstLine returns the first non-empty line of s, capped at sampleMessageMaxLen.
 func firstLine(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return ""
+	line, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
+	line = strings.TrimSpace(line)
+	if len(line) > sampleMessageMaxLen {
+		line = truncateUTF8(line, sampleMessageMaxLen) + "..."
 	}
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		s = strings.TrimSpace(s[:i])
-	}
-	if len(s) > sampleMessageMaxLen {
-		s = s[:sampleMessageMaxLen] + "..."
-	}
-	return s
+	return line
 }
 
 // serviceFromResourceInfo derives a service name from a converted resource,

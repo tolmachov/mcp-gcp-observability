@@ -24,11 +24,7 @@ func RegisterMetricsList(s *mcp.Server, d Deps) {
 			"the literal word isn't in the metric name. "+
 			"Results include kind, unit, and direction for each metric. "+
 			"Does NOT return time series data — use metrics_snapshot for that."),
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			OpenWorldHint:  new(true),
-			IdempotentHint: true,
-		},
+		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[MetricsListInput](d.Project,
 			enumProp("kind", metrics.ValidMetricKindsForInput()),
 		),
@@ -72,7 +68,7 @@ func RegisterMetricsList(s *mcp.Server, d Deps) {
 			descriptors, err := d.Querier.ListMetricDescriptors(ctx, project, apiFilter, apiLimit)
 			if err != nil {
 				mcpLog(ctx, req, logLevelError, "metrics_list", fmt.Sprintf("listing metric descriptors failed: %v", err))
-				return errResult(fmt.Sprintf("Failed to list metrics: %v", err)), nil, nil
+				return gcpErrorResult(fmt.Sprintf("Failed to list metrics: %v", err), err, ""), nil, nil
 			}
 
 			for _, desc := range descriptors {

@@ -2,15 +2,10 @@ package gcpdata
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"time"
 
-	"google.golang.org/api/iterator"
-	"google.golang.org/protobuf/types/known/durationpb"
-
-	errorreporting "cloud.google.com/go/errorreporting/apiv1beta1"
 	"cloud.google.com/go/errorreporting/apiv1beta1/errorreportingpb"
 )
 
@@ -28,48 +23,14 @@ const (
 // halves of the lookback window. Error Reporting only supports windows ending at
 // "now", so the comparison is intra-window (first half vs second half) rather
 // than against an arbitrary historical baseline.
-func AnalyzeErrorTrends(ctx context.Context, client *errorreporting.ErrorStatsClient, project string, window ErrorWindow, limit int, serviceFilter, versionFilter string) (*ErrorTrendList, error) {
-	ctx, cancel := context.WithTimeout(ctx, errorReportingTimeout)
-	defer cancel()
-	spec, ok := window.Spec()
-	if !ok {
-		return nil, fmt.Errorf("invalid error window %q", window)
+func (q *ErrorReportingQuerier) AnalyzeErrorTrends(ctx context.Context, project string, window ErrorWindow, limit int, serviceFilter, versionFilter string) (*ErrorTrendList, error) {
+	page, err := q.listGroupStats(ctx, project, window, limit, serviceFilter, versionFilter, true)
+	if err != nil {
+		return nil, err
 	}
-
-	req := &errorreportingpb.ListGroupStatsRequest{
-		ProjectName:        fmt.Sprintf("projects/%s", project),
-		TimeRange:          &errorreportingpb.QueryTimeRange{Period: spec.Period},
-		TimedCountDuration: durationpb.New(spec.Bucket),
-		PageSize:           safeInt32(limit),
-		Order:              errorreportingpb.ErrorGroupOrder_COUNT_DESC,
-	}
-	if serviceFilter != "" || versionFilter != "" {
-		req.ServiceFilter = &errorreportingpb.ServiceContextFilter{
-			Service: serviceFilter,
-			Version: versionFilter,
-		}
-	}
-
-	it := client.ListGroupStats(ctx, req)
-
-	var stats []*errorreportingpb.ErrorGroupStats
-	for i := 0; i < limit; i++ {
-		s, err := it.Next()
-		if errors.Is(err, iterator.Done) {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("iterating error group stats: %w", err)
-		}
-		stats = append(stats, s)
-	}
-
-	result := analyzeTrendStats(stats, window)
-	result.TimeRangeBegin = time.Now().Add(-spec.Span).UTC().Format(time.RFC3339)
-	if resp, ok := it.Response.(*errorreportingpb.ListGroupStatsResponse); ok && resp.TimeRangeBegin != nil {
-		result.TimeRangeBegin = formatTimestamp(resp.TimeRangeBegin)
-	}
-	if tok := it.PageInfo().Token; tok != "" {
+	result := analyzeTrendStats(page.stats, window)
+	result.TimeRangeBegin = page.timeRangeBegin
+	if page.truncated {
 		result.Truncated = true
 		result.TruncationHint = fmt.Sprintf("Analyzed the first %d error group(s) by total count; more groups exist for this window. Narrow service/version filters or lower the time range for a focused result.", limit)
 	}

@@ -20,11 +20,7 @@ func RegisterTraceFindFromLogs(s *mcp.Server, d Deps) {
 			"Groups the matching entries by trace ID and returns distinct traces with log volume, severity, service, and a sample message. "+
 			"Bridges the 'found an error in logs -> inspect its trace' workflow: filter for the logs you care about, then pivot to trace_get or logs_by_trace on the returned IDs. "+
 			"Unlike logs_find_requests (HTTP requests only), this works with any log filter."),
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			OpenWorldHint:  new(true),
-			IdempotentHint: true,
-		},
+		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[TraceFindFromLogsInput](d.Project,
 			nonEmptyProp("filter"),
 		),
@@ -49,7 +45,7 @@ func RegisterTraceFindFromLogs(s *mcp.Server, d Deps) {
 		result, err := d.Logs.FindTracesFromLogs(ctx, project, in.Filter, timeFilter, scanLimit, resultLimit)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "trace_find_from_logs", fmt.Sprintf("find traces from logs failed: %v", err))
-			return errResult(fmt.Sprintf("Failed to find traces from logs: %v. Verify the project_id and filter syntax.", err)), nil, nil
+			return gcpErrorResult(fmt.Sprintf("Failed to find traces from logs: %v", err), err, "Verify the project_id and filter syntax."), nil, nil
 		}
 		if result.Truncated && result.TruncationHint != "" {
 			mcpLog(ctx, req, logLevelWarning, "trace_find_from_logs", result.TruncationHint)

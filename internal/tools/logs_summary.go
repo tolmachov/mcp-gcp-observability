@@ -16,11 +16,7 @@ func RegisterLogsSummary(s *mcp.Server, d Deps) {
 		Description: applyMode(d.Mode, "Get an aggregated summary of logs (based on up to 200 sampled entries): severity distribution, top services, top errors, and sample entries. "+
 			"Useful for initial triage before drilling down with logs_query or logs_k8s. "+
 			"Does NOT return full log entries — use logs_query for that."),
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			OpenWorldHint:  new(true),
-			IdempotentHint: true,
-		},
+		Annotations:  readOnlyAnnotations,
 		InputSchema:  projectInputSchema[LogsSummaryInput](d.Project),
 		OutputSchema: outputSchemaFor[gcpdata.LogsSummary](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsSummaryInput) (*mcp.CallToolResult, *gcpdata.LogsSummary, error) {
@@ -45,7 +41,7 @@ func RegisterLogsSummary(s *mcp.Server, d Deps) {
 			})
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "logs_summary", fmt.Sprintf("summarize failed for project %s: %v", project, err))
-			return errResult(fmt.Sprintf("Failed to summarize logs: %v. Verify the project_id and filter syntax.", err)), nil, nil
+			return gcpErrorResult(fmt.Sprintf("Failed to summarize logs: %v", err), err, "Verify the project_id and filter syntax."), nil, nil
 		}
 
 		sendProgress(ctx, req, LogsHardLimit, LogsHardLimit, "Aggregating results")

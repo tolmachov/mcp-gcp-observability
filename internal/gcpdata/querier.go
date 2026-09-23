@@ -59,25 +59,9 @@ func NewMonitoringQuerier(client *monitoring.MetricClient) *MonitoringQuerier {
 	}
 	return &MonitoringQuerier{
 		client:          client,
-		listDescriptors: ListMonitoredResourceDescriptors,
+		listDescriptors: listMonitoredResourceDescriptors,
 		resourceLabels:  sharedResourceLabels,
 	}
-}
-
-func (q *MonitoringQuerier) GetMetricDescriptor(ctx context.Context, project, metricType string) (MetricDescriptorBasic, error) {
-	return GetMetricDescriptor(ctx, q.client, project, metricType)
-}
-
-func (q *MonitoringQuerier) ListMetricDescriptors(ctx context.Context, project, filter string, limit int) ([]MetricDescriptorInfo, error) {
-	return ListMetricDescriptors(ctx, q.client, project, filter, limit)
-}
-
-func (q *MonitoringQuerier) QueryTimeSeries(ctx context.Context, params QueryTimeSeriesParams) ([]MetricTimeSeries, QueryWarnings, error) {
-	return QueryTimeSeries(ctx, q.client, params)
-}
-
-func (q *MonitoringQuerier) QueryTimeSeriesAggregated(ctx context.Context, params QueryTimeSeriesParams, spec metrics.AggregationSpec) ([]MetricTimeSeries, QueryWarnings, error) {
-	return QueryTimeSeriesAggregated(ctx, q.client, params, spec)
 }
 
 // GetResourceLabels returns label keys for a monitored resource type, or

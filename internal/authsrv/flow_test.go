@@ -270,7 +270,7 @@ func TestFullAuthorizationFlow(t *testing.T) {
 	assert.Positive(t, tr.ExpiresIn)
 
 	// The verifier accepts the access token and exposes the identity.
-	info, err := a.Verifier()(context.Background(), tr.AccessToken, nil)
+	info, err := a.verifyAccessToken(context.Background(), tr.AccessToken)
 	require.NoError(t, err)
 	assert.Equal(t, "sub-123", info.UserID)
 	extra, ok := info.Extra[extraIdentityKey].(identityExtra)
@@ -290,7 +290,7 @@ func TestFullAuthorizationFlow(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	var refreshed tokenResponse
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&refreshed))
-	info2, err := a.Verifier()(context.Background(), refreshed.AccessToken, nil)
+	info2, err := a.verifyAccessToken(context.Background(), refreshed.AccessToken)
 	require.NoError(t, err)
 	extra2, ok := info2.Extra[extraIdentityKey].(identityExtra)
 	require.True(t, ok)
@@ -607,23 +607,23 @@ func TestVerifierRejections(t *testing.T) {
 	require.Equal(t, http.StatusOK, status)
 
 	t.Run("garbage token", func(t *testing.T) {
-		_, err := a.Verifier()(context.Background(), "mcp_at_garbage", nil)
+		_, err := a.verifyAccessToken(context.Background(), "mcp_at_garbage")
 		assert.ErrorIs(t, err, auth.ErrInvalidToken)
 	})
 	t.Run("refresh token is not an access token", func(t *testing.T) {
-		_, err := a.Verifier()(context.Background(), tr.RefreshToken, nil)
+		_, err := a.verifyAccessToken(context.Background(), tr.RefreshToken)
 		assert.ErrorIs(t, err, auth.ErrInvalidToken)
 	})
 	t.Run("expired token", func(t *testing.T) {
 		a.now = func() time.Time { return time.Now().Add(2 * time.Hour) }
 		t.Cleanup(func() { a.now = time.Now })
-		_, err := a.Verifier()(context.Background(), tr.AccessToken, nil)
+		_, err := a.verifyAccessToken(context.Background(), tr.AccessToken)
 		assert.ErrorIs(t, err, auth.ErrInvalidToken)
 	})
 	t.Run("domain removed from allowlist", func(t *testing.T) {
 		a.cfg.AllowedDomains = []string{"other.example"}
 		t.Cleanup(func() { a.cfg.AllowedDomains = []string{"example.com"} })
-		_, err := a.Verifier()(context.Background(), tr.AccessToken, nil)
+		_, err := a.verifyAccessToken(context.Background(), tr.AccessToken)
 		assert.ErrorIs(t, err, auth.ErrInvalidToken)
 	})
 }

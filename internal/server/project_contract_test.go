@@ -8,7 +8,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 	"github.com/tolmachov/mcp-gcp-observability/internal/tools"
 )
@@ -19,8 +18,13 @@ func projectContractSession(t *testing.T, pinned string) *mcp.ClientSession {
 	s.project = tools.MustProjectPolicy(pinned)
 	s.completer.project = s.project
 	srv := s.newMCPInstance(s.completer)
-	client := gcpclient.NewForTesting(gcpclient.Config{DefaultProject: pinned})
-	s.registerResources(srv, client, metrics.NewRegistry())
+	s.registerResources(srv, tools.Deps{
+		Logs:     stubBackends{},
+		Errors:   stubBackends{},
+		Traces:   stubBackends{},
+		Registry: metrics.NewRegistry(),
+		Project:  s.project,
+	})
 	s.registerPrompts(srv)
 	ct, st := mcp.NewInMemoryTransports()
 	ctx, cancel := context.WithCancel(context.Background())

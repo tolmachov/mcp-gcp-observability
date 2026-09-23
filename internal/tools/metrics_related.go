@@ -12,7 +12,6 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
@@ -25,24 +24,15 @@ import (
 // operators need to see Partial=true when it occurs. This distinction drives
 // the rpcFailures counter and the all-failed error path.
 func classifyErr(err error) (reason string, benign bool) {
-	if err == nil {
+	switch errorCode(err) {
+	case codes.OK:
 		return "", true
-	}
-	if errors.Is(err, context.Canceled) {
+	case codes.Canceled:
 		return "canceled", true
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
+	case codes.DeadlineExceeded:
 		return fmt.Sprintf("deadline exceeded: %v", err), false
-	}
-	if st, ok := status.FromError(err); ok {
-		switch st.Code() {
-		case codes.Canceled:
-			return "canceled", true
-		case codes.DeadlineExceeded:
-			return fmt.Sprintf("deadline exceeded: %v", err), false
-		case codes.NotFound:
-			return fmt.Sprintf("metric type not found in project — check the registry entry is correct: %v", err), false
-		}
+	case codes.NotFound:
+		return fmt.Sprintf("metric type not found in project — check the registry entry is correct: %v", err), false
 	}
 	return err.Error(), false
 }
@@ -63,11 +53,7 @@ func RegisterMetricsRelated(s *mcp.Server, d Deps) {
 			"Requires the metric to be configured in the registry with related_metrics. "+
 			"Use this after metrics_snapshot to understand whether correlated signals moved together. "+
 			"For breaking down a single metric by dimension, use metrics_top_contributors instead."),
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			OpenWorldHint:  new(true),
-			IdempotentHint: true,
-		},
+		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[MetricsRelatedInput](d.Project,
 			nonEmptyProp("metric_type"),
 			enumProp("window", metricWindowNames()),
@@ -102,6 +88,7 @@ func RegisterMetricsRelated(s *mcp.Server, d Deps) {
 		var signals []RelatedSignal
 		var skipped []SkippedSignal
 		var rpcFailures int
+		var firstFailure error // guides the error result when every signal fails
 		var warningNotes []string
 		var mu sync.Mutex
 		completed := float64(0)
@@ -115,6 +102,16 @@ func RegisterMetricsRelated(s *mcp.Server, d Deps) {
 			if !benign {
 				rpcFailures++
 			}
+		}
+		// skipFailed records a failed GCP call for relMetric as a skip.
+		skipFailed := func(relMetric, what string, err error) {
+			reason, benign := classifyErr(err)
+			mu.Lock()
+			if !benign && firstFailure == nil {
+				firstFailure = err
+			}
+			mu.Unlock()
+			addSkip(relMetric, what+": "+reason, benign)
 		}
 		addWarningNote := func(note string) {
 			mu.Lock()
@@ -132,8 +129,7 @@ func RegisterMetricsRelated(s *mcp.Server, d Deps) {
 			if err != nil {
 				mcpLog(ctx, req, logLevelWarning, "metrics_related",
 					fmt.Sprintf("descriptor lookup failed for %s: %v", relMetric, err))
-				reason, benign := classifyErr(err)
-				addSkip(relMetric, fmt.Sprintf("failed to get metric descriptor: %s", reason), benign)
+				skipFailed(relMetric, "failed to get metric descriptor", err)
 				return nil
 			}
 
@@ -165,8 +161,7 @@ func RegisterMetricsRelated(s *mcp.Server, d Deps) {
 			if current.err != nil {
 				mcpLog(ctx, req, logLevelWarning, "metrics_related",
 					fmt.Sprintf("current window query failed for %s: %v", relMetric, current.err))
-				reason, benign := classifyErr(current.err)
-				addSkip(relMetric, fmt.Sprintf("query failed: %s", reason), benign)
+				skipFailed(relMetric, "query failed", current.err)
 				return nil
 			}
 
@@ -181,8 +176,7 @@ func RegisterMetricsRelated(s *mcp.Server, d Deps) {
 			if baseline.err != nil {
 				mcpLog(ctx, req, logLevelWarning, "metrics_related",
 					fmt.Sprintf("baseline query failed for %s: %v", relMetric, baseline.err))
-				reason, benign := classifyErr(baseline.err)
-				addSkip(relMetric, fmt.Sprintf("baseline query failed: %s", reason), benign)
+				skipFailed(relMetric, "baseline query failed", baseline.err)
 				return nil
 			}
 			expectedBaseline := expectedPointsForWindow(windowDur, int(stepSeconds))
@@ -235,7 +229,7 @@ func RegisterMetricsRelated(s *mcp.Server, d Deps) {
 			msg := fmt.Sprintf("All related signal queries failed (or were skipped) and %d had real RPC failures — correlation coverage is unavailable. Reasons: %s",
 				rpcFailures, strings.Join(reasons, "; "))
 			mcpLog(ctx, req, logLevelError, "metrics_related", msg)
-			return errResult(msg), nil, nil
+			return gcpErrorResult(msg, firstFailure, ""), nil, nil
 		}
 
 		var partialNote string

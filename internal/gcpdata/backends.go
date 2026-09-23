@@ -15,7 +15,8 @@ import (
 // cloud trace, cloud profiler) plus a concrete implementation that wraps the
 // corresponding SDK client. It mirrors MetricsQuerier/MonitoringQuerier: tool
 // handlers depend on the interface so they can be unit-tested with fakes, while
-// the concrete wrappers forward to the package's free functions.
+// the concrete querier types implement the operations as methods on the SDK
+// client they wrap.
 
 // LogsQuerier abstracts Cloud Logging read operations used by tool handlers.
 type LogsQuerier interface {
@@ -67,34 +68,6 @@ func NewLoggingQuerier(client *logging.Client) *LoggingQuerier {
 	return &LoggingQuerier{client: client}
 }
 
-func (q *LoggingQuerier) QueryLogs(ctx context.Context, project, filter string, limit int, order, pageToken string) (*LogQueryResult, error) {
-	return QueryLogs(ctx, q.client, project, filter, limit, order, pageToken)
-}
-
-func (q *LoggingQuerier) QueryLogsByTrace(ctx context.Context, project, traceID, timeFilter string, limit int, pageToken string) (*LogQueryResult, error) {
-	return QueryLogsByTrace(ctx, q.client, project, traceID, timeFilter, limit, pageToken)
-}
-
-func (q *LoggingQuerier) QueryLogsByRequestID(ctx context.Context, project, requestID, timeFilter string, limit int, pageToken string) (*LogQueryResult, error) {
-	return QueryLogsByRequestID(ctx, q.client, project, requestID, timeFilter, limit, pageToken)
-}
-
-func (q *LoggingQuerier) FindRequests(ctx context.Context, params FindRequestsParams) (*RequestList, error) {
-	return FindRequests(ctx, q.client, params)
-}
-
-func (q *LoggingQuerier) ListServices(ctx context.Context, project, timeFilter string) (*ServiceList, error) {
-	return ListServices(ctx, q.client, project, timeFilter)
-}
-
-func (q *LoggingQuerier) SummarizeLogs(ctx context.Context, project, filter string, onProgress ProgressFunc) (*LogsSummary, error) {
-	return SummarizeLogs(ctx, q.client, project, filter, onProgress)
-}
-
-func (q *LoggingQuerier) FindTracesFromLogs(ctx context.Context, project, filter, timeFilter string, scanLimit, resultLimit int) (*TraceFromLogsList, error) {
-	return FindTracesFromLogs(ctx, q.client, project, filter, timeFilter, scanLimit, resultLimit)
-}
-
 // ErrorReportingQuerier implements ErrorsQuerier against a real Error Reporting client.
 type ErrorReportingQuerier struct {
 	client *errorreporting.ErrorStatsClient
@@ -108,18 +81,6 @@ func NewErrorReportingQuerier(client *errorreporting.ErrorStatsClient) *ErrorRep
 	return &ErrorReportingQuerier{client: client}
 }
 
-func (q *ErrorReportingQuerier) ListErrors(ctx context.Context, project string, window ErrorWindow, limit int, serviceFilter, versionFilter string) (*ErrorGroupList, error) {
-	return ListErrors(ctx, q.client, project, window, limit, serviceFilter, versionFilter)
-}
-
-func (q *ErrorReportingQuerier) GetErrorGroup(ctx context.Context, project, groupID string, limit int, pageToken string) (*ErrorGroupDetail, error) {
-	return GetErrorGroup(ctx, q.client, project, groupID, limit, pageToken)
-}
-
-func (q *ErrorReportingQuerier) AnalyzeErrorTrends(ctx context.Context, project string, window ErrorWindow, limit int, serviceFilter, versionFilter string) (*ErrorTrendList, error) {
-	return AnalyzeErrorTrends(ctx, q.client, project, window, limit, serviceFilter, versionFilter)
-}
-
 // CloudTraceQuerier implements TraceQuerier against a real Cloud Trace client.
 type CloudTraceQuerier struct{ client *cloudtrace.Client }
 
@@ -129,14 +90,6 @@ func NewCloudTraceQuerier(client *cloudtrace.Client) *CloudTraceQuerier {
 		panic("NewCloudTraceQuerier: client must not be nil")
 	}
 	return &CloudTraceQuerier{client: client}
-}
-
-func (q *CloudTraceQuerier) GetTrace(ctx context.Context, project, traceID string) (*TraceDetail, error) {
-	return GetTrace(ctx, q.client, project, traceID)
-}
-
-func (q *CloudTraceQuerier) ListTraces(ctx context.Context, project, filter, view, orderBy string, startTime, endTime time.Time, pageSize int, pageToken string) (*TraceListResult, error) {
-	return ListTraces(ctx, q.client, project, filter, view, orderBy, startTime, endTime, pageSize, pageToken)
 }
 
 // CloudProfilerQuerier implements ProfilerQuerier against a real Cloud Profiler
@@ -158,24 +111,4 @@ func NewCloudProfilerQuerier(svc *cloudprofiler.ExportClient) *CloudProfilerQuer
 func (q *CloudProfilerQuerier) Close() error {
 	q.cache.Close()
 	return nil
-}
-
-func (q *CloudProfilerQuerier) ListProfiles(ctx context.Context, params ListProfilesParams) (*ProfileListResult, error) {
-	return ListProfiles(ctx, q.svc, params)
-}
-
-func (q *CloudProfilerQuerier) GetOrFetchProfile(ctx context.Context, project, profileName string) (*profile.Profile, ProfileMeta, error) {
-	return GetOrFetchProfile(ctx, q.svc, q.cache, project, profileName)
-}
-
-func (q *CloudProfilerQuerier) GetProfileOrDiff(ctx context.Context, project, profileName, baseProfileName string) (*profile.Profile, ProfileMeta, error) {
-	return GetProfileOrDiff(ctx, q.svc, q.cache, project, profileName, baseProfileName)
-}
-
-func (q *CloudProfilerQuerier) CompareProfiles(ctx context.Context, project, currentID, baseID string, valueIndex, topN int) (*ProfileCompareResult, error) {
-	return CompareProfiles(ctx, q.svc, q.cache, project, currentID, baseID, valueIndex, topN)
-}
-
-func (q *CloudProfilerQuerier) ComputeTrends(ctx context.Context, params ComputeTrendsParams, progressFn func(current, total int, msg string)) (*ProfileTrendsResult, error) {
-	return ComputeTrends(ctx, q.svc, q.cache, params, progressFn)
 }

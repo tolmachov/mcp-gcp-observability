@@ -15,7 +15,6 @@ import (
 	"google.golang.org/api/iterator"
 	"google.golang.org/protobuf/encoding/protojson"
 
-	logging "cloud.google.com/go/logging/apiv2"
 	"cloud.google.com/go/logging/apiv2/loggingpb"
 	logtypepb "google.golang.org/genproto/googleapis/logging/type"
 )
@@ -34,7 +33,7 @@ var requestIDFieldPaths = []string{
 }
 
 // QueryLogs executes an arbitrary Cloud Logging query.
-func QueryLogs(ctx context.Context, client *logging.Client, project, filter string, limit int, order, pageToken string) (*LogQueryResult, error) {
+func (q *LoggingQuerier) QueryLogs(ctx context.Context, project, filter string, limit int, order, pageToken string) (*LogQueryResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, logQueryTimeout)
 	defer cancel()
 
@@ -52,50 +51,21 @@ func QueryLogs(ctx context.Context, client *logging.Client, project, filter stri
 		ResourceNames: []string{fmt.Sprintf("projects/%s", project)},
 		Filter:        filter,
 		OrderBy:       orderBy,
-		PageSize:      safeInt32(limit),
 		PageToken:     pageToken,
 	}
 
-	return fetchLogEntries(ctx, client, req, limit)
+	return q.fetchLogEntries(ctx, req, limit)
 }
 
-// QueryLogsByTrace retrieves all logs for a given trace ID.
-func QueryLogsByTrace(ctx context.Context, client *logging.Client, project, traceID, timeFilter string, limit int, pageToken string) (*LogQueryResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, logQueryTimeout)
-	defer cancel()
-
-	filter := AppendFilter(
-		fmt.Sprintf(`trace="projects/%s/traces/%s"`, project, EscapeFilterValue(traceID)),
-		timeFilter,
-	)
-
-	req := &loggingpb.ListLogEntriesRequest{
-		ResourceNames: []string{fmt.Sprintf("projects/%s", project)},
-		Filter:        filter,
-		OrderBy:       "timestamp asc",
-		PageSize:      safeInt32(limit),
-		PageToken:     pageToken,
-	}
-
-	return fetchLogEntries(ctx, client, req, limit)
+// QueryLogsByTrace retrieves all logs for a given trace ID, oldest first.
+func (q *LoggingQuerier) QueryLogsByTrace(ctx context.Context, project, traceID, timeFilter string, limit int, pageToken string) (*LogQueryResult, error) {
+	filter := fmt.Sprintf(`trace="projects/%s/traces/%s"`, project, EscapeFilterValue(traceID))
+	return q.QueryLogs(ctx, project, AppendFilter(filter, timeFilter), limit, "asc", pageToken)
 }
 
-// QueryLogsByRequestID retrieves all logs for a given request ID.
-func QueryLogsByRequestID(ctx context.Context, client *logging.Client, project, requestID, timeFilter string, limit int, pageToken string) (*LogQueryResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, logQueryTimeout)
-	defer cancel()
-
-	filter := AppendFilter(requestIDFilter(requestID), timeFilter)
-
-	req := &loggingpb.ListLogEntriesRequest{
-		ResourceNames: []string{fmt.Sprintf("projects/%s", project)},
-		Filter:        filter,
-		OrderBy:       "timestamp asc",
-		PageSize:      safeInt32(limit),
-		PageToken:     pageToken,
-	}
-
-	return fetchLogEntries(ctx, client, req, limit)
+// QueryLogsByRequestID retrieves all logs for a given request ID, oldest first.
+func (q *LoggingQuerier) QueryLogsByRequestID(ctx context.Context, project, requestID, timeFilter string, limit int, pageToken string) (*LogQueryResult, error) {
+	return q.QueryLogs(ctx, project, AppendFilter(requestIDFilter(requestID), timeFilter), limit, "asc", pageToken)
 }
 
 // FindRequests finds HTTP requests matching the given URL pattern.
@@ -112,7 +82,7 @@ type FindRequestsParams struct {
 	Limit      int
 }
 
-func FindRequests(ctx context.Context, client *logging.Client, params FindRequestsParams) (*RequestList, error) {
+func (q *LoggingQuerier) FindRequests(ctx context.Context, params FindRequestsParams) (*RequestList, error) {
 	ctx, cancel := context.WithTimeout(ctx, logQueryTimeout)
 	defer cancel()
 
@@ -143,7 +113,7 @@ func FindRequests(ctx context.Context, client *logging.Client, params FindReques
 		PageSize:      safeInt32(pageSize),
 	}
 
-	it := client.ListLogEntries(ctx, req)
+	it := q.client.ListLogEntries(ctx, req)
 
 	var requests []RequestInfo
 	truncated := false
@@ -238,11 +208,12 @@ func extractRequestID(entry *loggingpb.LogEntry) string {
 	return ""
 }
 
-// fetchLogEntries is a shared helper for querying log entries.
-func fetchLogEntries(ctx context.Context, client *logging.Client, req *loggingpb.ListLogEntriesRequest, limit int) (*LogQueryResult, error) {
+// fetchLogEntries reads up to limit (capped at LogsHardLimit) entries for req
+// and sets its page size to match.
+func (q *LoggingQuerier) fetchLogEntries(ctx context.Context, req *loggingpb.ListLogEntriesRequest, limit int) (*LogQueryResult, error) {
 	limit = min(limit, LogsHardLimit)
 	req.PageSize = safeInt32(limit)
-	it := client.ListLogEntries(ctx, req)
+	it := q.client.ListLogEntries(ctx, req)
 
 	var entries []LogEntry
 	for i := 0; i < limit; i++ {
@@ -269,7 +240,7 @@ func fetchLogEntries(ctx context.Context, client *logging.Client, req *loggingpb
 }
 
 // ListServices discovers unique services by scanning recent logs for common GCP resource types.
-func ListServices(ctx context.Context, client *logging.Client, project, timeFilter string) (*ServiceList, error) {
+func (q *LoggingQuerier) ListServices(ctx context.Context, project, timeFilter string) (*ServiceList, error) {
 	ctx, cancel := context.WithTimeout(ctx, logQueryTimeout)
 	defer cancel()
 
@@ -287,7 +258,7 @@ func ListServices(ctx context.Context, client *logging.Client, project, timeFilt
 		PageSize:      maxServicesScan,
 	}
 
-	it := client.ListLogEntries(ctx, req)
+	it := q.client.ListLogEntries(ctx, req)
 
 	scanned := 0
 	seen := make(map[string]ServiceInfo)
@@ -384,7 +355,7 @@ type ProgressFunc func(scanned, total int)
 
 // SummarizeLogs aggregates log statistics by scanning up to maxScan recent entries matching the filter.
 // If onProgress is non-nil, it is invoked every 20 scanned entries with (scanned, maxScan).
-func SummarizeLogs(ctx context.Context, client *logging.Client, project, filter string, onProgress ProgressFunc) (*LogsSummary, error) {
+func (q *LoggingQuerier) SummarizeLogs(ctx context.Context, project, filter string, onProgress ProgressFunc) (*LogsSummary, error) {
 	ctx, cancel := context.WithTimeout(ctx, logQueryTimeout)
 	defer cancel()
 
@@ -397,7 +368,7 @@ func SummarizeLogs(ctx context.Context, client *logging.Client, project, filter 
 		PageSize:      maxScan,
 	}
 
-	it := client.ListLogEntries(ctx, req)
+	it := q.client.ListLogEntries(ctx, req)
 
 	severityDist := make(map[string]int)
 	serviceCounts := make(map[string]int)
@@ -475,10 +446,7 @@ func extractErrorMessage(entry *loggingpb.LogEntry) string {
 			}
 		}
 	}
-	if len(msg) > maxErrorMessageLen {
-		msg = msg[:maxErrorMessageLen]
-	}
-	return msg
+	return truncateUTF8(msg, maxErrorMessageLen)
 }
 
 // topNBy returns the top N entries from a string->int count map, sorted
@@ -665,12 +633,13 @@ func boundLogEntry(le LogEntry) LogEntry {
 	return le
 }
 
+// truncateUTF8 cuts s to at most maxBytes without splitting a rune.
 func truncateUTF8(s string, maxBytes int) string {
 	if len(s) <= maxBytes {
 		return s
 	}
 	cut := maxBytes
-	for cut > 0 && !utf8.ValidString(s[:cut]) {
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
 		cut--
 	}
 	return s[:cut]

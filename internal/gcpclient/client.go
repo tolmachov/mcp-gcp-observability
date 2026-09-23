@@ -26,7 +26,6 @@ type Client struct {
 	trace      *cloudtrace.Client
 	monitoring *monitoring.MetricClient
 	profiler   *cloudprofiler.ExportClient
-	config     *Config
 	closeOnce  sync.Once
 	closeErr   error
 }
@@ -45,18 +44,6 @@ func (c *Client) MonitoringClient() *monitoring.MetricClient { return c.monitori
 
 // ProfilerClient returns the Cloud Profiler gRPC export client.
 func (c *Client) ProfilerService() *cloudprofiler.ExportClient { return c.profiler }
-
-// Config returns a copy of the client configuration.
-func (c *Client) Config() Config { return *c.config }
-
-// NewForTesting constructs a Client wrapping the given config without
-// initializing any GCP API clients. Config() works; the *Client getters
-// (LoggingClient, ErrorsClient, etc.) all return nil. Use only in tests
-// that need to register tools or build resources but do not invoke handlers.
-func NewForTesting(cfg Config) *Client {
-	cfgCopy := cfg
-	return &Client{config: &cfgCopy}
-}
 
 // New creates a new GCP client with Logging, Error Reporting, Cloud Trace, Cloud Monitoring,
 // and Cloud Profiler API clients, authenticated via Application Default Credentials.
@@ -114,14 +101,12 @@ func newWithOpts(ctx context.Context, cfg *Config, extra []option.ClientOption) 
 		return nil, errors.Join(fmt.Errorf("creating profiler client: %w", err), loggingClient.Close(), errorsClient.Close(), traceClient.Close(), monitoringClient.Close())
 	}
 
-	cfgCopy := *cfg
 	return &Client{
 		logging:    loggingClient,
 		errors:     errorsClient,
 		trace:      traceClient,
 		monitoring: monitoringClient,
 		profiler:   profilerClient,
-		config:     &cfgCopy,
 	}, nil
 }
 
