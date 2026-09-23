@@ -11,8 +11,9 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
 
-// traceSpanSchema is a hand-written JSON schema for TraceSpan that uses
-// $ref/$defs to express the recursive Children field. The go-sdk's
+// traceDetailSchema is a hand-written JSON schema for TraceDetail; its
+// TraceSpan definition uses $ref/$defs to express the recursive Children
+// field. The go-sdk's
 // jsonschema-go library cannot auto-generate schemas for recursive types
 // (it panics with "cycle detected"), so we provide the output schema
 // explicitly.

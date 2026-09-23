@@ -84,6 +84,9 @@ func LoadRegistry(path string) (*Registry, error) {
 	if err := decodeRegistryYAML(data, &overlay); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
+	if err := rejectOverlayNulls(data); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
 
 	// Validate every entry in sorted order for deterministic, complete error reporting.
 	var overlayErrs []error
@@ -115,9 +118,55 @@ func decodeRegistryYAML(data []byte, v any) error {
 	return nil
 }
 
+// rejectOverlayNulls fails on an explicit null (`key:`, `key: null`, `~`)
+// in an overlay metric entry, reporting every one with its line. The typed
+// decode cannot tell a null from an absent key — both leave the field nil —
+// so a null meant to clear a base value would be silently ignored.
+func rejectOverlayNulls(data []byte) error {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("decoding registry YAML: %w", err)
+	}
+	if len(doc.Content) == 0 {
+		return nil
+	}
+	var errs []error
+	root := doc.Content[0]
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value != "metrics" {
+			continue
+		}
+		entries := root.Content[i+1]
+		for j := 0; j+1 < len(entries.Content); j += 2 {
+			errs = appendNulls(errs, entries.Content[j+1], "metrics."+entries.Content[j].Value)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// appendNulls appends an error for every null node in the tree at n, whose
+// YAML path is path.
+func appendNulls(errs []error, n *yaml.Node, path string) []error {
+	switch n.Kind {
+	case yaml.ScalarNode:
+		if n.ShortTag() == "!!null" {
+			errs = append(errs, fmt.Errorf("line %d: %s is null; omit the key to keep the base value", n.Line, path))
+		}
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			errs = appendNulls(errs, n.Content[i+1], path+"."+n.Content[i].Value)
+		}
+	case yaml.SequenceNode:
+		for i, item := range n.Content {
+			errs = appendNulls(errs, item, fmt.Sprintf("%s[%d]", path, i))
+		}
+	}
+	return errs
+}
+
 // metricOverlay is one metric entry of a registry overlay file. Pointer and
-// slice fields are nil when the key is absent, so only keys present in the
-// YAML touch the base entry.
+// slice fields are nil when the key is absent (rejectOverlayNulls rules out
+// explicit nulls), so only keys present in the YAML touch the base entry.
 type metricOverlay struct {
 	Kind            *MetricKind        `yaml:"kind"`
 	Unit            *string            `yaml:"unit"`
@@ -215,7 +264,7 @@ func (r *Registry) Lookup(metricType string) MetricMeta {
 // type order. The match substring is compared (case-insensitive) against
 // three things in order: the full metric type, the auto-derived service
 // token (e.g. "pubsub" from "pubsub.googleapis.com/..."), and the metric's
-// Keywords. The first hit wins. This lets callers find metrics by category
+// Keywords. This lets callers find metrics by category
 // synonyms like "queue", "cache", or "database" even when the metric name
 // doesn't contain that word.
 func (r *Registry) List(match string, kind MetricKind) iter.Seq2[string, MetricMeta] {

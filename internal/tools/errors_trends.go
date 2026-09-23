@@ -20,7 +20,7 @@ func RegisterErrorsTrends(s *mcp.Server, d Deps) {
 			"Note: Error Reporting supports only lookback periods ending now, so the comparison is intra-window (first half vs second half), not against an arbitrary historical baseline."),
 		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[ErrorsListInput](d.Project,
-			enumProp("window", gcpdata.ErrorWindows()),
+			enumProp("window", gcpdata.ErrorWindows(), gcpdata.ErrorWindow24H),
 		),
 		OutputSchema: outputSchemaFor[gcpdata.ErrorTrendList](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ErrorsListInput) (*mcp.CallToolResult, *gcpdata.ErrorTrendList, error) {
@@ -29,7 +29,7 @@ func RegisterErrorsTrends(s *mcp.Server, d Deps) {
 			return errResult(err.Error()), nil, nil
 		}
 
-		window := errorsWindowOrDefault(in.Window)
+		window := gcpdata.ErrorWindow(in.Window)
 
 		limit := clampLimit(in.Limit, 50, ErrorsHardLimit)
 

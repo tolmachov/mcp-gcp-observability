@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +12,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
@@ -131,6 +135,57 @@ func TestTraceGetHandler(t *testing.T) {
 		assert.False(t, res.IsError)
 		assert.Equal(t, "abc123", gotTraceID)
 	})
+
+	for _, tc := range []struct {
+		code codes.Code
+		want string
+	}{
+		{codes.InvalidArgument, "Verify the trace_id is a valid 32-character hex string (not the full resource path). Use logs_find_requests to discover valid trace IDs."},
+		{codes.NotFound, "The trace does not exist in this project, may have aged out of retention, or the trace_id/project_id pair is wrong."},
+		{codes.Internal, "Verify the project_id, credentials, and that Cloud Trace API is enabled."},
+	} {
+		t.Run("guidance for "+tc.code.String(), func(t *testing.T) {
+			deps := Deps{
+				Traces: fakeTraces{getTrace: func(context.Context, string, string) (*gcpdata.TraceDetail, error) {
+					return nil, status.Error(tc.code, "failed")
+				}},
+				Project: MustProjectPolicy("test-project"),
+			}
+			ts := newTestToolServer(t)
+			RegisterTraceGet(ts.server, deps)
+			ts.connect(ctx)
+			defer ts.close()
+
+			res, err := ts.callTool(ctx, "trace_get", map[string]any{"trace_id": "abc123"})
+			require.NoError(t, err)
+			require.True(t, res.IsError)
+			assert.True(t, strings.HasSuffix(textFromResult(t, res), ". "+tc.want), textFromResult(t, res))
+		})
+	}
+}
+
+// TestProfilerTrendsDeadlineGuidance pins that a trends scan that ran out of
+// its time budget advises narrowing the scan instead of the shared "retry"
+// advice.
+func TestProfilerTrendsDeadlineGuidance(t *testing.T) {
+	ctx := context.Background()
+	deps := Deps{
+		Profiler: fakeProfiler{computeTrend: func(context.Context, gcpdata.ComputeTrendsParams, func(int, int, string)) (*gcpdata.ProfileTrendsResult, error) {
+			return nil, fmt.Errorf("scanning profiles: %w", context.DeadlineExceeded)
+		}},
+		Project: MustProjectPolicy("test-project"),
+	}
+	ts := newTestToolServer(t)
+	RegisterProfilerTrends(ts.server, deps)
+	ts.connect(ctx)
+	defer ts.close()
+
+	res, err := ts.callTool(ctx, "profiler_trends", map[string]any{"profile_type": "CPU", "target": "svc"})
+	require.NoError(t, err)
+	require.True(t, res.IsError)
+	msg := textFromResult(t, res)
+	assert.Contains(t, msg, "lower max_profiles or pass function_filter")
+	assert.NotContains(t, msg, sharedCodeGuidance[codes.DeadlineExceeded])
 }
 
 // TestErrorPathsSurviveOutputSchema pins the omitempty contract on map-typed

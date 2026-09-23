@@ -19,7 +19,7 @@ func RegisterErrorsList(s *mcp.Server, d Deps) {
 			"The window is one exact Error Reporting period ending at now: 1h, 6h, 24h, 7d, or 30d."),
 		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[ErrorsListInput](d.Project,
-			enumProp("window", gcpdata.ErrorWindows()),
+			enumProp("window", gcpdata.ErrorWindows(), gcpdata.ErrorWindow24H),
 		),
 		OutputSchema: outputSchemaFor[gcpdata.ErrorGroupList](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ErrorsListInput) (*mcp.CallToolResult, *gcpdata.ErrorGroupList, error) {
@@ -28,7 +28,7 @@ func RegisterErrorsList(s *mcp.Server, d Deps) {
 			return errResult(err.Error()), nil, nil
 		}
 
-		window := errorsWindowOrDefault(in.Window)
+		window := gcpdata.ErrorWindow(in.Window)
 
 		limit := clampLimit(in.Limit, 50, ErrorsHardLimit)
 
@@ -42,13 +42,4 @@ func RegisterErrorsList(s *mcp.Server, d Deps) {
 
 		return nil, result, nil
 	})
-}
-
-// errorsWindowOrDefault applies the default window to the schema-validated
-// window input.
-func errorsWindowOrDefault(raw string) gcpdata.ErrorWindow {
-	if raw == "" {
-		return gcpdata.ErrorWindow24H
-	}
-	return gcpdata.ErrorWindow(raw)
 }

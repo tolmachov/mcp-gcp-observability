@@ -20,7 +20,7 @@ func RegisterLogsQuery(s *mcp.Server, d Deps) {
 		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[LogsQueryInput](d.Project,
 			nonEmptyProp("filter"),
-			enumProp("order", sortOrders),
+			enumProp("order", sortOrders, defaultSortOrder),
 		),
 		OutputSchema: outputSchemaFor[gcpdata.LogQueryResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsQueryInput) (*mcp.CallToolResult, *gcpdata.LogQueryResult, error) {
@@ -29,10 +29,6 @@ func RegisterLogsQuery(s *mcp.Server, d Deps) {
 			return errResult(err.Error()), nil, nil
 		}
 		limit := clampLimit(in.Limit, 100, LogsHardLimit)
-		order := in.Order
-		if order == "" {
-			order = "desc"
-		}
 
 		timeFilter, err := buildTimeFilter(in.TimeFilterInput)
 		if err != nil {
@@ -42,7 +38,7 @@ func RegisterLogsQuery(s *mcp.Server, d Deps) {
 
 		sendProgress(ctx, req, 0, 1, "Querying logs...")
 
-		result, err := d.Logs.QueryLogs(ctx, project, filter, limit, order, in.PageToken)
+		result, err := d.Logs.QueryLogs(ctx, project, filter, limit, in.Order, in.PageToken)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "logs_query", fmt.Sprintf("query failed for project %s: %v", project, err))
 			return gcpErrorResult(fmt.Sprintf("Failed to query logs: %v", err), err, "Verify the project_id and filter syntax."), nil, nil

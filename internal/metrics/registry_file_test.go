@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -254,6 +255,50 @@ func TestRegistryOverlay_TypeMismatchCollectsAllErrors(t *testing.T) {
 	} {
 		assert.Contains(t, msg, want, "error message should include all type mismatches")
 	}
+}
+
+// TestRegistryOverlay_RejectsNull pins that an explicit null in an overlay
+// entry fails the load with its line instead of being read as an absent key,
+// which would silently keep the base value the operator meant to change.
+func TestRegistryOverlay_RejectsNull(t *testing.T) {
+	const metric = `"compute.googleapis.com/instance/cpu/utilization"`
+	for _, tc := range []struct {
+		name, entry, want string
+	}{
+		{"slo_threshold null", "    slo_threshold: null\n", "line 3: metrics.compute.googleapis.com/instance/cpu/utilization.slo_threshold is null"},
+		{"aggregation tilde", "    aggregation: ~\n", "line 3: metrics.compute.googleapis.com/instance/cpu/utilization.aggregation is null"},
+		{"empty thresholds", "    thresholds:\n", "line 3: metrics.compute.googleapis.com/instance/cpu/utilization.thresholds is null"},
+		{"nested threshold", "    thresholds:\n      cv_for_noisy: null\n", "line 4: metrics.compute.googleapis.com/instance/cpu/utilization.thresholds.cv_for_noisy is null"},
+		{"empty entry", "", "line 2: metrics.compute.googleapis.com/instance/cpu/utilization is null"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			overlayPath := filepath.Join(t.TempDir(), "overlay.yaml")
+			require.NoError(t, os.WriteFile(overlayPath, []byte("metrics:\n  "+metric+":\n"+tc.entry), 0o644))
+			_, err := LoadRegistry(overlayPath)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+// TestMetricOverlayCoversMetricMeta pins that every YAML key of MetricMeta
+// (and of ClassificationThresholds) can be set by an overlay, so a new field
+// cannot be forgotten in metricOverlay.
+func TestMetricOverlayCoversMetricMeta(t *testing.T) {
+	assert.ElementsMatch(t, yamlKeys(reflect.TypeFor[MetricMeta]()), yamlKeys(reflect.TypeFor[metricOverlay]()))
+	assert.ElementsMatch(t, yamlKeys(reflect.TypeFor[ClassificationThresholds]()), yamlKeys(reflect.TypeFor[thresholdsOverlay]()))
+}
+
+// yamlKeys returns the YAML keys of the fields of struct type typ.
+func yamlKeys(typ reflect.Type) []string {
+	var keys []string
+	for f := range typ.Fields() {
+		name, _, _ := strings.Cut(f.Tag.Get("yaml"), ",")
+		if name != "" && name != "-" {
+			keys = append(keys, name)
+		}
+	}
+	return keys
 }
 
 // loadOverlay is a test helper that writes the given YAML to a temp file

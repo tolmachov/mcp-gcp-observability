@@ -11,44 +11,52 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"google.golang.org/grpc/codes"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
 
-type BaselineMode string
+// baselineMode selects the time ranges a metrics tool compares the current
+// window against.
+type baselineMode string
 
 const (
-	BaselineModePrevWindow      BaselineMode = "prev_window"
-	BaselineModeSameWeekdayHour BaselineMode = "same_weekday_hour"
-	BaselineModePreEvent        BaselineMode = "pre_event"
+	baselinePrevWindow      baselineMode = "prev_window"
+	baselineSameWeekdayHour baselineMode = "same_weekday_hour"
+	baselinePreEvent        baselineMode = "pre_event"
 )
 
 // baselineModes lists the supported baseline modes; the first is the default.
-var baselineModes = []BaselineMode{BaselineModePrevWindow, BaselineModeSameWeekdayHour, BaselineModePreEvent}
+var baselineModes = []baselineMode{baselinePrevWindow, baselineSameWeekdayHour, baselinePreEvent}
 
-// parseBaselineMode resolves the baseline_mode input ("" selects the
-// default) and, for pre_event, parses the required event_time once so a bad
-// value is reported as an input error. eventTime is zero for other modes.
-func parseBaselineMode(raw, eventTimeStr string) (BaselineMode, time.Time, error) {
-	mode := BaselineMode(raw)
-	if mode == "" {
-		mode = baselineModes[0]
+// baselineSpec is a parsed baseline_mode input: the mode and, for pre_event,
+// the event time the baseline ends at (zero for the other modes).
+type baselineSpec struct {
+	mode      baselineMode
+	eventTime time.Time
+}
+
+// parseBaseline resolves the schema-validated baseline_mode input and, for
+// pre_event, parses the required event_time once so a bad value is reported
+// as an input error.
+func parseBaseline(mode, eventTimeStr string) (baselineSpec, error) {
+	b := baselineSpec{mode: baselineMode(mode)}
+	if !slices.Contains(baselineModes, b.mode) {
+		return baselineSpec{}, fmt.Errorf("invalid baseline_mode %q: must be one of %v", mode, baselineModes)
 	}
-	if !slices.Contains(baselineModes, mode) {
-		return "", time.Time{}, fmt.Errorf("invalid baseline_mode %q: must be one of %v", raw, baselineModes)
-	}
-	if mode != BaselineModePreEvent {
-		return mode, time.Time{}, nil
+	if b.mode != baselinePreEvent {
+		return b, nil
 	}
 	if eventTimeStr == "" {
-		return "", time.Time{}, errors.New("event_time is required when baseline_mode is 'pre_event'")
+		return baselineSpec{}, errors.New("event_time is required when baseline_mode is 'pre_event'")
 	}
 	eventTime, err := parseRFC3339Opt(eventTimeStr, "event_time")
 	if err != nil {
-		return "", time.Time{}, err
+		return baselineSpec{}, err
 	}
-	return mode, eventTime, nil
+	b.eventTime = eventTime
+	return b, nil
 }
 
 // weeklyBaselineWeeks is the number of prior same-weekday windows sampled for
@@ -66,26 +74,26 @@ type baselineWindow struct {
 	label      string
 }
 
-// windows returns the time ranges the mode samples as the baseline of the
-// current window [start, end): the window just before it (prev_window), the
-// same wall-clock window in each of the previous weeklyBaselineWeeks weeks
-// (same_weekday_hour), or the preEventBaselineSpan before eventTime
-// (pre_event). eventTime is ignored by the other modes.
-func (m BaselineMode) windows(start, end, eventTime time.Time) []baselineWindow {
-	switch m {
-	case BaselineModeSameWeekdayHour:
+// windows returns the time ranges b samples as the baseline of the current
+// window [start, end): the window just before it (prev_window), the same
+// wall-clock window in each of the previous weeklyBaselineWeeks weeks
+// (same_weekday_hour), or the preEventBaselineSpan before the event time
+// (pre_event).
+func (b baselineSpec) windows(start, end time.Time) []baselineWindow {
+	switch b.mode {
+	case baselineSameWeekdayHour:
 		out := make([]baselineWindow, weeklyBaselineWeeks)
 		for i := range out {
 			days := -7 * (i + 1)
 			out[i] = baselineWindow{
 				start: start.AddDate(0, 0, days),
 				end:   end.AddDate(0, 0, days),
-				label: fmt.Sprintf("baseline (%s week -%d)", m, i+1),
+				label: fmt.Sprintf("baseline (%s week -%d)", b.mode, i+1),
 			}
 		}
 		return out
-	case BaselineModePreEvent:
-		return []baselineWindow{{start: eventTime.Add(-preEventBaselineSpan), end: eventTime, label: "baseline (pre_event)"}}
+	case baselinePreEvent:
+		return []baselineWindow{{start: b.eventTime.Add(-preEventBaselineSpan), end: b.eventTime, label: "baseline (pre_event)"}}
 	default:
 		return []baselineWindow{{start: start.Add(-end.Sub(start)), end: start, label: "baseline (prev_window)"}}
 	}
@@ -107,71 +115,115 @@ func (r windowResult) hasPoints() bool {
 // or the aggregated querier method.
 type queryFunc func(gcpdata.QueryTimeSeriesParams) ([]gcpdata.MetricTimeSeries, gcpdata.QueryWarnings, error)
 
-// queryWithBaseline runs the current-window query and one query per baseline
-// window concurrently: baseline parameters depend only on the current ones,
-// so there is no reason to wait for the current result first. Callers drop
-// the baseline results (without reporting them) when the current window turns
-// out to be empty or failed.
-func queryWithBaseline(ctx context.Context, tool string, current gcpdata.QueryTimeSeriesParams, windows []baselineWindow, query queryFunc) (windowResult, []windowResult) {
-	results := make([]windowResult, 1+len(windows))
-	errs := runParallel(ctx, tool, len(results), 0, func(i int) error {
-		p := current
-		if i > 0 {
-			p.Start, p.End = windows[i-1].start, windows[i-1].end
-		}
+// runQueries runs query once per params concurrently and returns the results
+// by index. A panicking query is recorded as a *panicError in its result.
+func runQueries(ctx context.Context, tool string, params []gcpdata.QueryTimeSeriesParams, query queryFunc) []windowResult {
+	results := make([]windowResult, len(params))
+	errs := runParallel(ctx, tool, len(params), 0, func(i int) error {
 		r := &results[i]
-		r.series, r.warnings, r.err = query(p)
+		r.series, r.warnings, r.err = query(params[i])
 		return r.err
 	})
 	for i, err := range errs {
 		results[i].err = err
 	}
-	return results[0], results[1:]
+	return results
 }
 
-// collectBaseline reports the warnings of every baseline window and applies
+// queryWithBaseline runs the current-window query and then, only when it
+// returned points, one query per baseline window concurrently. A failed or
+// empty current window ends the tool call before the baseline matters, so
+// querying the baseline anyway would only spend Monitoring quota; the
+// baseline results are nil then.
+func queryWithBaseline(ctx context.Context, tool string, current gcpdata.QueryTimeSeriesParams, windows []baselineWindow, query queryFunc) (windowResult, []windowResult) {
+	cur := runQueries(ctx, tool, []gcpdata.QueryTimeSeriesParams{current}, query)[0]
+	if !cur.hasPoints() {
+		return cur, nil
+	}
+	params := make([]gcpdata.QueryTimeSeriesParams, len(windows))
+	for i, w := range windows {
+		params[i] = current
+		params[i].Start, params[i].End = w.start, w.end
+	}
+	return cur, runQueries(ctx, tool, params, query)
+}
+
+// collectBaseline reports the warnings of the baseline windows and applies
 // the baseline failure policy: the baseline fails only when no window produced
 // data and at least one query failed; failed windows alongside usable ones
-// yield a partial-failure note. The returned note carries the partial-failure
-// note and the warning notes.
-func collectBaseline(ctx context.Context, req *mcp.CallToolRequest, tool, metricType string, mode BaselineMode, windows []baselineWindow, results []windowResult) (string, error) {
-	var notes []string
+// yield a partial-failure note. The warnings of a multi-window mode are summed
+// into one note so a warning repeated in every window is reported once. The
+// returned note carries the partial-failure note and the warning note. When
+// a query panicked the error wraps the *panicError.
+func collectBaseline(ctx context.Context, req *mcp.CallToolRequest, tool, metricType string, mode baselineMode, windows []baselineWindow, results []windowResult) (string, error) {
+	var warnings gcpdata.QueryWarnings
 	var errs []error
-	withData := 0
+	withData, panics := 0, 0
 	for i, r := range results {
-		if note := reportQueryWarnings(ctx, req, tool, metricType, windows[i].label, r.warnings); note != "" && !slices.Contains(notes, note) {
-			notes = append(notes, note)
-		}
+		warnings.Add(r.warnings)
 		if r.err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", windows[i].label, r.err))
+		}
+		if isPanic(r.err) {
+			panics++
 		}
 		if r.hasPoints() {
 			withData++
 		}
 	}
+	warningsLabel := windows[0].label
+	if len(windows) > 1 {
+		warningsLabel = fmt.Sprintf("baseline (%s, summed over %d windows)", mode, len(windows))
+	}
+	warningsNote := reportQueryWarnings(ctx, req, tool, metricType, warningsLabel, warnings)
 	if len(errs) == 0 {
-		return joinNote(notes...), nil
+		return warningsNote, nil
 	}
 	joined := errors.Join(errs...)
 	if withData == 0 {
+		if panics > 0 {
+			return "", fmt.Errorf("%d of %d baseline queries panicked (a bug, not a transient failure): %w", panics, len(windows), joined)
+		}
 		if len(errs) == len(windows) {
 			return "", fmt.Errorf("all %d baseline queries failed: %w", len(windows), joined)
 		}
 		return "", fmt.Errorf("%d of %d baseline queries failed and the rest returned no data: %w", len(errs), len(windows), joined)
 	}
 	var partial string
-	if containsPanic(errs) {
+	if panics > 0 {
 		mcpLog(ctx, req, logLevelError, tool,
-			fmt.Sprintf("baseline partial failure: UNEXPECTED PANICS in %d of %d queries; %v", len(errs), len(windows), joined))
+			fmt.Sprintf("baseline partial failure: UNEXPECTED PANICS in %d of %d queries; %v", panics, len(windows), joined))
 		partial = fmt.Sprintf("Baseline partial failure (%s): UNEXPECTED PANICS occurred in %d of %d baseline queries. This is a bug in the code, not a transient failure. Baseline computed from %d windows, but results may be unreliable. Please report this issue.",
-			mode, len(errs), len(windows), withData)
+			mode, panics, len(windows), withData)
 	} else {
 		mcpLog(ctx, req, logLevelWarning, tool,
 			fmt.Sprintf("baseline partial failure: %d of %d queries failed (%v); using %d windows of data", len(errs), len(windows), joined, withData))
 		partial = fmt.Sprintf("Baseline partial failure (%s): %d of %d baseline windows could not be fetched; baseline computed from %d windows. Results may be less reliable.",
 			mode, len(errs), len(windows), withData)
 	}
-	return joinNote(partial, joinNote(notes...)), nil
+	return joinNote(partial, warningsNote), nil
+}
+
+// baselineCodeGuidance is the advice for baseline failures that retrying
+// cannot fix and that sharedCodeGuidance does not cover.
+var baselineCodeGuidance = []codeGuidance{
+	{codes.NotFound, "Cloud Monitoring found no such metric or project for the baseline window; retrying will not help."},
+	{codes.InvalidArgument, "Cloud Monitoring rejected the baseline query as invalid; retrying will not help."},
+}
+
+// baselineFailureAdvice tells whether retrying can fix err, the failure
+// collectBaseline returned for results: a panic is a bug; otherwise the
+// guidance for each distinct gRPC code among the failed queries, where codes
+// without specific guidance are worth a retry.
+func baselineFailureAdvice(err error, results []windowResult) string {
+	if isPanic(err) {
+		return "This is a bug in the code, not a transient failure; retrying will not help. Please report this issue."
+	}
+	errs := make([]error, len(results))
+	for i, r := range results {
+		errs[i] = r.err
+	}
+	return errorGuidance(errs, "You can retry.", baselineCodeGuidance...)
 }
 
 // toChartPoints converts metric points to the compact chartPoint slice used by
@@ -231,8 +283,8 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 		Meta: mcp.Meta{"ui": map[string]any{"resourceUri": chartStaticURI}},
 		InputSchema: projectInputSchema[MetricsSnapshotInput](d.Project,
 			nonEmptyProp("metric_type"),
-			enumProp("window", metricWindowNames()),
-			enumProp("baseline_mode", baselineModes),
+			enumProp("window", metricWindowNames(), defaultMetricWindow),
+			enumProp("baseline_mode", baselineModes, baselineModes[0]),
 		),
 		OutputSchema: outputSchemaFor[MetricSnapshotResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsSnapshotInput) (*mcp.CallToolResult, *MetricSnapshotResult, error) {
@@ -254,7 +306,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 			return errResult(err.Error()), nil, nil
 		}
 
-		baselineMode, eventTime, err := parseBaselineMode(in.BaselineMode, in.EventTime)
+		baseline, err := parseBaseline(in.BaselineMode, in.EventTime)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -275,7 +327,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 			return errRes, nil, nil
 		}
 
-		sendProgress(ctx, req, 2, 3, "Querying current window and baseline ("+string(baselineMode)+")")
+		sendProgress(ctx, req, 2, 3, "Querying current window and baseline ("+string(baseline.mode)+")")
 
 		currentParams := gcpdata.QueryTimeSeriesParams{
 			Project:     project,
@@ -287,7 +339,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 			MetricKind:  descriptor.Kind,
 			ValueType:   descriptor.ValueType,
 		}
-		baselineWindows := baselineMode.windows(start, now, eventTime)
+		baselineWindows := baseline.windows(start, now)
 		current, baselineResults := queryWithBaseline(ctx, "metrics_snapshot", currentParams, baselineWindows,
 			func(p gcpdata.QueryTimeSeriesParams) ([]gcpdata.MetricTimeSeries, gcpdata.QueryWarnings, error) {
 				return d.Querier.QueryTimeSeriesAggregated(ctx, p, aggSpec)
@@ -315,7 +367,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 				AutoDetected:             meta.AutoDetected,
 				NoData:                   true,
 				Note:                     joinNote(emptyWindowMessage(in.MetricType, windowStr, descriptor.Kind, in.Filter), currentWarningsNote),
-				BaselineMode:             string(baselineMode),
+				BaselineMode:             string(baseline.mode),
 				Trend:                    "unchanged",
 				Classification:           string(metrics.ClassInsufficientData),
 				ClassificationConfidence: string(metrics.ConfidenceLow),
@@ -336,18 +388,12 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 		}
 
 		var baselineErrNote string
-		baselineNote, err := collectBaseline(ctx, req, "metrics_snapshot", in.MetricType, baselineMode, baselineWindows, baselineResults)
-		var baseline metrics.BaselineStats
+		baselineNote, err := collectBaseline(ctx, req, "metrics_snapshot", in.MetricType, baseline.mode, baselineWindows, baselineResults)
+		var baselineStats metrics.BaselineStats
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "metrics_snapshot", fmt.Sprintf("baseline query failed: %v", err))
-			// Classify error type to help user understand whether to retry or fix configuration
-			if invalidAggregationSpecError(err) {
-				baselineErrNote = fmt.Sprintf("Baseline skipped: registry misconfiguration for metric %q. Fix the aggregation block in the metrics registry YAML file; retrying will not help. %v",
-					in.MetricType, err)
-			} else {
-				baselineErrNote = fmt.Sprintf("Baseline query (%s) temporarily failed: %v. You can retry. Returning current-window snapshot with baseline_reliable=false; delta fields are not meaningful.",
-					string(baselineMode), err)
-			}
+			baselineErrNote = fmt.Sprintf("Baseline query (%s) failed: %v. %s Returning current-window snapshot with baseline_reliable=false; delta fields are not meaningful.",
+				baseline.mode, err, baselineFailureAdvice(err, baselineResults))
 		} else {
 			buckets := make([][]metrics.Point, len(baselineResults))
 			for i, r := range baselineResults {
@@ -358,13 +404,13 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 			// Every window of a mode has the same span. A single-window mode
 			// makes ComputeRobustBaselineStats reduce to plain mean/stddev.
 			span := baselineWindows[0].end.Sub(baselineWindows[0].start)
-			baseline = metrics.ComputeRobustBaselineStats(buckets, expectedPointsForWindow(span, int(stepSeconds)))
+			baselineStats = metrics.ComputeRobustBaselineStats(buckets, expectedPointsForWindow(span, int(stepSeconds)))
 		}
 
 		sendProgress(ctx, req, 3, 3, "Processing results")
 
 		// Process.
-		f := metrics.ProcessWithBaselineStats(currentPoints, baseline, meta, int(stepSeconds), metrics.Window{Start: start, End: now})
+		f := metrics.ProcessWithBaselineStats(currentPoints, baselineStats, meta, int(stepSeconds), metrics.Window{Start: start, End: now})
 
 		// Build output.
 		result := &MetricSnapshotResult{
@@ -375,7 +421,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 			Current:                    f.Current,
 			Baseline:                   f.Baseline,
 			DeltaPct:                   f.DeltaPct,
-			BaselineMode:               string(baselineMode),
+			BaselineMode:               string(baseline.mode),
 			BaselineReliable:           f.BaselineReliable,
 			Stddev:                     f.Stddev,
 			CV:                         f.CV,
@@ -551,12 +597,9 @@ func metricWindowNames() []string {
 	return names
 }
 
-// parseWindow resolves the window input ("" selects defaultMetricWindow) to
-// its name and duration.
+// parseWindow resolves the schema-validated window input to its name and
+// duration.
 func parseWindow(s string) (string, time.Duration, error) {
-	if s == "" {
-		s = defaultMetricWindow
-	}
 	for _, w := range metricWindows {
 		if w.name == s {
 			return w.name, w.dur, nil

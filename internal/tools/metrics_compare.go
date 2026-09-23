@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -115,19 +114,20 @@ func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 			label    string
 			from, to time.Time
 		}{{windowALabel, aFrom, aTo}, {windowBLabel, bFrom, bTo}}
-		var results [2]windowResult
-		errs := runParallel(ctx, "metrics_compare", len(windows), 0, func(i int) error {
-			p := baseParams
-			p.Start, p.End = windows[i].from, windows[i].to
-			r := &results[i]
-			r.series, r.warnings, r.err = d.Querier.QueryTimeSeriesAggregated(ctx, p, aggSpec)
-			return r.err
-		})
+		params := make([]gcpdata.QueryTimeSeriesParams, len(windows))
+		for i, w := range windows {
+			params[i] = baseParams
+			params[i].Start, params[i].End = w.from, w.to
+		}
+		results := runQueries(ctx, "metrics_compare", params,
+			func(p gcpdata.QueryTimeSeriesParams) ([]gcpdata.MetricTimeSeries, gcpdata.QueryWarnings, error) {
+				return d.Querier.QueryTimeSeriesAggregated(ctx, p, aggSpec)
+			})
 		warningsNote := joinNote(
 			reportQueryWarnings(ctx, req, "metrics_compare", in.MetricType, windowALabel, results[0].warnings),
 			reportQueryWarnings(ctx, req, "metrics_compare", in.MetricType, windowBLabel, results[1].warnings),
 		)
-		if errA, errB := errs[0], errs[1]; errA != nil || errB != nil {
+		if errA, errB := results[0].err, results[1].err; errA != nil || errB != nil {
 			var msgs []string
 			if errA != nil {
 				msgs = append(msgs, fmt.Sprintf("window A: %v", errA))
@@ -143,7 +143,7 @@ func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 			if isInvalidFilterError(errA) || isInvalidFilterError(errB) {
 				return errResult(enrichInvalidFilterError(ctx, req, d.Querier, project, in.MetricType, in.Filter, errors.Join(errA, errB))), nil, nil
 			}
-			return gcpErrorResult("Failed to query: "+msg, cmp.Or(errA, errB), ""), nil, nil
+			return gcpErrorsResult("Failed to query: "+msg, []error{errA, errB}, ""), nil, nil
 		}
 
 		pointsA := mergePoints(results[0].series)

@@ -7,7 +7,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
+	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
 
@@ -171,4 +174,40 @@ func specEqual(a, b metrics.AggregationSpec) bool {
 		}
 	}
 	return true
+}
+
+// TestCompareMixedCodesGuidance pins that when both windows fail with
+// different gRPC codes, the error carries the guidance of each code instead
+// of only window A's.
+func TestCompareMixedCodesGuidance(t *testing.T) {
+	const metricType = "custom.googleapis.com/players_count"
+	fq := newFakeQuerier()
+	fq.metricKinds[metricType] = "GAUGE"
+	now := time.Now().UTC()
+	windowAFrom := now.Add(-2 * time.Hour).Truncate(time.Second)
+	fq.queryFn = func(p gcpdata.QueryTimeSeriesParams) ([]gcpdata.MetricTimeSeries, error) {
+		if p.Start.Equal(windowAFrom) {
+			return nil, status.Error(codes.PermissionDenied, "denied")
+		}
+		return nil, status.Error(codes.Unavailable, "down")
+	}
+
+	ctx := context.Background()
+	ts := newTestToolServer(t)
+	ts.registerMetricsCompare(fq, metrics.NewRegistry(), "test-project")
+	ts.connect(ctx)
+	defer ts.close()
+
+	result, err := ts.callTool(ctx, "metrics_compare", map[string]any{
+		"metric_type":   metricType,
+		"window_a_from": windowAFrom.Format(time.RFC3339),
+		"window_a_to":   now.Add(-1 * time.Hour).Format(time.RFC3339),
+		"window_b_from": now.Add(-1 * time.Hour).Format(time.RFC3339),
+		"window_b_to":   now.Format(time.RFC3339),
+	})
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	msg := textFromResult(t, result)
+	assert.Contains(t, msg, sharedCodeGuidance[codes.PermissionDenied])
+	assert.Contains(t, msg, sharedCodeGuidance[codes.Unavailable])
 }

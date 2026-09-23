@@ -5,9 +5,16 @@ import (
 	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"google.golang.org/grpc/codes"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
+
+// trendsDeadlineGuidance replaces the shared retry advice for a timeout: the
+// scan ran out of its own time budget, which a retry of the same request would
+// hit again.
+var trendsDeadlineGuidance = codeGuidance{codes.DeadlineExceeded,
+	"The trend scan exceeded its time budget, so retrying the same request will not help; lower max_profiles or pass function_filter."}
 
 func RegisterProfilerTrends(s *mcp.Server, d Deps) {
 	requireProfiler(d.Profiler)
@@ -22,7 +29,7 @@ func RegisterProfilerTrends(s *mcp.Server, d Deps) {
 		InputSchema: projectInputSchema[ProfilerTrendsInput](d.Project,
 			nonEmptyProp("target"),
 			nonNegativeValueIndex,
-			enumProp("profile_type", gcpdata.ProfileTypes),
+			enumProp("profile_type", gcpdata.ProfileTypes, ""),
 		),
 		OutputSchema: outputSchemaFor[gcpdata.ProfileTrendsResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerTrendsInput) (*mcp.CallToolResult, *gcpdata.ProfileTrendsResult, error) {
@@ -49,7 +56,7 @@ func RegisterProfilerTrends(s *mcp.Server, d Deps) {
 		}, progressFn)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "profiler_trends", fmt.Sprintf("compute trends failed: %v", err))
-			return gcpErrorResult(fmt.Sprintf("Failed to compute trends: %v", err), err, ""), nil, nil
+			return gcpErrorResult(fmt.Sprintf("Failed to compute trends: %v", err), err, "", trendsDeadlineGuidance), nil, nil
 		}
 
 		return nil, result, nil

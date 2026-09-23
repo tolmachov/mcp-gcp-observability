@@ -50,7 +50,7 @@ func testFoldSum(t *testing.T) {
 
 	var stats QueryWarnings
 	got := foldGroupSeries(series, metrics.ReducerSum, &stats)
-	assert.False(t, stats.HasAny(), "all buckets fully covered")
+	assertNoFoldWarnings(t, stats) // all buckets fully covered
 	require.Len(t, got, 2)
 	assert.True(t, got[0].Timestamp.Equal(t0))
 	assert.Equal(t, 15.0, got[0].Value)
@@ -68,7 +68,7 @@ func testFoldMax(t *testing.T) {
 
 	var stats QueryWarnings
 	got := foldGroupSeries(series, metrics.ReducerMax, &stats)
-	assert.False(t, stats.HasAny())
+	assertNoFoldWarnings(t, stats)
 	require.Len(t, got, 1)
 	assert.Equal(t, 10.0, got[0].Value)
 }
@@ -91,11 +91,11 @@ func testFoldEmpty(t *testing.T) {
 	var stats QueryWarnings
 	got := foldGroupSeries(nil, metrics.ReducerSum, &stats)
 	assert.Nil(t, got)
-	assert.False(t, stats.HasAny())
+	assertNoFoldWarnings(t, stats)
 	stats = QueryWarnings{}
 	got = foldGroupSeries([]MetricTimeSeries{}, metrics.ReducerSum, &stats)
 	assert.Nil(t, got)
-	assert.False(t, stats.HasAny())
+	assertNoFoldWarnings(t, stats)
 }
 
 func testFoldSingleGroup(t *testing.T) {
@@ -597,4 +597,11 @@ func TestQueryTimeSeriesAggregatedInvalidSpec(t *testing.T) {
 	// registry misconfiguration to logLevelError instead of lumping
 	// it with transient GCP failures.
 	assert.True(t, errors.Is(err, metrics.ErrInvalidAggregationSpec))
+}
+
+// assertNoFoldWarnings asserts that a fold reported no warning: only the
+// TotalBuckets context counter may be set.
+func assertNoFoldWarnings(t *testing.T, w QueryWarnings) {
+	t.Helper()
+	assert.Equal(t, QueryWarnings{TotalBuckets: w.TotalBuckets}, w)
 }

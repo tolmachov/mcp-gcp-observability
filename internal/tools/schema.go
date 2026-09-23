@@ -1,6 +1,10 @@
 package tools
 
 import (
+	"encoding/json"
+	"slices"
+	"strings"
+
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
@@ -24,13 +28,32 @@ type propPatch struct {
 	apply    func(*jsonschema.Schema)
 }
 
-// enumProp restricts property to values, in the given order.
-func enumProp[T ~string](property string, values []T) propPatch {
+// enumProp restricts property to values, in the given order, and lists them
+// in its description. A non-zero def becomes the schema default, which the
+// SDK fills in when the input omits the property, and is named in the
+// description too; handlers then never see the property empty.
+func enumProp[T ~string](property string, values []T, def T) propPatch {
 	enum := make([]any, len(values))
+	names := make([]string, len(values))
 	for i, v := range values {
 		enum[i] = string(v)
+		names[i] = string(v)
 	}
-	return propPatch{property, func(s *jsonschema.Schema) { s.Enum = enum }}
+	if def != "" && !slices.Contains(values, def) {
+		panic("enumProp: default " + string(def) + " of " + property + " is not one of its values")
+	}
+	defJSON, err := json.Marshal(def)
+	if err != nil {
+		panic("enumProp: " + err.Error())
+	}
+	return propPatch{property, func(s *jsonschema.Schema) {
+		s.Enum = enum
+		s.Description += ". One of: " + strings.Join(names, ", ")
+		if def != "" {
+			s.Default = defJSON
+			s.Description += ". Default: " + string(def)
+		}
+	}}
 }
 
 // nonEmptyProp rejects an empty string for a required string property.
@@ -88,4 +111,12 @@ var (
 	profileSortBys = []string{"self", "cumulative"}
 	traceOrderBys  = []string{"trace_id", "trace_id desc", "name", "name desc", "duration", "duration desc", "start", "start desc"}
 	traceViews     = []string{"MINIMAL", "ROOTSPAN", "COMPLETE"}
+)
+
+// Defaults of the enum inputs above that have one; enumProp publishes each as
+// the schema default.
+const (
+	defaultSortOrder     = "desc"
+	defaultProfileSortBy = "cumulative"
+	defaultTraceView     = "ROOTSPAN"
 )

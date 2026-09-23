@@ -17,7 +17,7 @@ type LogsQueryInput struct {
 	TimeFilterInput
 	Filter    string `json:"filter"              jsonschema:"Cloud Logging filter expression (e.g. 'severity>=ERROR', 'resource.type=\"k8s_container\"')"`
 	Limit     int    `json:"limit,omitempty"     jsonschema:"Maximum number of log entries to return (default 100, server max applies)"`
-	Order     string `json:"order,omitempty"     jsonschema:"Sort order by timestamp (default 'desc'). One of: asc, desc"`
+	Order     string `json:"order,omitempty"     jsonschema:"Sort order by timestamp"`
 	PageToken string `json:"page_token,omitempty" jsonschema:"Page token for pagination"`
 }
 
@@ -44,7 +44,7 @@ type LogsFindRequestsInput struct {
 	ProjectInput
 	TimeFilterInput
 	URLPattern string `json:"url_pattern"          jsonschema:"URL substring to match (e.g. '/api/profile', '/v1/connect')"`
-	Method     string `json:"method,omitempty"     jsonschema:"HTTP method filter (one of: GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS)"`
+	Method     string `json:"method,omitempty"     jsonschema:"HTTP method filter"`
 	StatusCode int    `json:"status_code,omitempty" jsonschema:"HTTP status code filter (e.g. 500, 404). Range: 100-599"`
 	TracedOnly bool   `json:"traced_only,omitempty" jsonschema:"Only return requests that have a trace_id (default false)"`
 	Limit      int    `json:"limit,omitempty"      jsonschema:"Maximum number of requests to return (default 20, server max applies)"`
@@ -66,10 +66,10 @@ type LogsK8sInput struct {
 	Namespace     string `json:"namespace,omitempty"      jsonschema:"Kubernetes namespace name"`
 	PodName       string `json:"pod_name,omitempty"       jsonschema:"Pod name (supports substring match)"`
 	ContainerName string `json:"container_name,omitempty" jsonschema:"Container name"`
-	Severity      string `json:"severity,omitempty"       jsonschema:"Minimum log severity level to return (one of: DEFAULT, DEBUG, INFO, NOTICE, WARNING, ERROR, CRITICAL, ALERT, EMERGENCY)"`
+	Severity      string `json:"severity,omitempty"       jsonschema:"Minimum log severity level to return"`
 	TextSearch    string `json:"text_search,omitempty"    jsonschema:"Text to search for in log payloads"`
 	Limit         int    `json:"limit,omitempty"          jsonschema:"Maximum number of log entries to return (default 100, server max applies)"`
-	Order         string `json:"order,omitempty"          jsonschema:"Sort order by timestamp (default 'desc'). One of: asc, desc"`
+	Order         string `json:"order,omitempty"          jsonschema:"Sort order by timestamp"`
 	PageToken     string `json:"page_token,omitempty"     jsonschema:"Page token for pagination (from previous response's next_page_token)"`
 }
 
@@ -90,7 +90,7 @@ type LogsSummaryInput struct {
 // Note: Error Reporting only supports fixed lookback periods ending at now.
 type ErrorsListInput struct {
 	ProjectInput
-	Window        string `json:"window,omitempty"         jsonschema:"Exact Error Reporting lookback window (default 24h). One of: 1h, 6h, 24h, 7d, 30d"`
+	Window        string `json:"window,omitempty"         jsonschema:"Exact Error Reporting lookback window"`
 	Limit         int    `json:"limit,omitempty"          jsonschema:"Maximum number of error groups to return (default 50, max 100)"`
 	ServiceFilter string `json:"service_filter,omitempty" jsonschema:"Filter by service name"`
 	VersionFilter string `json:"version_filter,omitempty" jsonschema:"Filter by service version"`
@@ -119,8 +119,8 @@ type TraceListInput struct {
 	SpanName   string `json:"span_name,omitempty"   jsonschema:"Filter by any span name prefix. Compiled to 'span:NAME' filter."`
 	MinLatency string `json:"min_latency,omitempty" jsonschema:"Minimum trace latency (e.g. '100ms', '1.5s'). Compiled to 'latency:NNNms' filter."`
 	Filter     string `json:"filter,omitempty"      jsonschema:"Raw Cloud Trace filter. Overrides root_name/span_name/min_latency. Syntax: 'root:NAME', 'span:NAME', '+label_key:value', 'latency:DURATIONms'."`
-	OrderBy    string `json:"order_by,omitempty"    jsonschema:"Sort order (default 'start desc'). One of: trace_id, trace_id desc, name, name desc, duration, duration desc, start, start desc"`
-	View       string `json:"view,omitempty"        jsonschema:"Data per trace (default 'ROOTSPAN'). ROOTSPAN returns root span info; MINIMAL returns only trace IDs; COMPLETE returns all spans (expensive)."`
+	OrderBy    string `json:"order_by,omitempty"    jsonschema:"Sort order of the traces (Cloud Trace applies its own order when omitted)"`
+	View       string `json:"view,omitempty"        jsonschema:"Data per trace: ROOTSPAN returns root span info; MINIMAL returns only trace IDs; COMPLETE returns all spans (expensive)"`
 	Limit      int    `json:"limit,omitempty"       jsonschema:"Maximum traces to return (default 50, max 200)"`
 	PageToken  string `json:"page_token,omitempty"  jsonschema:"Page token from previous response's next_page_token"`
 }
@@ -129,7 +129,7 @@ type TraceListInput struct {
 type MetricsListInput struct {
 	ProjectInput
 	Match string `json:"match,omitempty" jsonschema:"Substring to filter metric names or semantic keywords (e.g. 'cpu', 'latency', 'queue', 'cache', 'database', 'pubsub')"`
-	Kind  string `json:"kind,omitempty"  jsonschema:"Filter by metric kind (one of: latency, throughput, error_rate, resource_utilization, saturation, availability, freshness, business_kpi)"`
+	Kind  string `json:"kind,omitempty"  jsonschema:"Filter by metric kind"`
 	Limit int    `json:"limit,omitempty" jsonschema:"Maximum number of metrics to return (default 50, max 200)"`
 }
 
@@ -138,8 +138,8 @@ type MetricsSnapshotInput struct {
 	ProjectInput
 	MetricType   string `json:"metric_type"            jsonschema:"Full Cloud Monitoring metric type (e.g. 'compute.googleapis.com/instance/cpu/utilization')"`
 	Filter       string `json:"filter,omitempty"       jsonschema:"Additional Cloud Monitoring label filter. Labels live in two namespaces: metric.labels.* and resource.labels.*."`
-	Window       string `json:"window,omitempty"       jsonschema:"Time window to analyze (default '1h'). One of: 15m, 30m, 1h, 3h, 6h, 24h"`
-	BaselineMode string `json:"baseline_mode,omitempty" jsonschema:"Baseline comparison mode (default 'prev_window'). One of: prev_window, same_weekday_hour, pre_event"`
+	Window       string `json:"window,omitempty"       jsonschema:"Time window to analyze"`
+	BaselineMode string `json:"baseline_mode,omitempty" jsonschema:"Baseline comparison mode"`
 	EventTime    string `json:"event_time,omitempty"   jsonschema:"Event time in RFC3339 format, required when baseline_mode is 'pre_event'"`
 	StepSeconds  int    `json:"step_seconds,omitempty" jsonschema:"Alignment period in seconds (default 60, minimum 10)"`
 }
@@ -150,8 +150,8 @@ type MetricsTopInput struct {
 	MetricType   string `json:"metric_type"            jsonschema:"Full Cloud Monitoring metric type"`
 	Dimension    string `json:"dimension"              jsonschema:"Label key to group by (e.g. 'metric.labels.response_code', 'resource.labels.instance_id')"`
 	Filter       string `json:"filter,omitempty"       jsonschema:"Additional Cloud Monitoring label filter"`
-	Window       string `json:"window,omitempty"       jsonschema:"Time window to analyze (default '1h'). One of: 15m, 30m, 1h, 3h, 6h, 24h"`
-	BaselineMode string `json:"baseline_mode,omitempty" jsonschema:"Baseline comparison mode (default 'prev_window'). One of: prev_window, same_weekday_hour, pre_event"`
+	Window       string `json:"window,omitempty"       jsonschema:"Time window to analyze"`
+	BaselineMode string `json:"baseline_mode,omitempty" jsonschema:"Baseline comparison mode"`
 	EventTime    string `json:"event_time,omitempty"   jsonschema:"Event time in RFC3339 for pre_event baseline"`
 	Limit        int    `json:"limit,omitempty"        jsonschema:"Maximum number of contributors to return (default 5, max 20)"`
 }
@@ -161,7 +161,7 @@ type MetricsRelatedInput struct {
 	ProjectInput
 	MetricType string `json:"metric_type"      jsonschema:"Full Cloud Monitoring metric type"`
 	Filter     string `json:"filter,omitempty" jsonschema:"Additional Cloud Monitoring label filter"`
-	Window     string `json:"window,omitempty" jsonschema:"Time window to analyze (default '1h'). One of: 15m, 30m, 1h, 3h, 6h, 24h"`
+	Window     string `json:"window,omitempty" jsonschema:"Time window to analyze"`
 }
 
 // ProfilerListInput is the input for profiler_list.
@@ -174,7 +174,7 @@ type ProfilerListInput struct {
 	ProjectInput
 	StartTime   string `json:"start_time,omitempty"   jsonschema:"Optional lower time bound in RFC3339 format (e.g. '2025-01-15T00:00:00Z'), compared against each profile's start time. If omitted, no lower bound is applied (all available history is eligible)."`
 	EndTime     string `json:"end_time,omitempty"     jsonschema:"Optional upper time bound in RFC3339 format (e.g. '2025-01-15T23:59:59Z'). If omitted, no upper bound is applied."`
-	ProfileType string `json:"profile_type,omitempty" jsonschema:"Profile type filter (one of: CPU, WALL, HEAP, THREADS, CONTENTION, PEAK_HEAP, HEAP_ALLOC)"`
+	ProfileType string `json:"profile_type,omitempty" jsonschema:"Profile type filter"`
 	Target      string `json:"target,omitempty"       jsonschema:"Deployment target (service name) filter, matched case- and separator-insensitively (e.g. 'crypto-steam' matches 'cryptosteam')"`
 	Limit       int    `json:"limit,omitempty"        jsonschema:"Number of profiles to return (default 20, max 100)"`
 	PageToken   string `json:"page_token,omitempty"   jsonschema:"Page token for pagination"`
@@ -186,7 +186,7 @@ type ProfilerTopInput struct {
 	ProfileID     string `json:"profile_id"             jsonschema:"Current profile ID from profiler_list results"`
 	BaseProfileID string `json:"base_profile_id,omitempty" jsonschema:"Optional base profile ID; when set, analysis is computed from current minus base during this request"`
 	Limit         int    `json:"limit,omitempty"         jsonschema:"Maximum number of functions to return (default 20, max 50)"`
-	SortBy        string `json:"sort_by,omitempty"       jsonschema:"Sort by 'self' or 'cumulative' cost (default 'cumulative')"`
+	SortBy        string `json:"sort_by,omitempty"       jsonschema:"Sort by self or cumulative cost"`
 	ValueIndex    int    `json:"value_index,omitempty"   jsonschema:"Value index for multi-value profiles (default 0). Use profiler_top once to see available_values."`
 	Filter        string `json:"filter,omitempty"        jsonschema:"Substring filter on function name or file path (e.g. 'mypackage/handler')"`
 }
@@ -223,7 +223,7 @@ type ProfilerCompareInput struct {
 // ProfilerTrendsInput is the input for profiler_trends.
 type ProfilerTrendsInput struct {
 	ProjectInput
-	ProfileType    string `json:"profile_type"            jsonschema:"Profile type (one of: CPU, WALL, HEAP, THREADS, CONTENTION, PEAK_HEAP, HEAP_ALLOC)"`
+	ProfileType    string `json:"profile_type"            jsonschema:"Profile type"`
 	Target         string `json:"target"                  jsonschema:"Deployment target (service name)"`
 	FunctionFilter string `json:"function_filter,omitempty" jsonschema:"Substring filter to track specific functions (e.g. 'mypackage/handler'). If omitted, tracks top functions by peak cost."`
 	ValueIndex     int    `json:"value_index,omitempty"    jsonschema:"Value index for multi-value profiles (default 0)"`

@@ -127,6 +127,9 @@ func (f *fakeQuerier) QueryTimeSeries(_ context.Context, params gcpdata.QueryTim
 	f.queryLogMu.Lock()
 	f.queryLog = append(f.queryLog, params)
 	f.queryLogMu.Unlock()
+	if err := checkStep(params); err != nil {
+		return nil, gcpdata.QueryWarnings{}, err
+	}
 	if f.queryFn != nil {
 		series, err := f.queryFn(params)
 		return series, f.warnings, err
@@ -144,6 +147,9 @@ func (f *fakeQuerier) QueryTimeSeriesAggregated(ctx context.Context, params gcpd
 	f.queryLogMu.Lock()
 	f.aggregatedSpecs = append(f.aggregatedSpecs, spec)
 	f.queryLogMu.Unlock()
+	if err := checkStep(params); err != nil {
+		return nil, gcpdata.QueryWarnings{}, err
+	}
 	if f.aggregatedQueryFn != nil {
 		return f.aggregatedQueryFn(params, spec)
 	}
@@ -151,6 +157,16 @@ func (f *fakeQuerier) QueryTimeSeriesAggregated(ctx context.Context, params gcpd
 	// existing tests that only populate .series / .seriesFunc keep
 	// working without knowing about aggregation.
 	return f.QueryTimeSeries(ctx, params)
+}
+
+// checkStep fails a query without a positive alignment step, which the real
+// Monitoring API rejects, so a handler that forgets StepSeconds fails its
+// tests instead of passing against the fake.
+func checkStep(params gcpdata.QueryTimeSeriesParams) error {
+	if params.StepSeconds <= 0 {
+		return fmt.Errorf("fakeQuerier: StepSeconds must be positive, got %d", params.StepSeconds)
+	}
+	return nil
 }
 
 func (f *fakeQuerier) GetResourceLabels(_ context.Context, _, resourceType string) ([]string, error) {
@@ -639,6 +655,7 @@ func assertAllQueriesDistribution(t *testing.T, queryLog []gcpdata.QueryTimeSeri
 			continue
 		}
 		count++
+		assert.Positive(t, q.StepSeconds)
 		assert.Equal(t, "DISTRIBUTION", q.ValueType)
 		assert.Equal(t, gcpdata.MetricKindDelta, q.MetricKind)
 	}
@@ -908,21 +925,15 @@ func TestSnapshotIntegration_SameWeekdayHour_AllFail(t *testing.T) {
 	var snap MetricSnapshotResult
 	parseResult(t, result, &snap)
 
-	if snap.BaselineReliable {
-		t.Error("baseline_reliable = true, want false when all weekly baselines failed")
-	}
-	if snap.Note == "" || !strings.Contains(snap.Note, "Baseline query") {
-		assert.NotEmpty(t, snap.Note)
-	}
+	assert.False(t, snap.BaselineReliable, "baseline_reliable must be false when all weekly baselines failed")
+	assert.Contains(t, snap.Note, "Baseline query (same_weekday_hour) failed: all 4 baseline queries failed: "+
+		"baseline (same_weekday_hour week -1): simulated auth failure")
+	assert.Contains(t, snap.Note, "You can retry.")
 	// The I1 non-fatal contract: current-window stats must still be present
 	// even when every baseline query failed. A refactor that zeroed the
 	// current window on the way to building the result would regress this.
-	if snap.Current == 0 {
-		t.Error("current = 0, want the current-window value (~0.50) from the still-successful current query")
-	}
-	if snap.DataQuality.ActualPoints == 0 {
-		assert.Greater(t, snap.DataQuality.ActualPoints, int32(0))
-	}
+	assert.InDelta(t, 0.50, snap.Current, 0.05, "current must come from the still-successful current query")
+	assert.Positive(t, snap.DataQuality.ActualPoints)
 }
 
 func TestSnapshotIntegration_PreEventMissingEventTime(t *testing.T) {
@@ -1690,9 +1701,7 @@ func TestRelatedIntegration_PartialWithRPCFailures(t *testing.T) {
 			foundMemorySuccess = true
 		}
 	}
-	if !foundMemorySuccess {
-		assert.NotEmpty(t, related.RelatedSignals)
-	}
+	assert.True(t, foundMemorySuccess, "memory/utilization must be among the related signals")
 	foundPermDenied, foundQuota := false, false
 	for _, s := range related.Skipped {
 		if s.MetricType == "compute.googleapis.com/instance/disk/read_bytes_count" && strings.Contains(s.Reason, "permission denied") {
@@ -1702,21 +1711,90 @@ func TestRelatedIntegration_PartialWithRPCFailures(t *testing.T) {
 			foundQuota = true
 		}
 	}
-	if !foundPermDenied {
-		t.Error("disk read_bytes_count skip missing permission-denied reason")
-	}
-	if !foundQuota {
-		t.Error("network received_bytes_count skip missing quota reason")
-	}
-	if !related.Partial {
-		t.Error("Partial = false, want true when real RPC failures are present")
-	}
+	assert.True(t, foundPermDenied, "disk read_bytes_count skip missing permission-denied reason")
+	assert.True(t, foundQuota, "network received_bytes_count skip missing quota reason")
+	assert.True(t, related.Partial, "Partial must be true when real RPC failures are present")
 	// The Note field must carry a human-readable summary of the RPC failures
 	// so that an operator (or LLM) reading the result doesn't need to parse
 	// every Skipped entry to understand why correlation coverage is partial.
-	if !strings.Contains(related.Note, "RPC failures") {
-		assert.Contains(t, related.Note, "RPC")
+	assert.Contains(t, related.Note, "2 RPC failure(s)")
+}
+
+// TestRelatedIntegration_PanicIsInternalError pins that a panic inside a
+// related signal's query is reported as an internal error, counted apart
+// from the RPC failures, rather than as a GCP failure.
+func TestRelatedIntegration_PanicIsInternalError(t *testing.T) {
+	reg := loadTestRegistry(t, relatedTestRegistryYAML)
+	fq := newFakeQuerier()
+	now := time.Now().UTC()
+	memSeries := makeTimeSeries(now.Add(-time.Hour), stableValues(60, 0.60))
+	fq.queryFn = func(p gcpdata.QueryTimeSeriesParams) ([]gcpdata.MetricTimeSeries, error) {
+		switch p.MetricType {
+		case "compute.googleapis.com/instance/memory/utilization":
+			return []gcpdata.MetricTimeSeries{memSeries}, nil
+		case "compute.googleapis.com/instance/disk/read_bytes_count":
+			panic("simulated bug")
+		case "compute.googleapis.com/instance/network/received_bytes_count":
+			return nil, status.Error(codes.PermissionDenied, "denied")
+		}
+		return nil, nil
 	}
+
+	ctx := context.Background()
+	ts := newTestToolServer(t)
+	ts.registerMetricsRelated(fq, reg, "test-project")
+	ts.connect(ctx)
+	defer ts.close()
+
+	result, err := ts.callTool(ctx, "metrics_related", map[string]any{
+		"metric_type": "compute.googleapis.com/instance/cpu/utilization",
+	})
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+	var related RelatedSignalsResult
+	parseResult(t, result, &related)
+	assert.True(t, related.Partial)
+	assert.Contains(t, related.Note, "1 RPC failure(s), 1 internal error(s) (a bug, not a transient failure; please report it)")
+	// Skipped is read back from JSON, which does not carry the cause.
+	assert.Contains(t, related.Skipped, SkippedSignal{
+		MetricType: "compute.googleapis.com/instance/disk/read_bytes_count",
+		Reason:     "internal error: simulated bug",
+	})
+}
+
+// TestRelatedIntegration_MixedCodesGuidance pins that when every signal
+// fails with different gRPC codes, the error carries the guidance of each
+// code rather than of one arbitrary failure.
+func TestRelatedIntegration_MixedCodesGuidance(t *testing.T) {
+	reg := loadTestRegistry(t, relatedTestRegistryYAML)
+	fq := newFakeQuerier()
+	fq.queryFn = func(p gcpdata.QueryTimeSeriesParams) ([]gcpdata.MetricTimeSeries, error) {
+		switch p.MetricType {
+		case "compute.googleapis.com/instance/memory/utilization":
+			return nil, status.Error(codes.Unauthenticated, "expired")
+		case "compute.googleapis.com/instance/disk/read_bytes_count":
+			return nil, status.Error(codes.PermissionDenied, "denied")
+		case "compute.googleapis.com/instance/network/received_bytes_count":
+			return nil, status.Error(codes.PermissionDenied, "denied again")
+		}
+		return nil, nil
+	}
+
+	ctx := context.Background()
+	ts := newTestToolServer(t)
+	ts.registerMetricsRelated(fq, reg, "test-project")
+	ts.connect(ctx)
+	defer ts.close()
+
+	result, err := ts.callTool(ctx, "metrics_related", map[string]any{
+		"metric_type": "compute.googleapis.com/instance/cpu/utilization",
+	})
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	msg := textFromResult(t, result)
+	assert.Contains(t, msg, "3 RPC failure(s)")
+	assert.Contains(t, msg, sharedCodeGuidance[codes.Unauthenticated])
+	assert.Equal(t, 1, strings.Count(msg, sharedCodeGuidance[codes.PermissionDenied]), "each distinct code's guidance appears once")
 }
 
 // TestRelatedIntegration_AllRPCFailures_ToolError verifies the all-failed
@@ -1741,16 +1819,10 @@ func TestRelatedIntegration_AllRPCFailures_ToolError(t *testing.T) {
 		"metric_type": "compute.googleapis.com/instance/cpu/utilization",
 	})
 	require.NoError(t, err)
-	if !result.IsError {
-		require.Fail(t, "expected tool error when all signals fail, got success")
-	}
+	require.True(t, result.IsError, "expected tool error when all signals fail")
 	msg := textFromResult(t, result)
-	if !strings.Contains(msg, "correlation coverage is unavailable") {
-		assert.Contains(t, msg, "failed")
-	}
-	if !strings.Contains(msg, "permission denied on everything") {
-		assert.NotEmpty(t, msg)
-	}
+	assert.Contains(t, msg, "correlation coverage is unavailable")
+	assert.Contains(t, msg, "permission denied on everything")
 }
 
 // TestRelatedIntegration_BenignSkipsDoNotMarkPartial verifies the contract
@@ -1823,17 +1895,13 @@ func TestRelatedIntegration_MixedBenignAndRealFailures(t *testing.T) {
 		"metric_type": "compute.googleapis.com/instance/cpu/utilization",
 	})
 	require.NoError(t, err)
-	if !result.IsError {
-		require.False(t, result.IsError)
-	}
+	require.True(t, result.IsError, "benign skips plus RPC failures without a success must be a tool error")
 	msg := textFromResult(t, result)
-	if !strings.Contains(msg, "permission denied") {
-		assert.Contains(t, msg, "failure")
-	}
+	assert.Contains(t, msg, "permission denied")
+	assert.Contains(t, msg, "quota exceeded")
 	// Benign reasons should NOT be listed in the distinct-reasons summary.
-	if strings.Contains(msg, "no data") || strings.Contains(msg, "no events") {
-		assert.NotContains(t, msg, "benign")
-	}
+	assert.NotContains(t, msg, "no data")
+	assert.NotContains(t, msg, "no events")
 }
 
 // TestClassifyErr is a unit table test for the benign-vs-real classifier
@@ -2474,13 +2542,12 @@ func TestRelatedRegistryMisconfigError(t *testing.T) {
 	})
 	require.NoError(t, err)
 	// All related signals failed via pre-flight, so the all-failed branch
-	// fires with "Registry misconfiguration" in the skip reason.
-	expectError(t, result, "real RPC failures")
-	expectError(t, result, "Registry misconfiguration")
+	// fires with the misconfiguration counted apart from RPC failures.
+	expectError(t, result, "1 registry misconfiguration(s)")
+	expectError(t, result, "Registry misconfiguration for metric")
+	assert.NotContains(t, textFromResult(t, result), "RPC failure")
 	// No data query should have been issued for the related metric.
-	if len(fq.queryLog) > 0 {
-		assert.Empty(t, fq.queryLog)
-	}
+	assert.Empty(t, fq.queryLog)
 }
 
 // --- unsupported points tests ---

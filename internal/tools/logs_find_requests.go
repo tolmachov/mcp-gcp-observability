@@ -18,7 +18,7 @@ func RegisterLogsFindRequests(s *mcp.Server, d Deps) {
 		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[LogsFindRequestsInput](d.Project,
 			nonEmptyProp("url_pattern"),
-			enumProp("method", httpMethods),
+			enumProp("method", httpMethods, ""),
 		),
 		OutputSchema: outputSchemaFor[gcpdata.RequestList](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsFindRequestsInput) (*mcp.CallToolResult, *gcpdata.RequestList, error) {

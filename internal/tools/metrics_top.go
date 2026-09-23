@@ -30,8 +30,8 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 		InputSchema: projectInputSchema[MetricsTopInput](d.Project,
 			nonEmptyProp("metric_type"),
 			nonEmptyProp("dimension"),
-			enumProp("window", metricWindowNames()),
-			enumProp("baseline_mode", baselineModes),
+			enumProp("window", metricWindowNames(), defaultMetricWindow),
+			enumProp("baseline_mode", baselineModes, baselineModes[0]),
 		),
 		OutputSchema: outputSchemaFor[TopContributorsResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsTopInput) (*mcp.CallToolResult, *TopContributorsResult, error) {
@@ -48,7 +48,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 			return errResult(err.Error()), nil, nil
 		}
 
-		baselineMode, eventTime, err := parseBaselineMode(in.BaselineMode, in.EventTime)
+		baseline, err := parseBaseline(in.BaselineMode, in.EventTime)
 		if err != nil {
 			return errResult(err.Error()), nil, nil
 		}
@@ -80,7 +80,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 		}
 		reducer := gcpdata.ReducerToGCP(aggSpec.AcrossGroups)
 
-		sendProgress(ctx, req, 2, 3, "Querying current window grouped by "+in.Dimension+" and baseline ("+string(baselineMode)+")")
+		sendProgress(ctx, req, 2, 3, "Querying current window grouped by "+in.Dimension+" and baseline ("+string(baseline.mode)+")")
 
 		currentParams := gcpdata.QueryTimeSeriesParams{
 			Project:       project,
@@ -94,7 +94,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 			GroupByFields: []string{in.Dimension},
 			Reducer:       reducer,
 		}
-		baselineWindows := baselineMode.windows(start, now, eventTime)
+		baselineWindows := baseline.windows(start, now)
 		current, baselineResults := queryWithBaseline(ctx, "metrics_top_contributors", currentParams, baselineWindows,
 			func(p gcpdata.QueryTimeSeriesParams) ([]gcpdata.MetricTimeSeries, gcpdata.QueryWarnings, error) {
 				return d.Querier.QueryTimeSeries(ctx, p)
@@ -110,7 +110,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 		}
 		currentSeries := current.series
 
-		if len(currentSeries) == 0 {
+		if !current.hasPoints() {
 			msg := emptyWindowMessage(in.MetricType, windowStr, descriptor.Kind, in.Filter)
 			msg += fmt.Sprintf(" Also check that dimension %q actually exists on this metric — see `available_labels` below.", in.Dimension)
 			r := &TopContributorsResult{
@@ -130,12 +130,12 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 		// ranked by current value instead.
 		var baselineErrNote, noBaselineDataNote string
 		rankByCurrent := false
-		baselineNote, err := collectBaseline(ctx, req, "metrics_top_contributors", in.MetricType, baselineMode, baselineWindows, baselineResults)
+		baselineNote, err := collectBaseline(ctx, req, "metrics_top_contributors", in.MetricType, baseline.mode, baselineWindows, baselineResults)
 		baselineByLabel := map[string][][]metrics.Point{}
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "metrics_top_contributors", fmt.Sprintf("baseline query failed: %v", err))
-			baselineErrNote = fmt.Sprintf("Baseline query (%s) failed: %v. Returning current-window contributors only; delta_pct and share_of_anomaly are not meaningful.",
-				string(baselineMode), err)
+			baselineErrNote = fmt.Sprintf("Baseline query (%s) failed: %v. %s Returning current-window contributors only; delta_pct and share_of_anomaly are not meaningful.",
+				baseline.mode, err, baselineFailureAdvice(err, baselineResults))
 			rankByCurrent = true
 		} else if !slices.ContainsFunc(baselineResults, windowResult.hasPoints) {
 			// Every baseline query succeeded but returned no data (e.g. a
@@ -143,7 +143,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 			// Without this note every delta_pct is 0, which is
 			// indistinguishable from "nothing changed".
 			noBaselineDataNote = fmt.Sprintf("Baseline (%s) had no data in any of its %d window(s); delta_pct and share_of_anomaly are 0 and contributors are ranked by current value.",
-				string(baselineMode), len(baselineWindows))
+				baseline.mode, len(baselineWindows))
 			rankByCurrent = true
 		} else {
 			baselineByLabel = contributorBaselines(baselineResults, in.Dimension)
@@ -154,7 +154,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 		// minimum.
 		span := baselineWindows[0].end.Sub(baselineWindows[0].start)
 		expectedPerWindow := expectedPointsForWindow(span, int(stepSeconds))
-		if baselineMode == BaselineModePreEvent {
+		if baseline.mode == baselinePreEvent {
 			expectedPerWindow = 0
 		}
 

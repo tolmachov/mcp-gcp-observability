@@ -24,7 +24,7 @@ var flamegraphSchema = &jsonschema.Schema{
 		"total_value":  {Type: "integer"},
 		"max_depth":    {Type: "integer"},
 		"min_pct":      {Type: "number"},
-		"pruned_nodes": {Type: "integer"},
+		"pruned_nodes": {Type: "integer", Description: "Number of subtrees cut by max_depth, min_pct or the node budget: one per omitted child of a returned node, however many descendants it has"},
 		"root":         {Ref: "#/$defs/FlamegraphNode"},
 	},
 	Required: []string{"profile_meta", "value_type", "total_value", "root", "max_depth", "min_pct"},

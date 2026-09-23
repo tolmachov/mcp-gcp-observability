@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"errors"
+	"slices"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/grpc/codes"
@@ -45,22 +47,51 @@ type codeGuidance struct {
 }
 
 // gcpErrorResult reports a failed GCP call as a tool error: msg (which
-// normally embeds err), then guidance chosen once from err's gRPC code — the
-// tool's own advice in byCode first, then sharedCodeGuidance, then fallback.
-// Every handler that surfaces a GCP error goes through here.
+// normally embeds err), then the guidance for err's gRPC code (see
+// errorGuidance). Every handler fails the call on a GCP error through here or
+// gcpErrorsResult.
 func gcpErrorResult(msg string, err error, fallback string, byCode ...codeGuidance) *mcp.CallToolResult {
-	code := errorCode(err)
-	guidance := fallback
-	if shared, ok := sharedCodeGuidance[code]; ok {
-		guidance = shared
-	}
-	for _, g := range byCode {
-		if g.code == code {
-			guidance = g.guidance
-		}
-	}
+	return gcpErrorsResult(msg, []error{err}, fallback, byCode...)
+}
+
+// gcpErrorsResult reports several failed GCP calls as one tool error: msg,
+// then the guidance for every distinct gRPC code among errs.
+func gcpErrorsResult(msg string, errs []error, fallback string, byCode ...codeGuidance) *mcp.CallToolResult {
+	guidance := errorGuidance(errs, fallback, byCode...)
 	if guidance == "" {
 		return errResult(msg)
 	}
 	return errResult(msg + ". " + guidance)
+}
+
+// errorGuidance returns the advice for the gRPC codes of the non-nil errs,
+// each distinct piece once, in order. A code's advice is the tool's own in
+// byCode first, then sharedCodeGuidance, then fallback. Failures with
+// different codes each get their own advice rather than one error's advice
+// standing in for all of them.
+func errorGuidance(errs []error, fallback string, byCode ...codeGuidance) string {
+	var out []string
+	for _, err := range errs {
+		if err == nil {
+			continue
+		}
+		if g := codeAdvice(errorCode(err), fallback, byCode); g != "" && !slices.Contains(out, g) {
+			out = append(out, g)
+		}
+	}
+	return strings.Join(out, " ")
+}
+
+// codeAdvice returns the advice for one gRPC code: byCode, then
+// sharedCodeGuidance, then fallback.
+func codeAdvice(code codes.Code, fallback string, byCode []codeGuidance) string {
+	for _, g := range byCode {
+		if g.code == code {
+			return g.guidance
+		}
+	}
+	if shared, ok := sharedCodeGuidance[code]; ok {
+		return shared
+	}
+	return fallback
 }

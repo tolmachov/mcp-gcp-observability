@@ -398,10 +398,21 @@ type QueryWarnings struct {
 	TruncatedSeries bool
 }
 
-// HasAny returns true if any actionable warning field is set.
-// (TotalBuckets and GroupCount are context, not warnings.)
-func (w QueryWarnings) HasAny() bool {
-	return w.UnsupportedPoints > 0 || w.NonFinitePoints > 0 || w.SingleGroup || w.CarryForwardBuckets > 0 || w.DepartedGroupBuckets > 0 || w.DepartedSeries > 0 || w.TruncatedSeries
+// Add folds the warnings of another query into w, for a result built from
+// several queries: counters add up, flags are set when either query set them,
+// and GroupCount is that of the single-group query, the one it describes.
+func (w *QueryWarnings) Add(o QueryWarnings) {
+	w.UnsupportedPoints += o.UnsupportedPoints
+	w.NonFinitePoints += o.NonFinitePoints
+	if o.SingleGroup {
+		w.SingleGroup = true
+		w.GroupCount = o.GroupCount
+	}
+	w.CarryForwardBuckets += o.CarryForwardBuckets
+	w.DepartedGroupBuckets += o.DepartedGroupBuckets
+	w.DepartedSeries += o.DepartedSeries
+	w.TotalBuckets += o.TotalBuckets
+	w.TruncatedSeries = w.TruncatedSeries || o.TruncatedSeries
 }
 
 // buildAggregatedParams translates AggregationSpec to QueryTimeSeriesParams.

@@ -22,7 +22,7 @@ func RegisterProfilerTop(s *mcp.Server, d Deps) {
 		InputSchema: projectInputSchema[ProfilerTopInput](d.Project,
 			nonEmptyProp("profile_id"),
 			nonNegativeValueIndex,
-			enumProp("sort_by", profileSortBys),
+			enumProp("sort_by", profileSortBys, defaultProfileSortBy),
 		),
 		OutputSchema: outputSchemaFor[gcpdata.ProfileTopResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerTopInput) (*mcp.CallToolResult, *gcpdata.ProfileTopResult, error) {

@@ -22,7 +22,7 @@ func RegisterProfilerList(s *mcp.Server, d Deps) {
 			"Requires Cloud Profiler API to be enabled."),
 		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[ProfilerListInput](d.Project,
-			enumProp("profile_type", gcpdata.ProfileTypes),
+			enumProp("profile_type", gcpdata.ProfileTypes, ""),
 		),
 		OutputSchema: outputSchemaFor[gcpdata.ProfileListResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerListInput) (*mcp.CallToolResult, *gcpdata.ProfileListResult, error) {

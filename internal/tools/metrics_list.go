@@ -26,7 +26,7 @@ func RegisterMetricsList(s *mcp.Server, d Deps) {
 			"Does NOT return time series data — use metrics_snapshot for that."),
 		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[MetricsListInput](d.Project,
-			enumProp("kind", metrics.ValidMetricKindsForInput()),
+			enumProp("kind", metrics.ValidMetricKindsForInput(), ""),
 		),
 		OutputSchema: outputSchemaFor[MetricsListResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsListInput) (*mcp.CallToolResult, *MetricsListResult, error) {

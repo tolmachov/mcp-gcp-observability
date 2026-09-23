@@ -20,8 +20,8 @@ func RegisterTraceList(s *mcp.Server, d Deps) {
 			"Default time range is the last 1 hour. Requires Cloud Trace API to be enabled."),
 		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[TraceListInput](d.Project,
-			enumProp("order_by", traceOrderBys),
-			enumProp("view", traceViews),
+			enumProp("order_by", traceOrderBys, ""),
+			enumProp("view", traceViews, defaultTraceView),
 		),
 		OutputSchema: outputSchemaFor[gcpdata.TraceListResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in TraceListInput) (*mcp.CallToolResult, *gcpdata.TraceListResult, error) {

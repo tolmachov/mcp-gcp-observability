@@ -310,6 +310,35 @@ func TestGCPErrorResult(t *testing.T) {
 		res := gcpErrorResult("Failed: boom", errors.New("boom"), "")
 		assert.Equal(t, "Failed: boom", res.Content[0].(*mcp.TextContent).Text)
 	})
+	t.Run("tool guidance overrides shared guidance for the same code", func(t *testing.T) {
+		own := codeGuidance{codes.DeadlineExceeded, "Lower max_profiles."}
+		res := gcpErrorResult("Failed", status.Error(codes.DeadlineExceeded, "slow"), "", own)
+		assert.Equal(t, "Failed. Lower max_profiles.", res.Content[0].(*mcp.TextContent).Text)
+	})
+}
+
+func TestGCPErrorsResult(t *testing.T) {
+	denied := status.Error(codes.PermissionDenied, "denied")
+	unavailable := status.Error(codes.Unavailable, "down")
+	exhausted := status.Error(codes.ResourceExhausted, "quota")
+	for _, tc := range []struct {
+		name     string
+		errs     []error
+		fallback string
+		want     string
+	}{
+		{"one guidance per distinct code, in order", []error{denied, nil, unavailable, denied}, "",
+			"Failed. " + sharedCodeGuidance[codes.PermissionDenied] + " " + sharedCodeGuidance[codes.Unavailable]},
+		{"codes sharing guidance give it once", []error{unavailable, exhausted}, "", "Failed. " + sharedCodeGuidance[codes.Unavailable]},
+		{"fallback for codes without guidance", []error{errors.New("boom"), denied}, "Retry.",
+			"Failed. Retry. " + sharedCodeGuidance[codes.PermissionDenied]},
+		{"no errors", []error{nil, nil}, "Retry.", "Failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := gcpErrorsResult("Failed", tc.errs, tc.fallback)
+			assert.Equal(t, tc.want, res.Content[0].(*mcp.TextContent).Text)
+		})
+	}
 }
 
 func TestCompactDesc(t *testing.T) {
@@ -426,7 +455,8 @@ func TestRunParallel(t *testing.T) {
 		var pe *panicError
 		require.ErrorAs(t, errs[2], &pe)
 		assert.Equal(t, "bug", pe.value)
-		assert.True(t, containsPanic(errs))
+		assert.True(t, isPanic(errs[2]))
+		assert.False(t, isPanic(errs[1]))
 	})
 
 	t.Run("respects the concurrency limit", func(t *testing.T) {

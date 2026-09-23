@@ -19,8 +19,8 @@ func RegisterLogsK8s(s *mcp.Server, d Deps) {
 			"Preferred over logs_query for K8s workloads. Results default to newest-first (use order parameter to change)."),
 		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[LogsK8sInput](d.Project,
-			enumProp("severity", gcpdata.Severities),
-			enumProp("order", sortOrders),
+			enumProp("severity", gcpdata.Severities, ""),
+			enumProp("order", sortOrders, defaultSortOrder),
 		),
 		OutputSchema: outputSchemaFor[gcpdata.LogQueryResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsK8sInput) (*mcp.CallToolResult, *gcpdata.LogQueryResult, error) {
@@ -58,14 +58,9 @@ func RegisterLogsK8s(s *mcp.Server, d Deps) {
 		}
 		filter = gcpdata.AppendFilter(filter, timeFilter)
 
-		order := in.Order
-		if order == "" {
-			order = "desc"
-		}
-
 		sendProgress(ctx, req, 0, 1, "Querying Kubernetes logs...")
 
-		result, err := d.Logs.QueryLogs(ctx, project, filter, limit, order, in.PageToken)
+		result, err := d.Logs.QueryLogs(ctx, project, filter, limit, in.Order, in.PageToken)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "logs_k8s", fmt.Sprintf("query failed for project %s: %v", project, err))
 			return gcpErrorResult(fmt.Sprintf("Failed to query K8s logs: %v", err), err, "Verify the project_id and that K8s logging is enabled."), nil, nil

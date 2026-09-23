@@ -110,7 +110,9 @@ type ProfileFlamegraphResult struct {
 	Root        FlamegraphNode `json:"root"`
 	MaxDepth    int            `json:"max_depth"`
 	MinPct      float64        `json:"min_pct"`
-	// PrunedNodes counts children cut by max_depth, min_pct or the node budget.
+	// PrunedNodes counts the subtrees cut by max_depth, min_pct or the node
+	// budget: one per omitted child of a returned node, however many
+	// descendants that child has.
 	PrunedNodes int    `json:"pruned_nodes,omitempty"`
 	Warning     string `json:"warning,omitempty"`
 }

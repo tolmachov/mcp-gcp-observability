@@ -208,9 +208,6 @@ func reportQueryWarnings(ctx context.Context, req *mcp.CallToolRequest, tool, me
 // queryWarningMessages returns one message per warning in warnings.
 // Pure function; testable without an MCP server context.
 func queryWarningMessages(metricType, windowLabel string, warnings gcpdata.QueryWarnings) []string {
-	if !warnings.HasAny() {
-		return nil
-	}
 	var msgs []string
 	if warnings.UnsupportedPoints > 0 {
 		msgs = append(msgs, fmt.Sprintf(
@@ -452,15 +449,10 @@ func (e *panicError) Error() string {
 	return fmt.Sprintf("panic: %v", e.value)
 }
 
-// containsPanic reports whether any error in errs wraps a recovered panic.
-func containsPanic(errs []error) bool {
-	for _, e := range errs {
-		var pe *panicError
-		if errors.As(e, &pe) {
-			return true
-		}
-	}
-	return false
+// isPanic reports whether err wraps a recovered panic.
+func isPanic(err error) bool {
+	var pe *panicError
+	return errors.As(err, &pe)
 }
 
 // runParallel calls task(i) for every i in [0, n), running at most limit
@@ -470,7 +462,7 @@ func containsPanic(errs []error) bool {
 // is not started once ctx is done — its slot gets ctx.Err() — but a running
 // task must observe cancellation itself. A panic is recovered, logged with
 // its stack (labeled with tool) to the server-side notifyErrLog, and recorded
-// as a *panicError (detectable via containsPanic) rather than crashing the
+// as a *panicError (detectable via isPanic) rather than crashing the
 // server.
 func runParallel(ctx context.Context, tool string, n, limit int, task func(i int) error) []error {
 	if limit <= 0 {
