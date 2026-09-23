@@ -72,7 +72,7 @@ func (a *AuthServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	if err := a.store.PutAuthorizationState(r.Context(), tokenHash(stateToken), authorizationStateRecord{
 		Claims: claims, Status: "active", ExpiresAt: a.now().Add(stateTTL),
 	}); err != nil {
-		a.logger.Error("oauth_store_failure", "operation", "put_authorization_state", "err", err)
+		a.logStoreFailure(r.Context(), "put_authorization_state", err)
 		redirectError(w, r, redirectURI, state, "server_error", "authorization state store unavailable")
 		return
 	}
@@ -101,7 +101,7 @@ func (a *AuthServer) handleAuthorizeConfirm(w http.ResponseWriter, r *http.Reque
 			"The authorization request expired. Start over from your MCP client.")
 		return
 	case err != nil && !errors.Is(err, errStateNotFound) && !errors.Is(err, errStateReplay):
-		a.logger.Error("oauth_store_failure", "operation", "get_authorization_state", "err", err)
+		a.logStoreFailure(r.Context(), "get_authorization_state", err)
 		a.renderErrorPageStatus(w, http.StatusServiceUnavailable, "Service unavailable",
 			"The authorization state store is unavailable. Try again later.")
 		return

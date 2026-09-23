@@ -181,7 +181,7 @@ func (s *firestoreStateStore) GetGrant(ctx context.Context, id string) (grantRec
 	}
 	var rec grantRecord
 	if err := doc.DataTo(&rec); err != nil {
-		return grantRecord{}, fmt.Errorf("decoding OAuth grant: %w", err)
+		return grantRecord{}, fmt.Errorf("%w: %w", errGrantCorrupt, err)
 	}
 	return rec, nil
 }

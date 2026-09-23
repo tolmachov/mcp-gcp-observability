@@ -42,9 +42,9 @@ func NewRegistry() *Registry {
 	return newRegistry(make(map[string]MetricMeta))
 }
 
-// NewRegistryFromMetaMap creates a Registry directly from a MetricMeta map,
-// bypassing YAML parsing and load-time validation. Intended for tests that
-// need to inject configurations (e.g. invalid AggregationSpec) that LoadRegistry
+// NewRegistryFromMetaMap is test-only. It creates a Registry directly from a
+// MetricMeta map, bypassing YAML parsing and load-time validation, so tests
+// can inject configurations (e.g. invalid AggregationSpec) that LoadRegistry
 // would otherwise reject.
 func NewRegistryFromMetaMap(m map[string]MetricMeta) *Registry {
 	return newRegistry(maps.Clone(m))

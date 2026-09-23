@@ -626,6 +626,49 @@ func TestVerifierRejections(t *testing.T) {
 		_, err := a.verifyAccessToken(context.Background(), tr.AccessToken)
 		assert.ErrorIs(t, err, auth.ErrInvalidToken)
 	})
+
+	// The grant checks are the only thing that cuts off an access token that
+	// is still inside its own lifetime.
+	store, ok := a.store.(*memoryStateStore)
+	require.True(t, ok)
+	familyID, _, err := parseRefreshToken(tr.RefreshToken)
+	require.NoError(t, err)
+	mutateGrant := func(t *testing.T, mutate func(grants map[string]grantRecord)) {
+		t.Helper()
+		store.mu.Lock()
+		saved := store.grants[familyID]
+		mutate(store.grants)
+		store.mu.Unlock()
+		t.Cleanup(func() {
+			store.mu.Lock()
+			store.grants[familyID] = saved
+			store.mu.Unlock()
+		})
+	}
+	t.Run("grant deleted", func(t *testing.T) {
+		mutateGrant(t, func(grants map[string]grantRecord) { delete(grants, familyID) })
+		_, err := a.verifyAccessToken(context.Background(), tr.AccessToken)
+		assert.ErrorIs(t, err, auth.ErrInvalidToken)
+	})
+	t.Run("grant expired", func(t *testing.T) {
+		mutateGrant(t, func(grants map[string]grantRecord) {
+			g := grants[familyID]
+			g.ExpiresAt = time.Now().Add(-time.Second)
+			grants[familyID] = g
+		})
+		_, err := a.verifyAccessToken(context.Background(), tr.AccessToken)
+		assert.ErrorIs(t, err, auth.ErrInvalidToken)
+	})
+	t.Run("grant revoked", func(t *testing.T) {
+		_, err := a.verifyAccessToken(context.Background(), tr.AccessToken)
+		require.NoError(t, err, "the token must be valid before revocation")
+		resp, err := http.PostForm(ts.URL+"/revoke", url.Values{"token": {tr.RefreshToken}})
+		require.NoError(t, err)
+		_ = resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		_, err = a.verifyAccessToken(context.Background(), tr.AccessToken)
+		assert.ErrorIs(t, err, auth.ErrInvalidToken)
+	})
 }
 
 func TestRevoke(t *testing.T) {

@@ -29,12 +29,13 @@ const serviceCompletionTimeout = 5 * time.Second
 // prompt arguments (ref/prompt) and resource-template arguments (ref/resource)
 // — never for tool arguments.
 type promptCompleter struct {
-	// metricTypes completes metric_type; built once per registry by
-	// metricTypeCandidates.
+	// metricTypes completes metric_type; wireCompleter builds it once per
+	// completer from the registry via metricTypeCandidates.
 	metricTypes completionCandidates
 	// loadServices lazily discovers service names (by scanning recent logs) and
 	// caches them for the lifetime of the local or per-user GCP client set.
-	// nil until a GCP client is wired in Run.
+	// wireCompleter sets it per completer; it stays nil on unpinned servers,
+	// where there is no project to scan.
 	loadServices func(ctx context.Context) []string
 	project      tools.ProjectPolicy
 }
@@ -119,7 +120,8 @@ func (p *promptCompleter) Handle(ctx context.Context, req *mcp.CompleteRequest) 
 // candidatesFor returns the unfiltered candidates for a completion ref, or
 // none when the argument has no completion source. Completion is scoped to the
 // arguments each prompt actually declares (so an unknown prompt or undeclared
-// argument yields nothing), while resource templates share the {project} source.
+// argument yields nothing). A resource template's {project} completes only on
+// pinned servers, to the pinned project.
 func (p *promptCompleter) candidatesFor(ctx context.Context, refType, refName, argName string) completionCandidates {
 	switch refType {
 	case "ref/prompt":

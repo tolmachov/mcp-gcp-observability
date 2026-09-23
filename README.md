@@ -104,13 +104,13 @@ Built-in prompts are `investigate-errors`, `trace-request`, `investigate-metrics
 
 ## Resource and concurrency limits
 
-- HTTP headers: 64 KiB; MCP request body: 1 MiB; encoded tool result: 2 MiB.
+- HTTP headers: 64 KiB; MCP request body: 1 MiB; encoded tool result: 2 MiB (a larger result becomes a tool error asking for a shorter window, a lower limit or a narrower filter).
 - Logs: at most 200 entries and 8 KiB normalized JSON per entry. Truncation reports `entry_truncated`, `omitted_bytes`, and `truncated_fields`.
 - Flamegraphs: at most 1,000 nodes; `pruned_nodes` counts the subtrees cut by `max_depth`, `min_pct` or the node limit (one per omitted child, not its descendants).
 - Compressed source profile: 16 MiB; decompressed profile: 64 MiB.
 - Profiler cache: compressed sources only, 16 MiB per user and 64 MiB per process. Parsed graphs are request-local.
-- Four concurrent tool calls per user and two profiler operations per process.
-- Profiler work has an internal eight-minute deadline; Cloud Run has a ten-minute request timeout.
+- Four concurrent tool calls per user and two concurrent `profiler_*` calls per process. A diff (`base_profile_id` or `profiler_compare`) is one call and fetches its two source profiles one after the other. A call that times out waiting for a slot fails with an error saying so.
+- `profiler_*` calls have an internal eight-minute deadline that includes waiting for a profiler slot; Cloud Run has a ten-minute request timeout.
 
 Monitoring ingestion and aggregation discard non-finite values, count them in `non_finite_points`, and emit data-quality warnings. Public JSON never contains `NaN` or infinity. Registry validation rejects non-finite thresholds, SLOs, and saturation values.
 

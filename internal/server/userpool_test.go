@@ -18,11 +18,13 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/authsrv"
+	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
+	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
 
 // poolTestVerifier returns an auth.TokenVerifier that treats the bearer token
-// as "<subject>" and fabricates the TokenInfo the pool consumes, using the
-// same constructor as authsrv's real Verifier output.
+// as "<subject>" and fabricates the TokenInfo the pool consumes, mirroring what
+// authsrv's verifyAccessToken produces behind its RequireBearerToken.
 func poolTestVerifier() auth.TokenVerifier {
 	return func(_ context.Context, token string, _ *http.Request) (*auth.TokenInfo, error) {
 		return authsrv.NewTokenInfoForTesting(
@@ -404,4 +406,31 @@ func TestUserPoolKeysOnlyByIdentity(t *testing.T) {
 	}
 	assert.Equal(t, 1, b.buildCount("alice@example.com"))
 	assert.Equal(t, 1, pool.size())
+}
+
+// TestUserAssemblyCloserReleasesProfileCache pins that the closer the pool
+// calls on eviction includes the user's profiler querier: its profile cache
+// holds bytes against the process-wide budget until closed. The GCP clients
+// connect lazily, so building them needs no network or credentials.
+func TestUserAssemblyCloserReleasesProfileCache(t *testing.T) {
+	for _, variantID := range []string{"", string(VariantMonitoring)} {
+		t.Run("variant="+variantID, func(t *testing.T) {
+			s := testServer(t)
+			s.profiler = make(chan struct{}, 2)
+			build := s.userAssemblyBuilder(metrics.NewRegistry(), variantID)
+			_, closer, err := build(context.Background(), &authsrv.UserIdentity{Subject: "sub"},
+				oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "ya29.test"}))
+			require.NoError(t, err)
+			closers, ok := closer.(multiCloser)
+			require.True(t, ok, "closer is %T", closer)
+			profilers := 0
+			for _, c := range closers {
+				if _, ok := c.(*gcpdata.CloudProfilerQuerier); ok {
+					profilers++
+				}
+			}
+			assert.Equal(t, 1, profilers)
+			require.NoError(t, closer.Close())
+		})
+	}
 }

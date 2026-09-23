@@ -371,6 +371,16 @@ func TestToolSpecsMatchRegisteredTools(t *testing.T) {
 		assert.Equal(t, []string{spec.name}, registeredToolNames(t, spec.register))
 	}
 	assert.Len(t, registeredToolNames(t, registerAllTools), len(toolSpecs))
+	assert.ElementsMatch(t, []string{
+		"logs_query", "logs_by_trace", "logs_by_request_id", "logs_find_requests",
+		"logs_k8s", "logs_services", "logs_summary",
+		"errors_list", "errors_get", "errors_trends",
+		"trace_get", "trace_list", "trace_find_from_logs",
+		"metrics_list", "metrics_snapshot", "metrics_top_contributors",
+		"metrics_related", "metrics_compare",
+		"profiler_list", "profiler_top", "profiler_peek",
+		"profiler_flamegraph", "profiler_compare", "profiler_trends",
+	}, registeredToolNames(t, registerAllTools))
 }
 
 // TestToolTableMembership pins the monitoring variant's tools and the

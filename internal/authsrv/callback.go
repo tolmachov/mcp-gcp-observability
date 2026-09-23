@@ -22,7 +22,7 @@ func (a *AuthServer) handleCallback(w http.ResponseWriter, r *http.Request) {
 			"The login took too long. Start over from your MCP client.")
 		return
 	case err != nil && !errors.Is(err, errStateNotFound) && !errors.Is(err, errStateReplay):
-		a.logger.Error("oauth_store_failure", "operation", "use_authorization_state", "err", err)
+		a.logStoreFailure(r.Context(), "use_authorization_state", err)
 		a.renderErrorPageStatus(w, http.StatusServiceUnavailable, "Service unavailable",
 			"The authorization state store is unavailable. Try again later.")
 		return
@@ -135,7 +135,7 @@ func (a *AuthServer) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.store.PutCode(r.Context(), key, codeRecord{Claims: claims, Status: "active", FamilyID: familyID, ExpiresAt: a.now().Add(codeTTL)}); err != nil {
-		a.logger.Error("oauth_store_failure", "operation", "put_code", "err", err)
+		a.logStoreFailure(r.Context(), "put_code", err)
 		redirectError(w, r, sc.RedirectURI, sc.ClientState, "server_error", "authorization state store unavailable")
 		return
 	}

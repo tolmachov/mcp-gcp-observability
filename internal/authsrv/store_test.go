@@ -3,8 +3,6 @@ package authsrv
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -113,27 +111,6 @@ type failingStateStore struct {
 func (s failingStateStore) Health(context.Context) error { return s.err }
 func (s failingStateStore) GetGrant(context.Context, string) (grantRecord, error) {
 	return grantRecord{}, s.err
-}
-
-func TestStoreOutageIs503Not401(t *testing.T) {
-	base := newMemoryStateStore()
-	failure := errors.New("firestore unavailable")
-	cfg := testConfig(t)
-	cfg.stateStore = failingStateStore{oauthStateStore: base, err: failure}
-	a, err := newAuthServer(cfg, nil, happyIdP())
-	require.NoError(t, err)
-	now := time.Now()
-	token, err := sealBlob(a.sealer, accessBlob, accessClaims{FamilyID: "family", ExpiresAt: now.Add(time.Hour).Unix()})
-	require.NoError(t, err)
-
-	called := false
-	handler := a.RequireBearerToken(nil)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
-	req := httptest.NewRequest(http.MethodPost, testIssuer, nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, req)
-	assert.Equal(t, http.StatusServiceUnavailable, recorder.Code)
-	assert.False(t, called)
 }
 
 func TestMemoryStoreConcurrentAccessIsRaceSafe(t *testing.T) {

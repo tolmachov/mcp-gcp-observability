@@ -92,6 +92,12 @@ func TestFirestoreStoreEmulator(t *testing.T) {
 	require.NoError(t, store.RevokeGrant(ctx, "missing-"+suffix, now))
 	_, err = store.GetGrant(ctx, "missing-"+suffix)
 	assert.True(t, errors.Is(err, errStateNotFound))
+
+	corrupt := family + "-corrupt"
+	_, err = store.grant(corrupt).Create(ctx, map[string]any{"status": 42})
+	require.NoError(t, err)
+	_, err = store.GetGrant(ctx, corrupt)
+	assert.ErrorIs(t, err, errGrantCorrupt)
 }
 
 func runConcurrentStoreOperations(operation func() error) [2]error {

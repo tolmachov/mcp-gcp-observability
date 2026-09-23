@@ -97,20 +97,30 @@ var promptSpecs = []promptSpec{
 			{name: "service", description: "Optional service or resource filter", complete: completeServices},
 		},
 		render: func(_ *Server, args map[string]string) string {
-			msg := "Investigate a metric anomaly:\n"
+			service := args["service"]
+			snapshot := "Use metrics_snapshot to get a semantic snapshot with baseline comparison"
+			var steps []string
 			if metricType := args["metric_type"]; metricType != "" {
-				msg += fmt.Sprintf("1. The metric to investigate is: %s\n", metricType)
-			} else {
-				msg += "1. Use metrics_list to discover available metrics"
-				if service := args["service"]; service != "" {
-					msg += fmt.Sprintf(" (filter by '%s')", service)
+				steps = append(steps, "The metric to investigate is: "+metricType)
+				if service != "" {
+					snapshot += fmt.Sprintf(" (scope it to '%s' with a label filter)", service)
 				}
-				msg += "\n2. Pick the most relevant metric\n"
+			} else {
+				discover := "Use metrics_list to discover available metrics"
+				if service != "" {
+					discover += fmt.Sprintf(" (filter by '%s')", service)
+				}
+				steps = append(steps, discover, "Pick the most relevant metric")
 			}
-			return msg + "3. Use metrics_snapshot to get a semantic snapshot with baseline comparison\n" +
-				"4. If the classification shows a regression, use metrics_top_contributors to find which dimension contributes most\n" +
-				"5. Use metrics_related to check correlated signals\n" +
-				"6. Summarize the findings: what changed, when, likely cause, and recommended action"
+			steps = append(steps, snapshot,
+				"If the classification shows a regression, use metrics_top_contributors to find which dimension contributes most",
+				"Use metrics_related to check correlated signals",
+				"Summarize the findings: what changed, when, likely cause, and recommended action")
+			msg := "Investigate a metric anomaly:"
+			for i, step := range steps {
+				msg += fmt.Sprintf("\n%d. %s", i+1, step)
+			}
+			return msg
 		},
 	},
 	{

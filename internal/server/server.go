@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"time"
 
 	"github.com/modelcontextprotocol/experimental-ext-variants/go/sdk/variants"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -144,33 +145,35 @@ const structuredResultContentNotice = "The complete result is available in struc
 // toolLimitsMiddleware bounds tools/call: at most cap(userCalls) concurrent
 // calls per server instance, profiler-scanning tools (profileScanTools) share
 // the process-wide cap(profilerCalls) limit and run under
-// gcpdata.ProfilerScanTimeout, and every result must encode within
-// maxEncodedToolResultBytes.
+// gcpdata.ProfilerScanTimeout (which includes the wait for a profiler slot),
+// and every result must encode within maxEncodedToolResultBytes. An
+// over-budget result is replaced by a tool error asking the model to narrow
+// the request.
 func toolLimitsMiddleware(userCalls, profilerCalls chan struct{}, logger *slog.Logger) func(mcp.MethodHandler) mcp.MethodHandler {
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
 		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
 			if method != "tools/call" {
 				return next(ctx, method, req)
 			}
-			select {
-			case userCalls <- struct{}{}:
-				defer func() { <-userCalls }()
-			case <-ctx.Done():
-				return nil, ctx.Err()
+			var tool string
+			if call, ok := req.(*mcp.CallToolRequest); ok && call.Params != nil {
+				tool = call.Params.Name
 			}
-			if call, ok := req.(*mcp.CallToolRequest); ok && call.Params != nil && profileScanTools[call.Params.Name] {
+			if err := acquireToolSlot(ctx, userCalls, "concurrent-call", tool, logger); err != nil {
+				return nil, err
+			}
+			defer func() { <-userCalls }()
+			if profileScanTools[tool] {
 				profilerCtx, cancel := context.WithTimeout(ctx, gcpdata.ProfilerScanTimeout)
 				defer cancel()
 				ctx = profilerCtx
 				if len(profilerCalls) == cap(profilerCalls) {
-					logger.Warn("profiler_saturation", "limit", cap(profilerCalls), "tool", call.Params.Name)
+					logger.Warn("profiler_saturation", "limit", cap(profilerCalls), "tool", tool)
 				}
-				select {
-				case profilerCalls <- struct{}{}:
-					defer func() { <-profilerCalls }()
-				case <-ctx.Done():
-					return nil, ctx.Err()
+				if err := acquireToolSlot(ctx, profilerCalls, "profiler", tool, logger); err != nil {
+					return nil, err
 				}
+				defer func() { <-profilerCalls }()
 			}
 			result, err := next(ctx, method, req)
 			if err != nil || result == nil {
@@ -193,11 +196,33 @@ func toolLimitsMiddleware(userCalls, profilerCalls chan struct{}, logger *slog.L
 				}
 			}
 			if size > maxEncodedToolResultBytes {
-				logger.Error("response_budget_violation", "method", method, "bytes", size, "limit", maxEncodedToolResultBytes)
-				return nil, fmt.Errorf("tool result exceeds the %d-byte response budget", maxEncodedToolResultBytes)
+				logger.Error("response_budget_violation", "tool", tool, "bytes", size, "limit", maxEncodedToolResultBytes)
+				return &mcp.CallToolResult{
+					IsError: true,
+					Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf(
+						"The %s result is %d bytes, over the %d-byte response budget. "+
+							"Narrow the request: use a shorter time window, a lower limit, or a more specific filter.",
+						tool, size, maxEncodedToolResultBytes)}},
+				}, nil
 			}
 			return result, nil
 		}
+	}
+}
+
+// acquireToolSlot takes a slot from slots, waiting until one frees up or ctx
+// ends. When ctx ends first, the call never ran: that is logged and returned
+// as an error naming the tool, the limit and how long it waited.
+func acquireToolSlot(ctx context.Context, slots chan struct{}, kind, tool string, logger *slog.Logger) error {
+	start := time.Now()
+	select {
+	case slots <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		waited := time.Since(start)
+		logger.Warn("tool_slot_wait_aborted", "tool", tool, "slot", kind, "limit", cap(slots), "waited", waited, "err", ctx.Err())
+		return fmt.Errorf("tool %s never got a %s slot (limit %d) after waiting %s: %w",
+			tool, kind, cap(slots), waited.Round(time.Millisecond), ctx.Err())
 	}
 }
 
@@ -368,23 +393,26 @@ func (s *Server) userAssemblyBuilder(reg *metrics.Registry, variantID string) us
 			return nil, nil, fmt.Errorf("creating per-user GCP client: %w", err)
 		}
 		deps := s.buildDeps(client, reg)
+		// The profile cache holds per-user bytes against the process budget,
+		// so it is released together with the GCP clients.
+		closeDeps := multiCloser{deps.Profiler, client}
 		completer := &promptCompleter{}
 		s.wireCompleter(completer, deps)
 
 		if variantID != "" {
 			srv, buildErr := s.buildSingleVariantServer(VariantID(variantID), deps, completer)
 			if buildErr != nil {
-				return nil, nil, errors.Join(fmt.Errorf("building variant server: %w", buildErr), deps.Profiler.Close(), client.Close())
+				return nil, nil, errors.Join(fmt.Errorf("building variant server: %w", buildErr), closeDeps.Close())
 			}
 			handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, &mcp.StreamableHTTPOptions{Stateless: true})
-			return handler, multiCloser{deps.Profiler, client}, nil
+			return handler, closeDeps, nil
 		}
 
 		vs, buildErr := s.buildVariantsServer(deps, completer)
 		if buildErr != nil {
-			return nil, nil, errors.Join(fmt.Errorf("building variants server: %w", buildErr), deps.Profiler.Close(), client.Close())
+			return nil, nil, errors.Join(fmt.Errorf("building variants server: %w", buildErr), closeDeps.Close())
 		}
-		return variants.NewStreamableHTTPHandler(vs, &mcp.StreamableHTTPOptions{Stateless: true}), multiCloser{vs, deps.Profiler, client}, nil
+		return variants.NewStreamableHTTPHandler(vs, &mcp.StreamableHTTPOptions{Stateless: true}), append(multiCloser{vs}, closeDeps...), nil
 	}
 }
 

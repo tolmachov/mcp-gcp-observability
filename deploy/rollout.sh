@@ -140,7 +140,7 @@ curl --max-time 60 -fsS -H "Authorization: Bearer $OPERATOR_BEARER_TOKEN" "https
 check_signals() {
   sleep "$ROLLOUT_DWELL_SECONDS"
   local bad_filter bad
-  bad_filter="resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"$SERVICE\" AND (httpRequest.status>=500 OR jsonPayload.msg=(\"oauth_store_failure\" OR \"response_budget_violation\" OR \"grant_replay\"))"
+  bad_filter="resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"$SERVICE\" AND (httpRequest.status>=500 OR jsonPayload.msg=(\"oauth_store_failure\" OR \"oauth_grant_corrupt\" OR \"response_budget_violation\" OR \"grant_replay\"))"
   bad=$(gcloud logging read "$bad_filter" --project "$GCP_PROJECT" --freshness "${ROLLOUT_DWELL_SECONDS}s" --limit 1 --format='value(timestamp)')
   [[ -z "$bad" ]] || { echo "rollout gate found a production error at $bad" >&2; return 1; }
   bash -o pipefail -c "$ALERT_CHECK_COMMAND"

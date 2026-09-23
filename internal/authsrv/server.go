@@ -153,7 +153,7 @@ func (a *AuthServer) oauth2Config() *oauth2.Config {
 }
 
 // Routes mounts every auth endpoint on mux. The MCP handler itself is mounted
-// by the caller (wrapped in RequireBearerToken with this server's Verifier).
+// by the caller (wrapped in this server's RequireBearerToken).
 func (a *AuthServer) Routes(mux *http.ServeMux) {
 	mux.Handle("GET "+ProtectedResourceMetadataPath, a.protectedResourceHandler())
 	mux.Handle("GET "+AuthServerMetadataPath, jsonMetadataHandler(a.authServerMetadata()))

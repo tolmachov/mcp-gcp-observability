@@ -42,7 +42,7 @@ func (c *Client) TraceClient() *cloudtrace.Client { return c.trace }
 // MonitoringClient returns the Cloud Monitoring API client.
 func (c *Client) MonitoringClient() *monitoring.MetricClient { return c.monitoring }
 
-// ProfilerClient returns the Cloud Profiler gRPC export client.
+// ProfilerService returns the Cloud Profiler gRPC export client.
 func (c *Client) ProfilerService() *cloudprofiler.ExportClient { return c.profiler }
 
 // New creates a new GCP client with Logging, Error Reporting, Cloud Trace, Cloud Monitoring,

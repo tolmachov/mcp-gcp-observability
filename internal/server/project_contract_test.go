@@ -2,6 +2,9 @@ package server
 
 import (
 	"context"
+	"regexp"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -128,4 +131,42 @@ func TestPromptProjectPolicyCannotBeBypassed(t *testing.T) {
 	text, ok := result.Messages[0].Content.(*mcp.TextContent)
 	require.True(t, ok)
 	assert.Contains(t, text.Text, "GCP PROJECT: allowed-project")
+}
+
+// TestPromptsRenderEveryDeclaredArgument sets every argument a prompt
+// declares to a unique value and requires each value in the rendered text, so
+// a render that reads a renamed or misspelled key fails here. It also pins
+// that the numbered steps run 1, 2, 3, ... with and without the optional
+// arguments.
+func TestPromptsRenderEveryDeclaredArgument(t *testing.T) {
+	step := regexp.MustCompile(`(?m)^(\d+)\. `)
+	session := projectContractSession(t, "")
+	listed, err := session.ListPrompts(context.Background(), nil)
+	require.NoError(t, err)
+	require.Len(t, listed.Prompts, len(promptSpecs))
+	for _, prompt := range listed.Prompts {
+		t.Run(prompt.Name, func(t *testing.T) {
+			all, required := map[string]string{}, map[string]string{}
+			for _, arg := range prompt.Arguments {
+				value := "value-of-" + strings.ReplaceAll(arg.Name, "_", "-")
+				all[arg.Name] = value
+				if arg.Required {
+					required[arg.Name] = value
+				}
+			}
+			for name, args := range map[string]map[string]string{"all arguments": all, "required only": required} {
+				result, err := session.GetPrompt(context.Background(), &mcp.GetPromptParams{Name: prompt.Name, Arguments: args})
+				require.NoError(t, err, name)
+				require.Len(t, result.Messages, 1)
+				text, ok := result.Messages[0].Content.(*mcp.TextContent)
+				require.True(t, ok)
+				for arg, value := range args {
+					assert.Contains(t, text.Text, value, "%s: argument %s is not rendered", name, arg)
+				}
+				for i, m := range step.FindAllStringSubmatch(text.Text, -1) {
+					assert.Equal(t, strconv.Itoa(i+1), m[1], "%s: step numbering", name)
+				}
+			}
+		})
+	}
 }

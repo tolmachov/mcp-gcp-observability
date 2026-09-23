@@ -57,7 +57,7 @@ func (s *Server) registerResources(srv *mcp.Server, d tools.Deps) {
 // templates so a slow backend cannot hang a resources/read request.
 const resourceTemplateTimeout = 30 * time.Second
 
-// registerResourceTemplates adds URI-templated resources that let clients
+// registerProjectResources adds the per-project resources that let clients
 // navigate a project's recent observability data like a filesystem:
 //
 //	gcp-logs://{project}/recent     — severity/error/service summary of recent logs

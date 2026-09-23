@@ -78,9 +78,9 @@ func (a *AuthServer) verifyAccessToken(ctx context.Context, token string) (*auth
 		a.logger.Warn("access token rejected", "reason", err)
 		return nil, fmt.Errorf("%w: not a valid access token", auth.ErrInvalidToken)
 	}
-	grant, grantErr := a.store.GetGrant(ctx, c.FamilyID)
+	grant, grantErr := a.grant(ctx, c.FamilyID)
 	if grantErr != nil && !errors.Is(grantErr, errStateNotFound) {
-		a.logger.Error("oauth_store_failure", "operation", "verify_grant", "err", grantErr)
+		a.logStoreFailure(ctx, "verify_grant", grantErr)
 		return nil, fmt.Errorf("%w: %w", errStoreUnavailable, grantErr)
 	}
 	if !now.Before(time.Unix(c.ExpiresAt, 0)) {
@@ -163,9 +163,9 @@ func GoogleTokenSource(ctx context.Context) (oauth2.TokenSource, bool) {
 	}), true
 }
 
-// NewTokenInfoForTesting fabricates the TokenInfo this package's
-// RequireBearerToken would produce. It exists so other packages can unit-test handlers that sit
-// behind auth.RequireBearerToken (e.g. the per-user pool) without running the
+// NewTokenInfoForTesting is test-only. It fabricates the TokenInfo
+// verifyAccessToken produces, so other packages can unit-test handlers that
+// sit behind RequireBearerToken (e.g. the per-user pool) without running the
 // OAuth flow.
 func NewTokenInfoForTesting(subject, email, domain, googleAccessToken string, expiry time.Time) *auth.TokenInfo {
 	return &auth.TokenInfo{
