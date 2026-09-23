@@ -88,12 +88,12 @@ func TestHTTPAuthMCPIntegration(t *testing.T) {
 	alice := connectMCP(t, ctx, ts.URL, "alice")
 	tools1, err := alice.ListTools(ctx, nil)
 	require.NoError(t, err)
-	assert.Len(t, tools1.Tools, allToolsCount)
+	assert.Len(t, tools1.Tools, len(toolSpecs))
 
 	bob := connectMCP(t, ctx, ts.URL, "bob")
 	tools2, err := bob.ListTools(ctx, nil)
 	require.NoError(t, err)
-	assert.Len(t, tools2.Tools, allToolsCount)
+	assert.Len(t, tools2.Tools, len(toolSpecs))
 
 	assert.Equal(t, 2, pool.size(), "two users must get two isolated assemblies")
 

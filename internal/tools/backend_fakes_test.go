@@ -164,6 +164,8 @@ func (f fakeProfiler) ComputeTrends(ctx context.Context, params gcpdata.ComputeT
 	return f.computeTrend(ctx, params, progressFn)
 }
 
+func (fakeProfiler) Close() error { return nil }
+
 // allFakeBackends returns a Deps with every dependency set to a non-nil fake,
 // suitable for registration-only tests where handlers are not invoked. It
 // includes Querier and Registry so the metrics tools' require* guards are

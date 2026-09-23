@@ -76,17 +76,6 @@ func TestEscapeFilterValue(t *testing.T) {
 	}
 }
 
-func TestIsValidSeverity(t *testing.T) {
-	valid := []string{"ERROR", "INFO", "WARNING", "CRITICAL", "DEBUG", "DEFAULT", "NOTICE", "ALERT", "EMERGENCY", "error", "Error"}
-	for _, s := range valid {
-		assert.True(t, IsValidSeverity(s), "expected IsValidSeverity(%q) to be true", s)
-	}
-	invalid := []string{"INVALID", "ERR", "", "warn", "FATAL"}
-	for _, s := range invalid {
-		assert.False(t, IsValidSeverity(s), "expected IsValidSeverity(%q) to be false", s)
-	}
-}
-
 func TestFormatTimestamp(t *testing.T) {
 	t.Run("nil", func(t *testing.T) {
 		got := formatTimestamp(nil)
@@ -177,6 +166,16 @@ func TestExtractServiceName(t *testing.T) {
 				},
 			},
 			"prod",
+		},
+		{
+			"cloud function",
+			&loggingpb.LogEntry{
+				Resource: &monitoredres.MonitoredResource{
+					Type:   "cloud_function",
+					Labels: map[string]string{"function_name": "resize"},
+				},
+			},
+			"resize",
 		},
 		{
 			"fallback to resource type",

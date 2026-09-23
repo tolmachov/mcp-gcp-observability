@@ -47,7 +47,7 @@ func (a *AuthServer) handleRevoke(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			return
 		} else {
-			a.storeTokenError(w, "revoke_get_grant", getErr)
+			a.storeTokenError(r.Context(), w, "revoke_get_grant", getErr)
 			return
 		}
 	} else {
@@ -56,7 +56,7 @@ func (a *AuthServer) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.store.RevokeGrant(r.Context(), familyID, now); err != nil {
-		a.storeTokenError(w, "revoke_grant", err)
+		a.storeTokenError(r.Context(), w, "revoke_grant", err)
 		return
 	}
 	a.logger.Info("grant_revoked", "family_id", familyID, "email", email)

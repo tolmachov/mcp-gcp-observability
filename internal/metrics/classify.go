@@ -16,27 +16,45 @@ const (
 	ClassImprovement Classification = "improvement"
 	// ClassFlapping repeatedly crosses SLO threshold back and forth.
 	ClassFlapping Classification = "flapping"
-	// ClassInsufficientData means too sparse or unreliable baseline; cannot classify.
+	// ClassInsufficientData means no data, or data too sparse or unreliable
+	// to classify.
 	ClassInsufficientData Classification = "insufficient_data"
-	// ClassNotComputed is the zero value for Classification, returned when
-	// ProcessWithBaselineStats is called with an empty points slice.
-	// Distinct from ClassInsufficientData, which means "data exists but is
-	// too sparse to trust" — ClassNotComputed means "no data at all, no
-	// computation was attempted". Tool handlers should detect this via the
-	// NoData path before calling Process, so this sentinel should never
-	// appear in tool output.
-	ClassNotComputed Classification = ""
 )
 
-// IsValid returns true if the Classification is one of the defined constants.
-func (c Classification) IsValid() bool {
+// Severity ranks how bad a classification is, for comparing two windows:
+// improvement < stable = insufficient_data < noisy < recovery < spike <
+// flapping < step_regression < sustained_regression < saturation. Unknown
+// classifications rank as sustained_regression (fail-safe).
+func (c Classification) Severity() int {
 	switch c {
-	case ClassStable, ClassNoisy, ClassSpike, ClassStepRegression,
-		ClassSustainedRegression, ClassRecovery, ClassSaturation,
-		ClassImprovement, ClassFlapping, ClassInsufficientData:
-		return true
+	case ClassImprovement:
+		return -1
+	case ClassStable, ClassInsufficientData:
+		return 0
+	case ClassNoisy:
+		return 1
+	case ClassRecovery:
+		return 2
+	case ClassSpike:
+		return 3
+	case ClassFlapping:
+		return 4
+	case ClassStepRegression:
+		return 5
+	case ClassSustainedRegression:
+		return 6
+	case ClassSaturation:
+		return 7
+	default:
+		return 6
 	}
-	return false
+}
+
+// IsAnomalous reports whether the classification warrants attention: anything
+// other than stable or noisy, including insufficient_data (a signal that
+// cannot be judged is not a signal that can be ignored).
+func (c Classification) IsAnomalous() bool {
+	return c != ClassStable && c != ClassNoisy
 }
 
 // isDeltaBased reports whether a classification depends on baseline comparison.

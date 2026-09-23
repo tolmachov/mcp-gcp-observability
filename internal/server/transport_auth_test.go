@@ -90,7 +90,7 @@ func newWiringServerWithLogger(t *testing.T, logger *slog.Logger) (*httptest.Ser
 	pool := newUserPool(context.Background(), b.builder(), discardLogger())
 	t.Cleanup(func() { _ = pool.Close() })
 
-	handler := httpdiag.Handler(logger, withCrossOriginProtection(limitRequestBody(buildAuthMux(as, cfg.IssuerURL, pool)), authCORSBypassPaths...))
+	handler := httpdiag.Handler(logger, diagnosticRoutes, withCrossOriginProtection(limitRequestBody(buildAuthMux(as, cfg.IssuerURL, pool)), authCORSBypassPaths...))
 	ts.Config.Handler = handler
 	return ts, b
 }
@@ -112,6 +112,26 @@ func TestOAuthRejectionDiagnostics(t *testing.T) {
 	assert.Equal(t, "/token", event["route"])
 	assert.Equal(t, resp.Header.Get("X-Request-ID"), event["request_id"])
 	assert.NotContains(t, logs.String(), "hidden")
+}
+
+// TestRejectionDiagnosticsNameEveryServedRoute pins that rejections on any
+// mounted OAuth path are logged with that path, not as "other".
+func TestRejectionDiagnosticsNameEveryServedRoute(t *testing.T) {
+	for _, path := range authsrv.RoutePaths {
+		t.Run(path, func(t *testing.T) {
+			var logs bytes.Buffer
+			ts, _ := newWiringServerWithLogger(t, slog.New(slog.NewJSONHandler(&logs, nil)))
+			req, err := http.NewRequest(http.MethodPut, ts.URL+path, nil)
+			require.NoError(t, err)
+			resp, err := ts.Client().Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close() //nolint:errcheck // test cleanup
+			require.GreaterOrEqual(t, resp.StatusCode, 400)
+			var event map[string]any
+			require.NoError(t, json.Unmarshal(logs.Bytes(), &event))
+			assert.Equal(t, path, event["route"])
+		})
+	}
 }
 
 // obtainToken drives the complete OAuth flow over the production mux and

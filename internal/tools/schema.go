@@ -1,6 +1,11 @@
 package tools
 
 import (
+	"encoding/json"
+	"slices"
+	"strconv"
+	"strings"
+
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
@@ -15,26 +20,62 @@ func outputSchemaFor[T any]() *jsonschema.Schema {
 	return schema
 }
 
-// enumPatch injects an enum constraint into a generated JSON schema property.
-type enumPatch struct {
+// propPatch adds a constraint to one property of a generated input schema.
+// jsonschema.For derives only types and descriptions from struct tags, so
+// value constraints the SDK must enforce before the handler runs are layered
+// on here.
+type propPatch struct {
 	property string
-	values   []any
+	apply    func(*jsonschema.Schema)
 }
 
-// inputSchemaWithEnums generates a JSON schema for type T, then injects
-// enum constraints for the specified properties. Panics on schema generation
-// failure or missing property (both indicate a programming error).
-func inputSchemaWithEnums[T any](patches ...enumPatch) *jsonschema.Schema {
+// enumProp restricts property to values, in the given order, and lists them
+// in its description. A non-zero def becomes the schema default, which the
+// SDK fills in when the input omits the property, and is named in the
+// description too; handlers then never see the property empty.
+func enumProp[T ~string](property string, values []T, def T) propPatch {
+	names := make([]string, len(values))
+	for i, v := range values {
+		names[i] = string(v)
+	}
+	return propPatch{property, func(s *jsonschema.Schema) {
+		s.Enum = make([]any, len(names))
+		for i, name := range names {
+			s.Enum[i] = name
+		}
+		s.Description += ". One of: " + strings.Join(names, ", ")
+		if def != "" {
+			if !slices.Contains(values, def) {
+				panic("enumProp: default " + string(def) + " of " + property + " is not one of its values")
+			}
+			s.Default = json.RawMessage(strconv.Quote(string(def)))
+			s.Description += ". Default: " + string(def)
+		}
+	}}
+}
+
+// nonEmptyProp rejects an empty string for a required string property.
+func nonEmptyProp(property string) propPatch {
+	return propPatch{property, func(s *jsonschema.Schema) { s.MinLength = new(1) }}
+}
+
+// nonNegativeValueIndex rejects a negative value_index on the profiler tools.
+var nonNegativeValueIndex = propPatch{"value_index", func(s *jsonschema.Schema) { s.Minimum = new(0.0) }}
+
+// inputSchemaFor generates a JSON schema for type T, then applies the
+// property patches. Panics on schema generation failure or missing property
+// (both indicate a programming error).
+func inputSchemaFor[T any](patches ...propPatch) *jsonschema.Schema {
 	schema, err := jsonschema.For[T](nil)
 	if err != nil {
-		panic("inputSchemaWithEnums: " + err.Error())
+		panic("inputSchemaFor: " + err.Error())
 	}
 	for _, p := range patches {
 		prop, ok := schema.Properties[p.property]
 		if !ok {
-			panic("inputSchemaWithEnums: property " + p.property + " not found in schema")
+			panic("inputSchemaFor: property " + p.property + " not found in schema")
 		}
-		prop.Enum = p.values
+		p.apply(prop)
 	}
 	return schema
 }
@@ -42,18 +83,11 @@ func inputSchemaWithEnums[T any](patches ...enumPatch) *jsonschema.Schema {
 // projectInputSchema generates the public schema for a project-scoped tool.
 // Pinned deployments expose no project_id at all. Unpinned deployments make
 // it required. Unknown fields are rejected in both modes.
-func projectInputSchema[T any](policy ProjectPolicy, patches ...enumPatch) *jsonschema.Schema {
-	schema := inputSchemaWithEnums[T](patches...)
+func projectInputSchema[T any](policy ProjectPolicy, patches ...propPatch) *jsonschema.Schema {
+	schema := inputSchemaFor[T](patches...)
 	schema.AdditionalProperties = &jsonschema.Schema{Not: &jsonschema.Schema{}}
 	if policy.Pinned() {
 		delete(schema.Properties, "project_id")
-		required := schema.Required[:0]
-		for _, name := range schema.Required {
-			if name != "project_id" {
-				required = append(required, name)
-			}
-		}
-		schema.Required = required
 		return schema
 	}
 	prop, ok := schema.Properties["project_id"]
@@ -62,34 +96,25 @@ func projectInputSchema[T any](policy ProjectPolicy, patches ...enumPatch) *json
 	}
 	prop.Description = "GCP project ID; required by this unpinned deployment"
 	prop.Pattern = projectIDPattern.String()
-	for _, name := range schema.Required {
-		if name == "project_id" {
-			return schema
-		}
-	}
+	// ProjectInput.ProjectID is omitempty, so project_id is never already required.
 	schema.Required = append(schema.Required, "project_id")
 	return schema
 }
 
-// toAny converts a string slice to []any for use with jsonschema.Schema.Enum.
-func toAny(ss []string) []any {
-	out := make([]any, len(ss))
-	for i, s := range ss {
-		out[i] = s
-	}
-	return out
-}
-
-// Shared enum value sets used across multiple tool input schemas.
+// Enum value sets owned by the tool layer. Domain enums (severities, profile
+// types, error windows) live in gcpdata next to the code that interprets them.
 var (
-	enumSortOrder    = toAny([]string{"asc", "desc"})
-	enumHTTPMethod   = toAny([]string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
-	enumSeverity     = toAny([]string{"DEFAULT", "DEBUG", "INFO", "NOTICE", "WARNING", "ERROR", "CRITICAL", "ALERT", "EMERGENCY"})
-	enumWindow       = toAny([]string{"15m", "30m", "1h", "3h", "6h", "24h"})
-	enumErrorWindow  = toAny([]string{"1h", "6h", "24h", "7d", "30d"})
-	enumBaselineMode = toAny([]string{"prev_window", "same_weekday_hour", "pre_event"})
-	enumProfileType  = toAny([]string{"CPU", "WALL", "HEAP", "THREADS", "CONTENTION", "PEAK_HEAP", "HEAP_ALLOC"})
-	enumSortBy       = toAny([]string{"self", "cumulative"})
-	enumTraceOrderBy = toAny([]string{"trace_id", "trace_id desc", "name", "name desc", "duration", "duration desc", "start", "start desc"})
-	enumTraceView    = toAny([]string{"MINIMAL", "ROOTSPAN", "COMPLETE"})
+	httpMethods    = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+	sortOrders     = []string{"asc", "desc"}
+	profileSortBys = []string{"self", "cumulative"}
+	traceOrderBys  = []string{"trace_id", "trace_id desc", "name", "name desc", "duration", "duration desc", "start", "start desc"}
+	traceViews     = []string{"MINIMAL", "ROOTSPAN", "COMPLETE"}
+)
+
+// Defaults of the enum inputs above that have one; enumProp publishes each as
+// the schema default.
+const (
+	defaultSortOrder     = "desc"
+	defaultProfileSortBy = "cumulative"
+	defaultTraceView     = "ROOTSPAN"
 )

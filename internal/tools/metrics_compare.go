@@ -2,13 +2,9 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
+
 	"fmt"
-	"log/slog"
-	"runtime/debug"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -17,29 +13,13 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
 
-// compareCallResult builds the LLM-facing CallToolResult for metrics_compare.
-// It strips chart_points_a/b from the JSON text in Content so raw time-series
-// data is never sent to the LLM. The caller returns the unmodified *CompareResult
-// as the second handler value; the SDK serializes it into StructuredContent,
-// making chart_points_a/b available to the UI widget.
-func compareCallResult(result *CompareResult) *mcp.CallToolResult {
-	// Shallow copy so we can zero ChartPoints without mutating the caller's struct.
-	// The caller returns result as structuredContent (with ChartPoints intact).
-	clone := *result
-	clone.ChartPointsA = nil
-	clone.ChartPointsB = nil
-	analysisJSON, err := json.Marshal(&clone)
-	if err != nil {
-		slog.Error("[metrics-compare] BUG: failed to marshal result", "err", err)
-		return &mcp.CallToolResult{
-			IsError: true,
-			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("internal error: failed to marshal result: %v", err)}},
-		}
-	}
-	return &mcp.CallToolResult{
-		Meta:    mcp.Meta{"ui": map[string]any{"resourceUri": compareChartStaticURI}},
-		Content: []mcp.Content{&mcp.TextContent{Text: string(analysisJSON)}},
-	}
+// withoutChart returns a copy of r without chart points, for the LLM-facing
+// content.
+func (r *CompareResult) withoutChart() *CompareResult {
+	c := *r
+	c.ChartPointsA = nil
+	c.ChartPointsB = nil
+	return &c
 }
 
 func RegisterMetricsCompare(s *mcp.Server, d Deps) {
@@ -52,24 +32,23 @@ func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 			"Returns mean values, delta, trend shift, and classification for each window. "+
 			"Also renders an interactive dual-series chart inline in the chat (hosts that support MCP app widgets). "+
 			"For automatic baseline comparison (prev_window, same_weekday_hour), use metrics_snapshot instead."),
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			OpenWorldHint:  new(true),
-			IdempotentHint: true,
-		},
-		// Meta here and in compareCallResult both carry the same URI deliberately:
+		Annotations: readOnlyAnnotations,
+		// Meta here and in chartCallResult both carry the same URI deliberately:
 		// this declaration lets hosts prefetch the resource from tools/list;
 		// the per-call Meta binds the widget for hosts that skip tools/list caching.
-		Meta:         mcp.Meta{"ui": map[string]any{"resourceUri": compareChartStaticURI}},
-		InputSchema:  projectInputSchema[MetricsCompareInput](d.Project),
+		Meta: mcp.Meta{"ui": map[string]any{"resourceUri": compareChartStaticURI}},
+		InputSchema: projectInputSchema[MetricsCompareInput](d.Project,
+			nonEmptyProp("metric_type"),
+			nonEmptyProp("window_a_from"),
+			nonEmptyProp("window_a_to"),
+			nonEmptyProp("window_b_from"),
+			nonEmptyProp("window_b_to"),
+		),
 		OutputSchema: outputSchemaFor[CompareResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsCompareInput) (*mcp.CallToolResult, *CompareResult, error) {
-		if in.MetricType == "" {
-			return errResult("metric_type is required"), nil, nil
-		}
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 
 		windowALabel := in.WindowALabel
@@ -81,32 +60,32 @@ func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 			windowBLabel = "window_b"
 		}
 
-		aFrom, err := parseRFC3339(in.WindowAFrom, "window_a_from")
+		aFrom, err := parseRFC3339Opt(in.WindowAFrom, "window_a_from")
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
-		aTo, err := parseRFC3339(in.WindowATo, "window_a_to")
+		aTo, err := parseRFC3339Opt(in.WindowATo, "window_a_to")
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
-		bFrom, err := parseRFC3339(in.WindowBFrom, "window_b_from")
+		bFrom, err := parseRFC3339Opt(in.WindowBFrom, "window_b_from")
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
-		bTo, err := parseRFC3339(in.WindowBTo, "window_b_to")
+		bTo, err := parseRFC3339Opt(in.WindowBTo, "window_b_to")
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 
 		if !aTo.After(aFrom) {
-			return errResult(fmt.Sprintf("window_a_to must be after window_a_from (got %s to %s)", aFrom.Format(time.RFC3339), aTo.Format(time.RFC3339))), nil, nil
+			return ErrorResult(fmt.Sprintf("window_a_to must be after window_a_from (got %s to %s)", aFrom.Format(time.RFC3339), aTo.Format(time.RFC3339))), nil, nil
 		}
 		if !bTo.After(bFrom) {
-			return errResult(fmt.Sprintf("window_b_to must be after window_b_from (got %s to %s)", bFrom.Format(time.RFC3339), bTo.Format(time.RFC3339))), nil, nil
+			return ErrorResult(fmt.Sprintf("window_b_to must be after window_b_from (got %s to %s)", bFrom.Format(time.RFC3339), bTo.Format(time.RFC3339))), nil, nil
 		}
 
 		meta := d.Registry.Lookup(in.MetricType)
-		stepSeconds := int64(60)
+		stepSeconds := int64(metrics.DefaultStepSeconds)
 
 		sendProgress(ctx, req, 1, 4, "Looking up metric descriptor")
 
@@ -131,61 +110,24 @@ func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 			ValueType:   descriptor.ValueType,
 		}
 
-		paramsA := baseParams
-		paramsA.Start = aFrom
-		paramsA.End = aTo
-
-		paramsB := baseParams
-		paramsB.Start = bFrom
-		paramsB.End = bTo
-
-		var seriesA, seriesB []gcpdata.MetricTimeSeries
-		var warningsA, warningsB gcpdata.AggregationWarnings
-		var errA, errB error
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					stack := debug.Stack()
-					msg := fmt.Sprintf("panic querying window A: %v\n%s", r, stack)
-					notifyErrLog.Load().Error("metrics_compare: panic in window A goroutine", "panic", r, "stack", string(stack))
-					mcpLog(ctx, req, logLevelError, "metrics_compare", msg)
-					errA = fmt.Errorf("internal error: %v", r)
-				}
-			}()
-			if ctx.Err() != nil {
-				errA = ctx.Err()
-				return
-			}
-			seriesA, warningsA, errA = d.Querier.QueryTimeSeriesAggregated(ctx, paramsA, aggSpec)
-		}()
-		go func() {
-			defer wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					stack := debug.Stack()
-					msg := fmt.Sprintf("panic querying window B: %v\n%s", r, stack)
-					notifyErrLog.Load().Error("metrics_compare: panic in window B goroutine", "panic", r, "stack", string(stack))
-					mcpLog(ctx, req, logLevelError, "metrics_compare", msg)
-					errB = fmt.Errorf("internal error: %v", r)
-				}
-			}()
-			if ctx.Err() != nil {
-				errB = ctx.Err()
-				return
-			}
-			seriesB, warningsB, errB = d.Querier.QueryTimeSeriesAggregated(ctx, paramsB, aggSpec)
-		}()
-		wg.Wait()
-		logAggregationWarnings(ctx, req, "metrics_compare", in.MetricType, windowALabel, warningsA)
-		logAggregationWarnings(ctx, req, "metrics_compare", in.MetricType, windowBLabel, warningsB)
+		windows := [2]struct {
+			label    string
+			from, to time.Time
+		}{{windowALabel, aFrom, aTo}, {windowBLabel, bFrom, bTo}}
+		params := make([]gcpdata.QueryTimeSeriesParams, len(windows))
+		for i, w := range windows {
+			params[i] = baseParams
+			params[i].Start, params[i].End = w.from, w.to
+		}
+		results := runQueries(ctx, "metrics_compare", params,
+			func(p gcpdata.QueryTimeSeriesParams) ([]gcpdata.MetricTimeSeries, gcpdata.QueryWarnings, error) {
+				return d.Querier.QueryTimeSeriesAggregated(ctx, p, aggSpec)
+			})
 		warningsNote := joinNote(
-			aggregationWarningsNote(in.MetricType, windowALabel, warningsA),
-			aggregationWarningsNote(in.MetricType, windowBLabel, warningsB),
+			reportQueryWarnings(ctx, req, "metrics_compare", in.MetricType, windowALabel, results[0].warnings),
+			reportQueryWarnings(ctx, req, "metrics_compare", in.MetricType, windowBLabel, results[1].warnings),
 		)
-		if errA != nil || errB != nil {
+		if errA, errB := results[0].err, results[1].err; errA != nil || errB != nil {
 			var msgs []string
 			if errA != nil {
 				msgs = append(msgs, fmt.Sprintf("window A: %v", errA))
@@ -195,32 +137,24 @@ func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 			}
 			msg := strings.Join(msgs, "; ")
 			mcpLog(ctx, req, logLevelError, "metrics_compare", msg)
-			if invalidAggregationSpecError(errA) || invalidAggregationSpecError(errB) {
-				return errResult(formatRegistryMisconfigError(in.MetricType, errors.Join(errA, errB))), nil, nil
-			}
-			if isInvalidFilterError(errA) || isInvalidFilterError(errB) {
-				return errResult(enrichInvalidFilterError(ctx, req, d.Querier, project, in.MetricType, in.Filter, errors.Join(errA, errB))), nil, nil
-			}
-			return errResult(fmt.Sprintf("Failed to query: %s", msg)), nil, nil
+			return metricQueryErrorResult(ctx, req, d.Querier, project, in.MetricType, in.Filter,
+				"Failed to query: "+msg, errA, errB), nil, nil
 		}
 
-		unsupportedCount := reportUnsupportedPoints(ctx, req, "metrics_compare", in.MetricType, seriesA) +
-			reportUnsupportedPoints(ctx, req, "metrics_compare", in.MetricType, seriesB)
-
-		pointsA := mergePoints(seriesA)
-		pointsB := mergePoints(seriesB)
+		pointsA := mergePoints(results[0].series)
+		pointsB := mergePoints(results[1].series)
+		nonFinitePoints := results[0].warnings.NonFinitePoints + results[1].warnings.NonFinitePoints
 
 		if len(pointsA) == 0 || len(pointsB) == 0 {
 			var emptyLabels []string
 			var notes []string
-			if len(pointsA) == 0 {
-				emptyLabels = append(emptyLabels, windowALabel)
-				windowDesc := fmt.Sprintf("%s (%s to %s)", windowALabel, aFrom.Format(time.RFC3339), aTo.Format(time.RFC3339))
-				notes = append(notes, emptyWindowMessage(in.MetricType, windowDesc, descriptor.Kind, in.Filter))
-			}
-			if len(pointsB) == 0 {
-				emptyLabels = append(emptyLabels, windowBLabel)
-				windowDesc := fmt.Sprintf("%s (%s to %s)", windowBLabel, bFrom.Format(time.RFC3339), bTo.Format(time.RFC3339))
+			for i, pts := range [2][]metrics.Point{pointsA, pointsB} {
+				if len(pts) > 0 {
+					continue
+				}
+				w := windows[i]
+				emptyLabels = append(emptyLabels, w.label)
+				windowDesc := fmt.Sprintf("%s (%s to %s)", w.label, w.from.Format(time.RFC3339), w.to.Format(time.RFC3339))
 				notes = append(notes, emptyWindowMessage(in.MetricType, windowDesc, descriptor.Kind, in.Filter))
 			}
 
@@ -231,53 +165,37 @@ func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 			case len(pointsA) > 0 && len(pointsB) == 0:
 				trendShift = "disappeared"
 			}
-			noDataNote := strings.Join(notes, "\n\n")
-			if warningsNote != "" {
-				if noDataNote != "" {
-					noDataNote += "\n\n"
-				}
-				noDataNote += warningsNote
-			}
-			if unsupportedCount > 0 {
-				if noDataNote != "" {
-					noDataNote += "\n\n"
-				}
-				noDataNote += fmt.Sprintf("Dropped %d points with unsupported or malformed value types during decode (see server log).", unsupportedCount)
-			}
 			result := &CompareResult{
 				WindowALabel:              windowALabel,
 				WindowBLabel:              windowBLabel,
 				TrendShift:                trendShift,
 				ClassificationA:           string(metrics.ClassInsufficientData),
 				ClassificationB:           string(metrics.ClassInsufficientData),
-				ClassificationConfidenceA: "low",
-				ClassificationConfidenceB: "low",
+				ClassificationConfidenceA: string(metrics.ConfidenceLow),
+				ClassificationConfidenceB: string(metrics.ConfidenceLow),
 				NoData:                    true,
 				NoDataWindows:             emptyLabels,
-				Note:                      noDataNote,
+				Note:                      joinNote(append(notes, warningsNote)...),
 				MetricType:                in.MetricType,
 				Unit:                      meta.Unit,
-				NonFinitePoints:           warningsA.NonFinitePoints + warningsB.NonFinitePoints,
+				NonFinitePoints:           nonFinitePoints,
 			}
 			if len(pointsA) > 0 {
 				expectedA := expectedPointsForWindow(aTo.Sub(aFrom), int(stepSeconds))
 				fA := metrics.Process(pointsA, nil, meta, int(stepSeconds), expectedA, metrics.Window{Start: aFrom, End: aTo})
 				result.WindowAMean = fA.Mean
-				result.ClassificationA = safeClassification(fA.Classification)
+				result.ClassificationA = string(fA.Classification)
 				result.ClassificationConfidenceA = string(fA.Confidence)
 			}
 			if len(pointsB) > 0 {
 				expectedB := expectedPointsForWindow(bTo.Sub(bFrom), int(stepSeconds))
 				fB := metrics.Process(pointsB, nil, meta, int(stepSeconds), expectedB, metrics.Window{Start: bFrom, End: bTo})
 				result.WindowBMean = fB.Mean
-				result.ClassificationB = safeClassification(fB.Classification)
+				result.ClassificationB = string(fB.Classification)
 				result.ClassificationConfidenceB = string(fB.Confidence)
 			}
-			callResult := compareCallResult(result)
-			if callResult.IsError {
-				return callResult, nil, nil
-			}
-			return callResult, result, nil
+			res, out := chartCallResult(result, result.withoutChart(), compareChartStaticURI)
+			return res, out, nil
 		}
 
 		sendProgress(ctx, req, 3, 4, "Processing results")
@@ -290,20 +208,10 @@ func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 		fB := metrics.Process(pointsB, pointsA, meta, int(stepSeconds), expectedBaseA, metrics.Window{Start: bFrom, End: bTo})
 
 		trendShift := "unchanged"
-		if classificationSeverity(fB.Classification) > classificationSeverity(fA.Classification) {
+		if fB.Classification.Severity() > fA.Classification.Severity() {
 			trendShift = "degraded"
-		} else if classificationSeverity(fB.Classification) < classificationSeverity(fA.Classification) {
+		} else if fB.Classification.Severity() < fA.Classification.Severity() {
 			trendShift = "improved"
-		}
-
-		sloBreachIntroduced := fB.SLOBreach && !fA.SLOBreach
-
-		var note string
-		if warningsNote != "" {
-			note = warningsNote
-		}
-		if unsupportedCount > 0 {
-			note = joinNote(note, fmt.Sprintf("Dropped %d points with unsupported or malformed value types during decode (see server log).", unsupportedCount))
 		}
 
 		cmp := &CompareResult{
@@ -313,29 +221,26 @@ func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 			WindowBMean:               fB.Mean,
 			DeltaPct:                  fB.DeltaPct,
 			TrendShift:                trendShift,
-			ClassificationA:           safeClassification(fA.Classification),
-			ClassificationB:           safeClassification(fB.Classification),
+			ClassificationA:           string(fA.Classification),
+			ClassificationB:           string(fB.Classification),
 			ClassificationConfidenceA: string(fA.Confidence),
 			ClassificationConfidenceB: string(fB.Confidence),
 			TrendScoreA:               fA.TrendScore,
 			TrendScoreB:               fB.TrendScore,
 			StepChangePct:             fB.StepChangePct,
-			SLOBreachIntroduced:       sloBreachIntroduced,
-			Note:                      note,
-			NonFinitePoints:           warningsA.NonFinitePoints + warningsB.NonFinitePoints,
+			SLOBreachIntroduced:       fB.SLOBreach && !fA.SLOBreach,
+			Note:                      warningsNote,
+			NonFinitePoints:           nonFinitePoints,
+			MetricType:                in.MetricType,
+			Unit:                      meta.Unit,
+			ChartPointsA:              toChartPoints(pointsA),
+			ChartPointsB:              toChartPoints(pointsB),
 		}
 		if fB.StepChangeAt != nil {
 			cmp.StepChangeAt = fB.StepChangeAt.Format(time.RFC3339)
 		}
-		cmp.MetricType = in.MetricType
-		cmp.Unit = meta.Unit
-		cmp.ChartPointsA = toChartPoints(pointsA)
-		cmp.ChartPointsB = toChartPoints(pointsB)
-		callResult := compareCallResult(cmp)
-		if callResult.IsError {
-			return callResult, nil, nil
-		}
-		return callResult, cmp, nil
+		res, out := chartCallResult(cmp, cmp.withoutChart(), compareChartStaticURI)
+		return res, out, nil
 	})
 }
 
@@ -373,47 +278,8 @@ type CompareResult struct {
 	Unit       string `json:"unit,omitempty"`
 
 	// Chart data: present in structuredContent (the SDK serializes the second handler return value);
-	// excluded from LLM content by compareCallResult (zeroed on the shallow copy).
+	// excluded from LLM content by chartCallResult (see withoutChart).
 	// Also nil on error returns and on the no-data path, where chart points are never populated.
 	ChartPointsA []chartPoint `json:"chart_points_a,omitempty"`
 	ChartPointsB []chartPoint `json:"chart_points_b,omitempty"`
-}
-
-func parseRFC3339(s, field string) (time.Time, error) {
-	if s == "" {
-		return time.Time{}, fmt.Errorf("%s is required", field)
-	}
-	t, err := time.Parse(time.RFC3339, s)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("invalid %s %q: must be RFC3339 format", field, s)
-	}
-	return t, nil
-}
-
-func classificationSeverity(class metrics.Classification) int {
-	switch class {
-	case metrics.ClassInsufficientData:
-		return 0
-	case metrics.ClassStable:
-		return 0
-	case metrics.ClassImprovement:
-		return -1
-	case metrics.ClassNoisy:
-		return 1
-	case metrics.ClassRecovery:
-		return 2
-	case metrics.ClassSpike:
-		return 3
-	case metrics.ClassFlapping:
-		return 4
-	case metrics.ClassStepRegression:
-		return 5
-	case metrics.ClassSustainedRegression:
-		return 6
-	case metrics.ClassSaturation:
-		return 7
-	default:
-		// Unknown classifications are treated as high severity (fail-safe).
-		return 6
-	}
 }

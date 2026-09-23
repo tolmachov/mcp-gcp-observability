@@ -1,10 +1,10 @@
 package authsrv
 
 import (
+	"bytes"
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -105,6 +105,17 @@ func TestStoreChecksAbsoluteExpiry(t *testing.T) {
 	require.ErrorIs(t, store.RotateGrant(context.Background(), "expired", tokenHash("s"), grantRecord{}, now), errGrantInactive)
 }
 
+// TestCorruptGrantError pins that an undecodable grant is logged under the
+// event name the alert filter matches and reported as both a missing and a
+// corrupt grant.
+func TestCorruptGrantError(t *testing.T) {
+	var logs bytes.Buffer
+	err := corruptGrantError(slog.New(slog.NewTextHandler(&logs, nil)), "fam", errors.New("bad field"))
+	require.ErrorIs(t, err, errStateNotFound)
+	require.ErrorIs(t, err, errGrantCorrupt)
+	assert.Contains(t, logs.String(), "level=ERROR msg=oauth_grant_corrupt family_id=fam")
+}
+
 type failingStateStore struct {
 	oauthStateStore
 	err error
@@ -113,27 +124,6 @@ type failingStateStore struct {
 func (s failingStateStore) Health(context.Context) error { return s.err }
 func (s failingStateStore) GetGrant(context.Context, string) (grantRecord, error) {
 	return grantRecord{}, s.err
-}
-
-func TestStoreOutageIs503Not401(t *testing.T) {
-	base := newMemoryStateStore()
-	failure := errors.New("firestore unavailable")
-	cfg := testConfig(t)
-	cfg.stateStore = failingStateStore{oauthStateStore: base, err: failure}
-	a, err := newAuthServer(cfg, nil, happyIdP())
-	require.NoError(t, err)
-	now := time.Now()
-	token, err := sealBlob(a.sealer, accessBlob, accessClaims{FamilyID: "family", ExpiresAt: now.Add(time.Hour).Unix()})
-	require.NoError(t, err)
-
-	called := false
-	handler := a.RequireStoreAvailable(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
-	req := httptest.NewRequest(http.MethodPost, testIssuer, nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, req)
-	assert.Equal(t, http.StatusServiceUnavailable, recorder.Code)
-	assert.False(t, called)
 }
 
 func TestMemoryStoreConcurrentAccessIsRaceSafe(t *testing.T) {

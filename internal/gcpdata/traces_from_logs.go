@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-
-	logging "cloud.google.com/go/logging/apiv2"
 )
 
 // sampleMessageMaxLen caps the sample log line stored per discovered trace.
@@ -14,25 +12,21 @@ const sampleMessageMaxLen = 300
 
 // severityRanks orders Cloud Logging severities so the most severe entry of a
 // trace can be selected as its representative sample.
-var severityRanks = map[string]int{
-	"DEFAULT":   0,
-	"DEBUG":     1,
-	"INFO":      2,
-	"NOTICE":    3,
-	"WARNING":   4,
-	"ERROR":     5,
-	"CRITICAL":  6,
-	"ALERT":     7,
-	"EMERGENCY": 8,
-}
+var severityRanks = func() map[string]int {
+	ranks := make(map[string]int, len(Severities))
+	for i, s := range Severities {
+		ranks[s] = i
+	}
+	return ranks
+}()
 
 // FindTracesFromLogs scans logs matching a filter, groups the matching entries
 // by trace ID, and returns the distinct traces with aggregated context. It
 // bridges the "found something in logs -> inspect its trace" workflow: feed an
 // arbitrary log filter (e.g. severity>=ERROR for a service) and pivot to
 // trace_get on the returned IDs. Entries without a trace are skipped.
-func FindTracesFromLogs(ctx context.Context, client *logging.Client, project, filter, timeFilter string, scanLimit, resultLimit int) (*TraceFromLogsList, error) {
-	logs, err := QueryLogs(ctx, client, project, AppendFilter(filter, timeFilter), scanLimit, "desc", "")
+func (q *LoggingQuerier) FindTracesFromLogs(ctx context.Context, project, filter, timeFilter string, scanLimit, resultLimit int) (*TraceFromLogsList, error) {
+	logs, err := q.QueryLogs(ctx, project, AppendFilter(filter, timeFilter), scanLimit, "desc", "")
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +69,7 @@ func aggregateTracesFromLogs(logs *LogQueryResult, resultLimit int) *TraceFromLo
 				a.trace.LastSeen = e.Timestamp
 			}
 		}
-		if r := severityRank(e.Severity); r > a.sevRank {
+		if r := severityRanks[e.Severity]; r > a.sevRank {
 			a.sevRank = r
 			a.trace.MaxSeverity = e.Severity
 			if msg := sampleLogMessage(e); msg != "" {
@@ -123,10 +117,6 @@ func aggregateTracesFromLogs(logs *LogQueryResult, resultLimit int) *TraceFromLo
 	return result
 }
 
-func severityRank(s string) int {
-	return severityRanks[strings.ToUpper(s)]
-}
-
 // sampleLogMessage extracts a short representative line from a log entry,
 // preferring the text payload and falling back to common JSON message fields.
 func sampleLogMessage(e *LogEntry) string {
@@ -147,29 +137,19 @@ func sampleLogMessage(e *LogEntry) string {
 
 // firstLine returns the first non-empty line of s, capped at sampleMessageMaxLen.
 func firstLine(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return ""
+	line, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
+	line = strings.TrimSpace(line)
+	if len(line) > sampleMessageMaxLen {
+		line = truncateUTF8(line, sampleMessageMaxLen) + "..."
 	}
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		s = strings.TrimSpace(s[:i])
-	}
-	if len(s) > sampleMessageMaxLen {
-		s = s[:sampleMessageMaxLen] + "..."
-	}
-	return s
+	return line
 }
 
-// serviceFromResourceInfo derives a service name from a converted resource's
-// labels, mirroring extractServiceName for the post-conversion LogEntry shape.
+// serviceFromResourceInfo derives a service name from a converted resource,
+// using the same label keys as extractServiceName.
 func serviceFromResourceInfo(r *ResourceInfo) string {
 	if r == nil {
 		return ""
 	}
-	for _, key := range []string{"service_name", "container_name", "namespace_name", "function_name"} {
-		if v := r.Labels[key]; v != "" {
-			return v
-		}
-	}
-	return r.Type
+	return serviceName(r.Type, r.Labels)
 }

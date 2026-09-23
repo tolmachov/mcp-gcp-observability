@@ -86,3 +86,21 @@ func TestEveryProjectToolHasPinnedOrUnpinnedSchema(t *testing.T) {
 		})
 	}
 }
+
+// TestRequiredStringPropertiesRejectEmpty pins that every required string
+// input is non-empty at the schema level, so the SDK rejects "" before the
+// handler runs and handlers need no "X is required" checks of their own.
+func TestRequiredStringPropertiesRejectEmpty(t *testing.T) {
+	for _, tool := range listedProjectTools(t, MustProjectPolicy("pinned-project")) {
+		schema := schemaObject(t, tool.InputSchema)
+		properties := schema["properties"].(map[string]any)
+		required, _ := schema["required"].([]any)
+		for _, name := range required {
+			prop := properties[name.(string)].(map[string]any)
+			if prop["type"] != "string" || prop["enum"] != nil {
+				continue
+			}
+			assert.Equal(t, 1.0, prop["minLength"], "tool %s property %s", tool.Name, name)
+		}
+	}
+}

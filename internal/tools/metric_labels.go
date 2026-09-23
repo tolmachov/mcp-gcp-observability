@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -27,28 +28,30 @@ type AvailableLabels struct {
 }
 
 // availableLabelsFromDescriptor builds an AvailableLabels value from a metric
-// descriptor the handler has already fetched.
+// descriptor the handler has already fetched. GetResourceLabels loads every
+// resource type of the project in one listing, so once it fails the remaining
+// types are marked incomplete instead of repeating the failing listing.
 func availableLabelsFromDescriptor(ctx context.Context, req *mcp.CallToolRequest, querier gcpdata.MetricsQuerier, project, metricType string, desc gcpdata.MetricDescriptorBasic) *AvailableLabels {
 	result := &AvailableLabels{}
 	for _, l := range desc.Labels {
 		result.Metric = append(result.Metric, l.Key)
 	}
-	sort.Strings(result.Metric)
+	slices.Sort(result.Metric)
 
 	if len(desc.MonitoredResourceTypes) > 0 {
 		result.Resource = make(map[string][]string, len(desc.MonitoredResourceTypes))
-		for _, rt := range desc.MonitoredResourceTypes {
+		for i, rt := range desc.MonitoredResourceTypes {
 			labels, rerr := querier.GetResourceLabels(ctx, project, rt)
 			if rerr != nil {
 				mcpLog(ctx, req, logLevelWarning, "metric_labels",
 					fmt.Sprintf("GetResourceLabels failed for type %q (metric %q): %v", rt, metricType, rerr))
-				result.IncompleteTypes = append(result.IncompleteTypes, rt)
-				continue
+				result.IncompleteTypes = append(result.IncompleteTypes, desc.MonitoredResourceTypes[i:]...)
+				break
 			}
 			if labels == nil {
 				continue
 			}
-			sort.Strings(labels)
+			slices.Sort(labels)
 			result.Resource[rt] = labels
 		}
 		if len(result.Resource) == 0 {

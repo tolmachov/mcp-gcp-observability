@@ -20,26 +20,23 @@ func RegisterProfilerList(s *mcp.Server, d Deps) {
 			"matched case- and separator-insensitively, so 'crypto-steam' finds 'cryptosteam'). "+
 			"If a target matches nothing, the warning lists the available targets. "+
 			"Requires Cloud Profiler API to be enabled."),
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			OpenWorldHint:  new(true),
-			IdempotentHint: true,
-		},
+		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[ProfilerListInput](d.Project,
-			enumPatch{"profile_type", enumProfileType},
+			enumProp("profile_type", gcpdata.ProfileTypes, ""),
 		),
 		OutputSchema: outputSchemaFor[gcpdata.ProfileListResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerListInput) (*mcp.CallToolResult, *gcpdata.ProfileListResult, error) {
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
-		if err := gcpdata.ValidateProfileType(in.ProfileType); err != nil {
-			return errResult(err.Error()), nil, nil
-		}
-		startTime, endTime, err := gcpdata.ParseTimeFilters(in.StartTime, in.EndTime)
+		startTime, err := parseRFC3339Opt(in.StartTime, "start_time")
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
+		}
+		endTime, err := parseRFC3339Opt(in.EndTime, "end_time")
+		if err != nil {
+			return ErrorResult(err.Error()), nil, nil
 		}
 
 		pageSize := clampLimit(in.Limit, 20, 100)
@@ -61,7 +58,7 @@ func RegisterProfilerList(s *mcp.Server, d Deps) {
 		})
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "profiler_list", fmt.Sprintf("list profiles failed: %v", err))
-			return errResult(fmt.Sprintf("Failed to list profiles: %v. Verify the project_id and that Cloud Profiler API is enabled.", err)), nil, nil
+			return gcpErrorResult(fmt.Sprintf("Failed to list profiles: %v", err), err, "Verify the project_id and that Cloud Profiler API is enabled."), nil, nil
 		}
 
 		return nil, result, nil

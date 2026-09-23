@@ -9,29 +9,22 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
-	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 	"github.com/tolmachov/mcp-gcp-observability/internal/tools"
 )
 
 // registerResources adds MCP resources to srv.
-func (s *Server) registerResources(srv *mcp.Server, client *gcpclient.Client, reg *metrics.Registry) error {
-	cfg := client.Config()
+func (s *Server) registerResources(srv *mcp.Server, d tools.Deps) {
 	projectConfig := map[string]any{
 		"project_mode":           "required",
-		"metrics_registry_file":  cfg.MetricsRegistryFile,
-		"metrics_registry_count": reg.Count(),
+		"metrics_registry_file":  s.cfg.MetricsRegistryFile,
+		"metrics_registry_count": d.Registry.Count(),
 		"logs_hard_limit":        tools.LogsHardLimit,
 		"errors_hard_limit":      tools.ErrorsHardLimit,
 	}
 	if s.project.Pinned() {
 		projectConfig["project_mode"] = "pinned"
 		projectConfig["project"] = s.project.Project()
-	}
-	configJSON, err := json.Marshal(projectConfig)
-	if err != nil {
-		return fmt.Errorf("failed to marshal config resource during startup: %w", err)
 	}
 
 	srv.AddResource(
@@ -42,6 +35,10 @@ func (s *Server) registerResources(srv *mcp.Server, client *gcpclient.Client, re
 			MIMEType:    "application/json",
 		},
 		func(_ context.Context, _ *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+			configJSON, err := json.Marshal(projectConfig)
+			if err != nil {
+				return nil, fmt.Errorf("marshaling config resource: %w", err)
+			}
 			return &mcp.ReadResourceResult{
 				Contents: []*mcp.ResourceContents{{
 					URI:      "config://project",
@@ -52,17 +49,15 @@ func (s *Server) registerResources(srv *mcp.Server, client *gcpclient.Client, re
 		},
 	)
 
-	tools.RegisterMetricsChartStaticResource(srv)
-	tools.RegisterMetricsCompareChartStaticResource(srv)
-	s.registerProjectResources(srv, client)
-	return nil
+	tools.RegisterChartResources(srv)
+	s.registerProjectResources(srv, d)
 }
 
 // resourceTemplateTimeout bounds the GCP calls backing the navigable resource
 // templates so a slow backend cannot hang a resources/read request.
 const resourceTemplateTimeout = 30 * time.Second
 
-// registerResourceTemplates adds URI-templated resources that let clients
+// registerProjectResources adds the per-project resources that let clients
 // navigate a project's recent observability data like a filesystem:
 //
 //	gcp-logs://{project}/recent     — severity/error/service summary of recent logs
@@ -71,7 +66,7 @@ const resourceTemplateTimeout = 30 * time.Second
 //
 // Pinned deployments expose exact URIs; unpinned deployments expose templates
 // whose project segment is mandatory.
-func (s *Server) registerProjectResources(srv *mcp.Server, client *gcpclient.Client) {
+func (s *Server) registerProjectResources(srv *mcp.Server, d tools.Deps) {
 	type spec struct {
 		scheme, path, name, description string
 		fetch                           func(context.Context, string) (any, error)
@@ -80,18 +75,18 @@ func (s *Server) registerProjectResources(srv *mcp.Server, client *gcpclient.Cli
 		{"gcp-logs", "/recent", "Recent Logs Summary",
 			"Severity distribution, top errors and top services from recent logs for the given project.",
 			func(ctx context.Context, project string) (any, error) {
-				return gcpdata.SummarizeLogs(ctx, client.LoggingClient(), project, "", nil)
+				return d.Logs.SummarizeLogs(ctx, project, "", nil)
 			}},
 		{"gcp-errors", "/groups", "Error Reporting Groups",
 			"Current Error Reporting groups for the given project over the last 24 hours, by count.",
 			func(ctx context.Context, project string) (any, error) {
-				return gcpdata.ListErrors(ctx, client.ErrorsClient(), project, gcpdata.ErrorWindow24H, 50, "", "")
+				return d.Errors.ListErrors(ctx, project, gcpdata.ErrorWindow24H, 50, "", "")
 			}},
 		{"gcp-traces", "/recent", "Recent Traces",
 			"Traces from the last hour for the given project.",
 			func(ctx context.Context, project string) (any, error) {
 				now := time.Now()
-				return gcpdata.ListTraces(ctx, client.TraceClient(), project,
+				return d.Traces.ListTraces(ctx, project,
 					"", "", "", now.Add(-time.Hour), now, 50, "")
 			}},
 	}

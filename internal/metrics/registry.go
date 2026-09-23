@@ -1,12 +1,15 @@
 package metrics
 
 import (
+	"bytes"
 	_ "embed"
 	"errors"
 	"fmt"
+	"io"
+	"iter"
 	"maps"
 	"os"
-	"sort"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -24,46 +27,49 @@ type RegistryConfig struct {
 
 type Registry struct {
 	metrics map[string]MetricMeta
+	// names is the sorted key set of metrics, computed once at construction
+	// (the registry is immutable afterwards).
+	names []string
+}
+
+func newRegistry(m map[string]MetricMeta) *Registry {
+	return &Registry{metrics: m, names: slices.Sorted(maps.Keys(m))}
 }
 
 // NewRegistry creates an empty registry that relies on auto-detection only.
-// Use NewDefaultRegistry if you want the embedded GCP defaults instead.
+// Use LoadRegistry("") if you want the embedded GCP defaults instead.
 func NewRegistry() *Registry {
-	return &Registry{metrics: make(map[string]MetricMeta)}
+	return newRegistry(make(map[string]MetricMeta))
 }
 
-// NewDefaultRegistry populates a registry from embedded default YAML.
-// Errors if embedded YAML fails to parse (tested, should not happen).
-func NewDefaultRegistry() (*Registry, error) {
-	cfg, err := parseRegistryBytes(defaultRegistryYAML)
-	if err != nil {
-		return nil, fmt.Errorf("parsing embedded default registry: %w", err)
-	}
-	return &Registry{metrics: cfg.Metrics}, nil
-}
-
-// NewRegistryFromMetaMap creates a Registry directly from a MetricMeta map,
-// bypassing YAML parsing and load-time validation. Intended for tests that
-// need to inject configurations (e.g. invalid AggregationSpec) that LoadRegistry
+// NewRegistryFromMetaMap is test-only. It creates a Registry directly from a
+// MetricMeta map, bypassing YAML parsing and load-time validation, so tests
+// can inject configurations (e.g. invalid AggregationSpec) that LoadRegistry
 // would otherwise reject.
 func NewRegistryFromMetaMap(m map[string]MetricMeta) *Registry {
-	cp := make(map[string]MetricMeta, len(m))
-	maps.Copy(cp, m)
-	return &Registry{metrics: cp}
+	return newRegistry(maps.Clone(m))
 }
 
 // LoadRegistry loads a YAML overlay merged on top of embedded defaults.
-// Merges field-by-field with explicit overwrites. related_metrics
-// is extended (set-union). Validation runs on merged result.
+// Merges field-by-field with explicit overwrites; related_metrics and
+// keywords are extended (set-union). Validation runs on merged result.
 // If path is empty, only embedded defaults are used.
 func LoadRegistry(path string) (*Registry, error) {
-	base, err := parseRegistryBytes(defaultRegistryYAML)
-	if err != nil {
+	var base RegistryConfig
+	if err := decodeRegistryYAML(defaultRegistryYAML, &base); err != nil {
 		return nil, fmt.Errorf("parsing embedded default registry: %w", err)
+	}
+	if base.Metrics == nil {
+		base.Metrics = make(map[string]MetricMeta)
+	}
+	for name, meta := range base.Metrics {
+		if err := meta.Validate(name); err != nil {
+			return nil, fmt.Errorf("invalid embedded registry entry %q: %w", name, err)
+		}
 	}
 
 	if path == "" {
-		return &Registry{metrics: base.Metrics}, nil
+		return newRegistry(base.Metrics), nil
 	}
 
 	// The registry path is an operator-supplied config file (METRICS_REGISTRY_FILE
@@ -72,25 +78,20 @@ func LoadRegistry(path string) (*Registry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
-	overlay, err := parseRegistryRawBytes(data)
-	if err != nil {
+	var overlay struct {
+		Metrics map[string]metricOverlay `yaml:"metrics"`
+	}
+	if err := decodeRegistryYAML(data, &overlay); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	if err := rejectOverlayNulls(data); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
 
-	// Collect all errors and sort for deterministic, complete error reporting.
-	names := make([]string, 0, len(overlay))
-	for name := range overlay {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
+	// Validate every entry in sorted order for deterministic, complete error reporting.
 	var overlayErrs []error
-	for _, name := range names {
-		fields := overlay[name]
-		merged, errs := mergeMetricFields(base.Metrics[name], fields)
-		for _, e := range errs {
-			overlayErrs = append(overlayErrs, fmt.Errorf("overlay metric %q: %w", name, e))
-		}
+	for _, name := range slices.Sorted(maps.Keys(overlay.Metrics)) {
+		merged := overlay.Metrics[name].applyTo(base.Metrics[name])
 		if err := merged.Validate(name); err != nil {
 			overlayErrs = append(overlayErrs, fmt.Errorf("overlay metric %q: %w", name, err))
 			continue
@@ -101,313 +102,153 @@ func LoadRegistry(path string) (*Registry, error) {
 		return nil, errors.Join(overlayErrs...)
 	}
 
-	return &Registry{metrics: base.Metrics}, nil
+	return newRegistry(base.Metrics), nil
 }
 
-// parseRegistryRawBytes parses the overlay YAML into a two-level map
-// (metricType → fieldName → value) so we can distinguish "field present in
-// YAML" from "field absent" — critical for field-level merge semantics.
-// Typed unmarshal into MetricMeta would erase that distinction because Go
-// zero values are indistinguishable from unset YAML keys.
-func parseRegistryRawBytes(data []byte) (map[string]map[string]any, error) {
-	var cfg struct {
-		Metrics map[string]map[string]any `yaml:"metrics"`
+// decodeRegistryYAML decodes registry YAML into v, rejecting unknown keys so
+// a typo like "acros_groups" fails the load instead of being ignored. Type
+// mismatches are all collected by the decoder into one error with line
+// numbers. An empty document decodes to the zero value.
+func decodeRegistryYAML(data []byte, v any) error {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(v); err != nil && !errors.Is(err, io.EOF) {
+		return fmt.Errorf("decoding registry YAML: %w", err)
 	}
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("unmarshaling registry overlay YAML: %w", err)
-	}
-	if cfg.Metrics == nil {
-		cfg.Metrics = make(map[string]map[string]any)
-	}
-	return cfg.Metrics, nil
+	return nil
 }
 
-// mergeMetricFields applies the user-supplied overlay fields on top of the
-// base MetricMeta entry. Only keys present in the overlay are touched.
-// related_metrics and keywords are set-unioned with base; all other fields
-// replace.
-//
-// Type mismatches (e.g. `kind: 1` when a string is expected) are collected
-// into the returned error slice rather than silently dropped, so operators
-// see "overlay metric X: field `kind` must be string, got int" instead of
-// discovering at runtime that their overlay edit had no effect. Merging
-// continues past individual mismatches so a single typo doesn't hide later
-// errors from the same file.
-func mergeMetricFields(base MetricMeta, overlay map[string]any) (MetricMeta, []error) {
-	result := base
-	// Clone the slice so appending never mutates the shared base entry.
-	if len(result.RelatedMetrics) > 0 {
-		cloned := make([]string, len(result.RelatedMetrics))
-		copy(cloned, result.RelatedMetrics)
-		result.RelatedMetrics = cloned
+// rejectOverlayNulls fails on an explicit null (`key:`, `key: null`, `~`)
+// in an overlay metric entry, reporting every one with its line. The typed
+// decode cannot tell a null from an absent key — both leave the field nil —
+// so a null meant to clear a base value would be silently ignored.
+func rejectOverlayNulls(data []byte) error {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("decoding registry YAML: %w", err)
 	}
-
+	if len(doc.Content) == 0 {
+		return nil
+	}
 	var errs []error
-	typeErr := func(field, want string, got any) {
-		errs = append(errs, fmt.Errorf("field %q must be %s, got %T", field, want, got))
-	}
-
-	for key, val := range overlay {
-		switch key {
-		case "kind":
-			if s, ok := val.(string); ok {
-				result.Kind = MetricKind(s)
-			} else {
-				typeErr(key, "string", val)
-			}
-		case "unit":
-			if s, ok := val.(string); ok {
-				result.Unit = s
-			} else {
-				typeErr(key, "string", val)
-			}
-		case "better_direction":
-			if s, ok := val.(string); ok {
-				result.BetterDirection = BetterDirection(s)
-			} else {
-				typeErr(key, "string", val)
-			}
-		case "slo_threshold":
-			if f, ok := toFloat64(val); ok {
-				result.SLOThreshold = &f
-			} else {
-				typeErr(key, "number", val)
-			}
-		case "saturation_cap":
-			if f, ok := toFloat64(val); ok {
-				result.SaturationCap = &f
-			} else {
-				typeErr(key, "number", val)
-			}
-		case "related_metrics":
-			// Extend, do not replace. Dedupe while preserving order so
-			// base defaults appear first and user additions come after.
-			list, ok := val.([]any)
-			if !ok {
-				typeErr(key, "list of strings", val)
-				continue
-			}
-			seen := make(map[string]bool, len(result.RelatedMetrics))
-			for _, m := range result.RelatedMetrics {
-				seen[m] = true
-			}
-			for i, item := range list {
-				s, ok := item.(string)
-				if !ok {
-					errs = append(errs, fmt.Errorf("field %q[%d] must be string, got %T", key, i, item))
-					continue
-				}
-				if seen[s] {
-					continue
-				}
-				seen[s] = true
-				result.RelatedMetrics = append(result.RelatedMetrics, s)
-			}
-		case "keywords":
-			// Extend, do not replace — same set-union semantics as
-			// related_metrics. Users can add their own search synonyms
-			// without having to re-list the embedded defaults.
-			list, ok := val.([]any)
-			if !ok {
-				typeErr(key, "list of strings", val)
-				continue
-			}
-			// Clone base slice so appending never mutates the shared base.
-			if len(result.Keywords) > 0 {
-				cloned := make([]string, len(result.Keywords))
-				copy(cloned, result.Keywords)
-				result.Keywords = cloned
-			}
-			seen := make(map[string]bool, len(result.Keywords))
-			for _, k := range result.Keywords {
-				seen[strings.ToLower(k)] = true
-			}
-			for i, item := range list {
-				s, ok := item.(string)
-				if !ok {
-					errs = append(errs, fmt.Errorf("field %q[%d] must be string, got %T", key, i, item))
-					continue
-				}
-				lk := strings.ToLower(s)
-				if seen[lk] {
-					continue
-				}
-				seen[lk] = true
-				result.Keywords = append(result.Keywords, s)
-			}
-		case "thresholds":
-			m, ok := val.(map[string]any)
-			if !ok {
-				typeErr(key, "map", val)
-				continue
-			}
-			// Field-merge nested thresholds against existing ones (or
-			// start from the kind-default if none were set).
-			var thr ClassificationThresholds
-			if result.Thresholds != nil {
-				thr = *result.Thresholds
-			} else {
-				thr = DefaultThresholdsFor(result.Kind)
-			}
-			if terrs := mergeThresholds(&thr, m); len(terrs) > 0 {
-				for _, e := range terrs {
-					errs = append(errs, fmt.Errorf("thresholds: %w", e))
-				}
-			}
-			result.Thresholds = &thr
-		case "aggregation":
-			m, ok := val.(map[string]any)
-			if !ok {
-				typeErr(key, "map", val)
-				continue
-			}
-			// Replace-semantics: aggregation is a tightly-coupled triplet;
-			// overlay replaces rather than field-merges. See mergeAggregation.
-			var agg AggregationSpec
-			aerrs := mergeAggregation(&agg, m)
-			if len(aerrs) > 0 {
-				for _, e := range aerrs {
-					errs = append(errs, fmt.Errorf("aggregation: %w", e))
-				}
-				// Skip assignment on any merge error so a partially-built or
-				// zero-value AggregationSpec cannot leak downstream. Validate()
-				// on a half-populated spec produces a confusing message; we'd
-				// rather the overlay load fail loudly and the caller fix the
-				// YAML than ship a silently-broken registry entry.
-				continue
-			}
-			result.Aggregation = &agg
+	root := doc.Content[0]
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value != "metrics" {
+			continue
+		}
+		entries := root.Content[i+1]
+		for j := 0; j+1 < len(entries.Content); j += 2 {
+			errs = appendNulls(errs, entries.Content[j+1], "metrics."+entries.Content[j].Value)
 		}
 	}
-	return result, errs
+	return errors.Join(errs...)
 }
 
-// mergeAggregation populates an AggregationSpec from overlay fields.
-// Unlike mergeThresholds, it does not inherit from a base: aggregation is
-// a tightly-coupled triplet (group_by/within_group/across_groups) and
-// mixing user fields with base fields can produce nonsensical
-// combinations, so callers pass a zero-value dst and restate every
-// relevant field. Reducers are validated inline so typos surface at the
-// specific field instead of later via an opaque empty-string Validate
-// message. Unknown keys are reported as errors (defense-in-depth against
-// typos like "acros_groups").
-func mergeAggregation(dst *AggregationSpec, overlay map[string]any) []error {
-	var errs []error
-	for key, val := range overlay {
-		switch key {
-		case "group_by":
-			list, ok := val.([]any)
-			if !ok {
-				errs = append(errs, fmt.Errorf("field %q must be list of strings, got %T", key, val))
-				continue
-			}
-			dst.GroupBy = dst.GroupBy[:0]
-			for i, item := range list {
-				s, ok := item.(string)
-				if !ok {
-					errs = append(errs, fmt.Errorf("field %q[%d] must be string, got %T", key, i, item))
-					continue
-				}
-				dst.GroupBy = append(dst.GroupBy, s)
-			}
-		case "within_group":
-			s, ok := val.(string)
-			if !ok {
-				errs = append(errs, fmt.Errorf("field %q must be string, got %T", key, val))
-				continue
-			}
-			r := Reducer(s)
-			if !r.IsValid() {
-				errs = append(errs, fmt.Errorf("field %q: invalid reducer %q (want mean|sum|max|min)", key, s))
-				continue
-			}
-			dst.WithinGroup = r
-		case "across_groups":
-			s, ok := val.(string)
-			if !ok {
-				errs = append(errs, fmt.Errorf("field %q must be string, got %T", key, val))
-				continue
-			}
-			r := Reducer(s)
-			if !r.IsValid() {
-				errs = append(errs, fmt.Errorf("field %q: invalid reducer %q (want mean|sum|max|min)", key, s))
-				continue
-			}
-			dst.AcrossGroups = r
-		default:
-			errs = append(errs, fmt.Errorf("unknown field %q", key))
+// appendNulls appends an error for every null node in the tree at n, whose
+// YAML path is path.
+func appendNulls(errs []error, n *yaml.Node, path string) []error {
+	switch n.Kind {
+	case yaml.ScalarNode:
+		if n.ShortTag() == "!!null" {
+			errs = append(errs, fmt.Errorf("line %d: %s is null; omit the key to keep the base value", n.Line, path))
+		}
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			errs = appendNulls(errs, n.Content[i+1], path+"."+n.Content[i].Value)
+		}
+	case yaml.SequenceNode:
+		for i, item := range n.Content {
+			errs = appendNulls(errs, item, fmt.Sprintf("%s[%d]", path, i))
 		}
 	}
 	return errs
 }
 
-// mergeThresholds applies overlay threshold fields on top of an existing
-// ClassificationThresholds struct. Fields not present in the overlay are
-// left as-is; values of the wrong type are reported via the returned
-// error slice so operators can spot typos in their overlay files.
-func mergeThresholds(dst *ClassificationThresholds, overlay map[string]any) []error {
-	var errs []error
-	for key, val := range overlay {
-		switch key {
-		case "significant_delta_pct", "breach_ratio_for_regression", "cv_for_noisy", "spike_zscore":
-		default:
-			continue
-		}
-		f, ok := toFloat64(val)
-		if !ok {
-			errs = append(errs, fmt.Errorf("field %q must be number, got %T", key, val))
-			continue
-		}
-		// Second switch applies the value. The first switch (lines 349-353)
-		// validates key presence by continuing on unknown keys, so reaching
-		// here means key is one of the known valid cases.
-		switch key { //nolint:GoDfaInspectionRunner // DFA detects unreachable cases, but second switch is intentionally exhaustive for validated keys
-		case "significant_delta_pct":
-			dst.SignificantDeltaPct = f
-		case "breach_ratio_for_regression":
-			dst.BreachRatioForRegress = f
-		case "cv_for_noisy":
-			dst.CVForNoisy = f
-		case "spike_zscore":
-			dst.SpikeZScore = f
-		}
-	}
-	return errs
+// metricOverlay is one metric entry of a registry overlay file. Pointer and
+// slice fields are nil when the key is absent (rejectOverlayNulls rules out
+// explicit nulls), so only keys present in the YAML touch the base entry.
+type metricOverlay struct {
+	Kind            *MetricKind        `yaml:"kind"`
+	Unit            *string            `yaml:"unit"`
+	BetterDirection *BetterDirection   `yaml:"better_direction"`
+	SLOThreshold    *float64           `yaml:"slo_threshold"`
+	SaturationCap   *float64           `yaml:"saturation_cap"`
+	RelatedMetrics  []string           `yaml:"related_metrics"`
+	Keywords        []string           `yaml:"keywords"`
+	Thresholds      *thresholdsOverlay `yaml:"thresholds"`
+	// Aggregation has replace semantics: it is a tightly-coupled triplet
+	// (group_by/within_group/across_groups), and mixing overlay fields with
+	// base fields could produce nonsensical combinations.
+	Aggregation *AggregationSpec `yaml:"aggregation"`
 }
 
-// toFloat64 accepts the numeric forms yaml.v3 can produce (int, int64,
-// float64) and returns a float64. Other types are rejected.
-func toFloat64(v any) (float64, bool) {
-	switch x := v.(type) {
-	case float64:
-		return x, true
-	case int:
-		return float64(x), true
-	case int64:
-		return float64(x), true
-	case uint64:
-		return float64(x), true
-	}
-	return 0, false
+// thresholdsOverlay field-merges into the base (or kind-default) thresholds.
+type thresholdsOverlay struct {
+	SignificantDeltaPct   *float64 `yaml:"significant_delta_pct"`
+	BreachRatioForRegress *float64 `yaml:"breach_ratio_for_regression"`
+	CVForNoisy            *float64 `yaml:"cv_for_noisy"`
+	SpikeZScore           *float64 `yaml:"spike_zscore"`
 }
 
-// parseRegistryBytes parses raw YAML bytes into a RegistryConfig and
-// validates every entry. It is used for both the embedded default registry
-// and user-supplied overlay files.
-func parseRegistryBytes(data []byte) (*RegistryConfig, error) {
-	var cfg RegistryConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("unmarshaling registry YAML: %w", err)
+// applyTo returns base with the overlay applied: scalar fields replace,
+// related_metrics and keywords are set-unioned (keywords case-insensitively),
+// thresholds field-merge and aggregation replaces. base is not mutated.
+func (o metricOverlay) applyTo(base MetricMeta) MetricMeta {
+	m := base
+	setIfPresent(&m.Kind, o.Kind)
+	setIfPresent(&m.Unit, o.Unit)
+	setIfPresent(&m.BetterDirection, o.BetterDirection)
+	if o.SLOThreshold != nil {
+		m.SLOThreshold = o.SLOThreshold
 	}
-	if cfg.Metrics == nil {
-		cfg.Metrics = make(map[string]MetricMeta)
+	if o.SaturationCap != nil {
+		m.SaturationCap = o.SaturationCap
 	}
-	for name, meta := range cfg.Metrics {
-		if err := meta.Validate(name); err != nil {
-			return nil, fmt.Errorf("invalid registry entry %q: %w", name, err)
+	m.RelatedMetrics = unionStrings(base.RelatedMetrics, o.RelatedMetrics, func(s string) string { return s })
+	m.Keywords = unionStrings(base.Keywords, o.Keywords, strings.ToLower)
+	if o.Thresholds != nil {
+		// Start from the existing thresholds, or the defaults of the
+		// (possibly just overridden) kind.
+		thr := DefaultThresholdsFor(m.Kind)
+		if base.Thresholds != nil {
+			thr = *base.Thresholds
+		}
+		setIfPresent(&thr.SignificantDeltaPct, o.Thresholds.SignificantDeltaPct)
+		setIfPresent(&thr.BreachRatioForRegress, o.Thresholds.BreachRatioForRegress)
+		setIfPresent(&thr.CVForNoisy, o.Thresholds.CVForNoisy)
+		setIfPresent(&thr.SpikeZScore, o.Thresholds.SpikeZScore)
+		m.Thresholds = &thr
+	}
+	if o.Aggregation != nil {
+		m.Aggregation = o.Aggregation
+	}
+	return m
+}
+
+func setIfPresent[T any](dst, v *T) {
+	if v != nil {
+		*dst = *v
+	}
+}
+
+// unionStrings returns base followed by the items of extra whose key is not
+// already present, preserving order. base is never mutated.
+func unionStrings(base, extra []string, key func(string) string) []string {
+	if len(extra) == 0 {
+		return base
+	}
+	out := slices.Clone(base)
+	seen := make(map[string]bool, len(base)+len(extra))
+	for _, s := range base {
+		seen[key(s)] = true
+	}
+	for _, s := range extra {
+		if k := key(s); !seen[k] {
+			seen[k] = true
+			out = append(out, s)
 		}
 	}
-	return &cfg, nil
+	return out
 }
 
 // Lookup returns configured metadata if present, otherwise falls back to
@@ -419,43 +260,35 @@ func (r *Registry) Lookup(metricType string) MetricMeta {
 	return autoDetect(metricType)
 }
 
-type MetricListEntry struct {
-	MetricType      string          `json:"metric_type"`
-	Kind            MetricKind      `json:"kind"`
-	Unit            string          `json:"unit"`
-	BetterDirection BetterDirection `json:"better_direction"`
-	SLOThreshold    *float64        `json:"slo_threshold,omitempty"`
-	RelatedMetrics  []string        `json:"related_metrics,omitempty"`
-	AutoDetected    bool            `json:"auto_detected,omitempty"`
+// List yields the registry entries matching the given filters, in metric
+// type order. The match substring is compared (case-insensitive) against
+// three things in order: the full metric type, the auto-derived service
+// token (e.g. "pubsub" from "pubsub.googleapis.com/..."), and the metric's
+// Keywords. This lets callers find metrics by category
+// synonyms like "queue", "cache", or "database" even when the metric name
+// doesn't contain that word.
+func (r *Registry) List(match string, kind MetricKind) iter.Seq2[string, MetricMeta] {
+	lowerMatch := strings.ToLower(match)
+	return func(yield func(string, MetricMeta) bool) {
+		for _, name := range r.names {
+			meta := r.metrics[name]
+			if kind != "" && meta.Kind != kind {
+				continue
+			}
+			if lowerMatch != "" && !metricMatches(name, meta, lowerMatch) {
+				continue
+			}
+			if !yield(name, meta) {
+				return
+			}
+		}
+	}
 }
 
-// List returns registry entries matching the given filters. The match
-// substring is compared (case-insensitive) against three things in order:
-// the full metric type, the auto-derived service token (e.g. "pubsub" from
-// "pubsub.googleapis.com/..."), and the metric's Keywords. The first hit
-// wins. This lets callers find metrics by category synonyms like "queue",
-// "cache", or "database" even when the metric name doesn't contain that
-// word.
-func (r *Registry) List(match string, kind MetricKind) []MetricListEntry {
-	lowerMatch := strings.ToLower(match)
-	var result []MetricListEntry
-	for name, meta := range r.metrics {
-		if kind != "" && meta.Kind != kind {
-			continue
-		}
-		if lowerMatch != "" && !metricMatches(name, meta, lowerMatch) {
-			continue
-		}
-		result = append(result, MetricListEntry{
-			MetricType:      name,
-			Kind:            meta.Kind,
-			Unit:            meta.Unit,
-			BetterDirection: meta.BetterDirection,
-			SLOThreshold:    meta.SLOThreshold,
-			RelatedMetrics:  meta.RelatedMetrics,
-		})
-	}
-	return result
+// Names returns every configured metric type, sorted. The slice is shared;
+// callers must not modify it.
+func (r *Registry) Names() []string {
+	return r.names
 }
 
 // metricMatches reports whether a metric satisfies the search substring.

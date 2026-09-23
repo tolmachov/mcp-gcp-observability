@@ -2,9 +2,15 @@ package metrics
 
 import (
 	"math"
+	"slices"
 	"sort"
 	"time"
 )
+
+// DefaultStepSeconds is the alignment period, in seconds, that the metrics
+// tools query with unless the caller chooses one. Processing functions take
+// the step explicitly and require it to be positive.
+const DefaultStepSeconds = 60
 
 // minPointsForSpikeDetection is the minimum sample size for z-score spike
 // detection: with population stddev the achievable z is bounded by √(N-1), so
@@ -50,18 +56,15 @@ func Process(points, baselinePoints []Point, meta MetricMeta, stepSeconds, expec
 // ProcessWithBaselineStats computes features using precomputed baseline stats
 // (e.g. same_weekday_hour with median/MAD). window is the requested wall-clock
 // range used for data-quality reliability; pass the zero Window when unknown.
+// Empty points yield ClassInsufficientData with low confidence.
 func ProcessWithBaselineStats(points []Point, baseline BaselineStats, meta MetricMeta, stepSeconds int, window Window) SignalFeatures {
+	if len(points) == 0 {
+		return SignalFeatures{Classification: ClassInsufficientData, Confidence: ConfidenceLow}
+	}
 	var f SignalFeatures
 
-	if len(points) == 0 {
-		return f
-	}
-
 	// Copy before sorting to avoid mutating the caller's slice.
-	pts := make([]Point, len(points))
-	copy(pts, points)
-	points = pts
-
+	points = slices.Clone(points)
 	sort.Slice(points, func(i, j int) bool {
 		return points[i].Timestamp.Before(points[j].Timestamp)
 	})
@@ -77,9 +80,7 @@ func ProcessWithBaselineStats(points []Point, baseline BaselineStats, meta Metri
 		f.CV = f.Stddev / denom
 	}
 
-	sorted := make([]float64, len(values))
-	copy(sorted, values)
-	sort.Float64s(sorted)
+	sorted := slices.Sorted(slices.Values(values))
 
 	f.Min = sorted[0]
 	f.Max = sorted[len(sorted)-1]
@@ -249,24 +250,18 @@ func computeSpikes(f *SignalFeatures, values []float64, spikeZ float64) {
 		return
 	}
 
-	// Guard using Min/Max (already populated by the caller) rather than
-	// relying solely on stddev == 0. When all values are nearly (but not
-	// bitwise) identical, the accumulated squared residuals can produce a
-	// near-zero but non-zero s, yielding a spurious MaxZScore. The if s == 0
-	// check below handles the exact-equality case; this check handles the
-	// near-zero case by skipping spike detection entirely when Min == Max.
-	if f.Min == f.Max {
-		return
-	}
-
-	m := mean(values)
-	s := stddev(values, m)
-	if s == 0 {
+	// Mean, Stddev, Min and Max are already populated by the caller from the
+	// same values. Guard using Min/Max rather than relying solely on
+	// Stddev == 0: when all values are nearly (but not bitwise) identical, the
+	// accumulated squared residuals can produce a near-zero but non-zero
+	// Stddev, yielding a spurious MaxZScore. The Stddev == 0 check handles the
+	// exact-equality case; Min == Max handles the near-zero case.
+	if f.Min == f.Max || f.Stddev == 0 {
 		return
 	}
 
 	for _, v := range values {
-		z := math.Abs(v-m) / s
+		z := math.Abs(v-f.Mean) / f.Stddev
 		if z > f.MaxZScore {
 			f.MaxZScore = z
 		}
@@ -283,9 +278,6 @@ func computeSLOBreach(f *SignalFeatures, points []Point, meta MetricMeta, stepSe
 	}
 	threshold := *meta.SLOThreshold
 	step := time.Duration(stepSeconds) * time.Second
-	if step == 0 {
-		step = 60 * time.Second
-	}
 
 	var breachCount int
 	var breachDuration time.Duration
@@ -361,10 +353,6 @@ func computeDataQuality(points []Point, stepSeconds int, window Window) DataQual
 	if len(points) == 0 {
 		return DataQuality{Reliable: false}
 	}
-	if stepSeconds <= 0 {
-		stepSeconds = 60
-	}
-
 	step := time.Duration(stepSeconds) * time.Second
 	first := points[0].Timestamp
 	last := points[len(points)-1].Timestamp

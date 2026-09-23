@@ -55,5 +55,14 @@ func TestDomainAllowed(t *testing.T) {
 	consumer := &Config{AllowedDomains: []string{"gmail.com"}}
 	assert.True(t, workspace.domainAllowed("EXAMPLE.com", "user@example.com"))
 	assert.False(t, workspace.domainAllowed("", "user@example.com"))
+	assert.False(t, workspace.domainAllowed("", "user@gmail.com"))
+	// The hd claim decides whenever it is present; the email is not consulted.
+	assert.False(t, workspace.domainAllowed("evil.com", "user@example.com"))
+
 	assert.True(t, consumer.domainAllowed("", "user@gmail.com"))
+	assert.False(t, consumer.domainAllowed("", "no-at-sign"))
+	assert.False(t, consumer.domainAllowed("", "user@yahoo.com"))
+	// Without hd only Google consumer domains qualify, even when listed.
+	yahoo := &Config{AllowedDomains: []string{"yahoo.com"}}
+	assert.False(t, yahoo.domainAllowed("", "user@yahoo.com"))
 }

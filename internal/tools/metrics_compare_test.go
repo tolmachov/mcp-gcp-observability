@@ -9,13 +9,11 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
 
-// TestRenderCompareChartHTML verifies that the embedded compare HTML template renders correctly.
-func TestRenderCompareChartHTML(t *testing.T) {
-	html := renderCompareChartHTML()
+// TestCompareChartHTML verifies the embedded metrics compare widget HTML.
+func TestCompareChartHTML(t *testing.T) {
+	html := compareChartHTML
 	require.NotEmpty(t, html)
 
 	t.Run("valid html skeleton", func(t *testing.T) {
@@ -73,7 +71,7 @@ func TestCompareChartStaticURI(t *testing.T) {
 	assert.NotContains(t, compareChartStaticURI, "{", "compareChartStaticURI must be a static URI, not a template")
 }
 
-// TestCompareCallResult verifies that compareCallResult strips chart points from
+// TestCompareCallResult verifies that chartCallResult strips chart points from
 // LLM-facing content while keeping the rest of the result intact.
 func TestCompareCallResult(t *testing.T) {
 	now := time.Unix(1700000000, 0)
@@ -94,7 +92,8 @@ func TestCompareCallResult(t *testing.T) {
 		ChartPointsB: pts,
 	}
 
-	callResult := compareCallResult(result)
+	callResult, structured := chartCallResult(result, result.withoutChart(), compareChartStaticURI)
+	assert.Same(t, result, structured, "structuredContent must be the full result")
 
 	t.Run("not an error result", func(t *testing.T) {
 		assert.False(t, callResult.IsError)
@@ -125,14 +124,14 @@ func TestCompareCallResult(t *testing.T) {
 	})
 
 	t.Run("caller struct not mutated (chart points intact)", func(t *testing.T) {
-		require.NotNil(t, result.ChartPointsA, "compareCallResult must not mutate the original result")
-		require.NotNil(t, result.ChartPointsB, "compareCallResult must not mutate the original result")
+		require.NotNil(t, result.ChartPointsA, "withoutChart must not mutate the original result")
+		require.NotNil(t, result.ChartPointsB, "withoutChart must not mutate the original result")
 		assert.Len(t, result.ChartPointsA, 2)
 		assert.Len(t, result.ChartPointsB, 2)
 	})
 }
 
-// TestCompareCallResultNilPoints verifies that compareCallResult handles the no-data path
+// TestCompareCallResultNilPoints verifies that chartCallResult handles the no-data path
 // (where ChartPointsA/B are never populated) without errors, and that the chart_points
 // keys are absent from the LLM-facing JSON output (omitempty on nil slices).
 func TestCompareCallResultNilPoints(t *testing.T) {
@@ -145,7 +144,8 @@ func TestCompareCallResultNilPoints(t *testing.T) {
 		// ChartPointsA and ChartPointsB intentionally left nil (no-data path).
 	}
 
-	callResult := compareCallResult(result)
+	callResult, structured := chartCallResult(result, result.withoutChart(), compareChartStaticURI)
+	assert.Same(t, result, structured, "structuredContent must be the full result")
 
 	t.Run("not an error result", func(t *testing.T) {
 		assert.False(t, callResult.IsError)
@@ -175,57 +175,4 @@ func TestCompareCallResultNilPoints(t *testing.T) {
 		assert.Equal(t, "unchanged", parsed["trend_shift"])
 		assert.Equal(t, true, parsed["no_data"])
 	})
-}
-
-func TestClassificationSeverity(t *testing.T) {
-	tests := []struct {
-		class metrics.Classification
-		want  int
-	}{
-		{metrics.ClassImprovement, -1},
-		{metrics.ClassInsufficientData, 0},
-		{metrics.ClassStable, 0},
-		{metrics.ClassNoisy, 1},
-		{metrics.ClassRecovery, 2},
-		{metrics.ClassSpike, 3},
-		{metrics.ClassFlapping, 4},
-		{metrics.ClassStepRegression, 5},
-		{metrics.ClassSustainedRegression, 6},
-		{metrics.ClassSaturation, 7},
-	}
-
-	for _, tt := range tests {
-		t.Run(string(tt.class), func(t *testing.T) {
-			got := classificationSeverity(tt.class)
-			assert.Equal(t, tt.want, got, "classificationSeverity(%v)", tt.class)
-		})
-	}
-}
-
-func TestClassificationSeverityOrdering(t *testing.T) {
-	// Severity must be non-decreasing and end in saturation as the most
-	// severe. insufficient_data deliberately shares rank with stable because
-	// "we don't know" is not an alert.
-	classes := []metrics.Classification{
-		metrics.ClassImprovement,
-		metrics.ClassStable,
-		metrics.ClassNoisy,
-		metrics.ClassRecovery,
-		metrics.ClassSpike,
-		metrics.ClassFlapping,
-		metrics.ClassStepRegression,
-		metrics.ClassSustainedRegression,
-		metrics.ClassSaturation,
-	}
-	for i := 1; i < len(classes); i++ {
-		prev := classificationSeverity(classes[i-1])
-		curr := classificationSeverity(classes[i])
-		assert.Greater(t, curr, prev, "severity(%v)=%d should be > severity(%v)=%d", classes[i], curr, classes[i-1], prev)
-	}
-}
-
-func TestClassificationSeverityUnknownIsHigh(t *testing.T) {
-	// Unknown classifications should be treated as high severity (fail-safe).
-	got := classificationSeverity(metrics.Classification("some_future_classification"))
-	assert.GreaterOrEqual(t, got, classificationSeverity(metrics.ClassStepRegression), "unknown severity should be >= step_regression")
 }

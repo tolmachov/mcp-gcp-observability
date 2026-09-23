@@ -1,5 +1,7 @@
 package metrics
 
+import "slices"
+
 // DefaultAggregation returns the default AggregationSpec for a metric kind.
 // Single-stage only (GroupBy empty); two-stage requires a specific entity label.
 // Business KPIs/throughput/errors: sum. Latency: mean. Freshness/saturation: max.
@@ -40,10 +42,6 @@ func (m MetricMeta) ResolveAggregation() AggregationSpec {
 	} else {
 		spec = DefaultAggregation(m.Kind)
 	}
-	if len(spec.GroupBy) > 0 {
-		clone := make([]string, len(spec.GroupBy))
-		copy(clone, spec.GroupBy)
-		spec.GroupBy = clone
-	}
+	spec.GroupBy = slices.Clone(spec.GroupBy)
 	return spec
 }

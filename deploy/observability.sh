@@ -11,7 +11,7 @@ if [[ -n "${NOTIFICATION_CHANNELS:-}" ]]; then
 fi
 
 declare -A filters=(
-  [oauth_store_failures]="resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"$SERVICE\" AND jsonPayload.msg=\"oauth_store_failure\""
+  [oauth_store_failures]="resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"$SERVICE\" AND (jsonPayload.msg=\"oauth_store_failure\" OR jsonPayload.msg=\"oauth_grant_corrupt\")"
   [grant_security_events]="resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"$SERVICE\" AND (jsonPayload.msg=\"grant_replay\" OR jsonPayload.msg=\"grant_revoked\")"
   [response_budget_violations]="resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"$SERVICE\" AND jsonPayload.msg=\"response_budget_violation\""
   [profiler_saturation]="resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"$SERVICE\" AND jsonPayload.msg=\"profiler_saturation\""

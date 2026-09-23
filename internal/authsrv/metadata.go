@@ -8,9 +8,29 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 )
 
-// ProtectedResourceMetadataPath is where RFC 9728 metadata is served; the
-// bearer middleware advertises it in the 401 WWW-Authenticate challenge.
-const ProtectedResourceMetadataPath = "/.well-known/oauth-protected-resource"
+// Paths of the endpoints Routes mounts.
+const (
+	// ProtectedResourceMetadataPath is where RFC 9728 metadata is served; the
+	// bearer middleware advertises it in the 401 WWW-Authenticate challenge.
+	ProtectedResourceMetadataPath = "/.well-known/oauth-protected-resource"
+	AuthServerMetadataPath        = "/.well-known/oauth-authorization-server"
+	// OpenIDConfigurationPath serves the authorization server metadata too:
+	// some clients probe the OIDC discovery path as a fallback.
+	OpenIDConfigurationPath = "/.well-known/openid-configuration"
+	JWKSPath                = "/jwks.json"
+	RegisterPath            = "/register"
+	AuthorizePath           = "/authorize"
+	AuthorizeConfirmPath    = "/authorize/confirm"
+	CallbackPath            = "/callback"
+	TokenPath               = "/token"
+	RevokePath              = "/revoke"
+)
+
+// RoutePaths lists every path Routes mounts.
+var RoutePaths = []string{
+	ProtectedResourceMetadataPath, AuthServerMetadataPath, OpenIDConfigurationPath, JWKSPath,
+	RegisterPath, AuthorizePath, AuthorizeConfirmPath, CallbackPath, TokenPath, RevokePath,
+}
 
 // protectedResourceHandler serves the RFC 9728 protected resource metadata.
 func (a *AuthServer) protectedResourceHandler() http.Handler {
@@ -28,14 +48,14 @@ func (a *AuthServer) authServerMetadata() *oauthex.AuthServerMeta {
 	iss := a.cfg.IssuerURL
 	return &oauthex.AuthServerMeta{
 		Issuer:                iss,
-		AuthorizationEndpoint: iss + "/authorize",
-		TokenEndpoint:         iss + "/token",
-		RegistrationEndpoint:  iss + "/register",
-		RevocationEndpoint:    iss + "/revoke",
+		AuthorizationEndpoint: iss + AuthorizePath,
+		TokenEndpoint:         iss + TokenPath,
+		RegistrationEndpoint:  iss + RegisterPath,
+		RevocationEndpoint:    iss + RevokePath,
 		// Tokens are opaque sealed blobs, not JWS, so the key set is empty.
 		// The field is still populated because AuthServerMeta serializes
 		// jwks_uri unconditionally.
-		JWKSURI:                           iss + "/jwks.json",
+		JWKSURI:                           iss + JWKSPath,
 		ScopesSupported:                   a.cfg.scopes(),
 		ResponseTypesSupported:            []string{"code"},
 		GrantTypesSupported:               []string{"authorization_code", "refresh_token"},
@@ -44,7 +64,7 @@ func (a *AuthServer) authServerMetadata() *oauthex.AuthServerMeta {
 	}
 }
 
-// emptyJWKS is the static document served at /jwks.json.
+// emptyJWKS is the static document served at JWKSPath.
 type emptyJWKS struct{}
 
 func (emptyJWKS) MarshalJSON() ([]byte, error) { return []byte(`{"keys":[]}`), nil }

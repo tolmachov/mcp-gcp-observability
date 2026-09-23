@@ -111,7 +111,7 @@ legacy refresh tokens from expired, revoked, or replayed grants. A `200` MCP
 response can still contain a JSON-RPC/tool error; HTTP rejection logs alone do
 not prove tool success.
 
-- `MCP: oauth store failures`: halt rollout; check Firestore availability, database ID, IAM, and quota.
+- `MCP: oauth store failures`: halt rollout; check Firestore availability, database ID, IAM, and quota. `oauth_grant_corrupt` events mean a stored grant no longer decodes (its token is rejected, the user must log in again); after a rollout that points at a grant record schema change, so roll back.
 - `MCP: grant security events`: distinguish explicit revocation from replay; replay requires security investigation.
 - `MCP: response budget violations`: capture the tool name and input; do not raise limits before fixing normalization.
 - `MCP: profiler saturation`: inspect concurrent workload and profile sizes.

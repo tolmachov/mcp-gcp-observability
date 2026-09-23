@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"cloud.google.com/go/firestore"
@@ -18,14 +19,17 @@ const (
 	oauthGrantsCollection = "mcp_oauth_grants"
 )
 
-type firestoreStateStore struct{ client *firestore.Client }
+type firestoreStateStore struct {
+	client *firestore.Client
+	logger *slog.Logger
+}
 
-func newFirestoreStateStore(ctx context.Context, project, database string) (*firestoreStateStore, error) {
+func newFirestoreStateStore(ctx context.Context, project, database string, logger *slog.Logger) (*firestoreStateStore, error) {
 	client, err := firestore.NewClientWithDatabase(ctx, project, database)
 	if err != nil {
 		return nil, fmt.Errorf("creating Firestore OAuth state client: %w", err)
 	}
-	return &firestoreStateStore{client: client}, nil
+	return &firestoreStateStore{client: client, logger: logger}, nil
 }
 
 func (s *firestoreStateStore) state(key string) *firestore.DocumentRef {
@@ -181,7 +185,7 @@ func (s *firestoreStateStore) GetGrant(ctx context.Context, id string) (grantRec
 	}
 	var rec grantRecord
 	if err := doc.DataTo(&rec); err != nil {
-		return grantRecord{}, fmt.Errorf("decoding OAuth grant: %w", err)
+		return grantRecord{}, corruptGrantError(s.logger, id, err)
 	}
 	return rec, nil
 }

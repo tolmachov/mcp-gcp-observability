@@ -158,10 +158,31 @@ type AggregationSpec struct {
 // "resource.type" is a separate exact-match qualifier (no `.labels.`
 // namespace) and is handled outside this slice by hasKnownGroupByPrefix.
 var groupByLabelPrefixes = []string{
-	"metric.labels.",
-	"resource.labels.",
-	"metadata.system_labels.",
-	"metadata.user_labels.",
+	MetricLabelsPrefix,
+	ResourceLabelsPrefix,
+	MetadataSystemLabelsPrefix,
+	MetadataUserLabelsPrefix,
+}
+
+// Namespace prefixes of a qualified Cloud Monitoring label key.
+const (
+	MetricLabelsPrefix         = "metric.labels."
+	ResourceLabelsPrefix       = "resource.labels."
+	MetadataSystemLabelsPrefix = "metadata.system_labels."
+	MetadataUserLabelsPrefix   = "metadata.user_labels."
+)
+
+// SplitLabelKey splits a qualified label key such as
+// "metric.labels.response_code" into its namespace prefix (one of the
+// *LabelsPrefix constants) and the bare label name. ok is false when the key
+// has no known prefix or nothing after it.
+func SplitLabelKey(key string) (prefix, name string, ok bool) {
+	for _, p := range groupByLabelPrefixes {
+		if name, found := strings.CutPrefix(key, p); found && name != "" {
+			return p, name, true
+		}
+	}
+	return "", "", false
 }
 
 // Validate enforces the schema rules described on AggregationSpec.
@@ -187,7 +208,8 @@ func (a AggregationSpec) Validate() error {
 				continue
 			}
 			if !hasKnownGroupByPrefix(k) {
-				errs = append(errs, fmt.Errorf("group_by[%d] = %q must start with one of metric.labels. | resource.labels. | metadata.system_labels. | metadata.user_labels. | resource.type (Cloud Monitoring qualifier — bare label names are silently dropped by the API)", i, k))
+				errs = append(errs, fmt.Errorf("group_by[%d] = %q must start with one of %s | resource.type (Cloud Monitoring qualifier — bare label names are silently dropped by the API)",
+					i, k, strings.Join(groupByLabelPrefixes, " | ")))
 			}
 		}
 	}
@@ -206,12 +228,8 @@ func hasKnownGroupByPrefix(key string) bool {
 	if key == "resource.type" {
 		return true
 	}
-	for _, p := range groupByLabelPrefixes {
-		if strings.HasPrefix(key, p) && len(key) > len(p) {
-			return true
-		}
-	}
-	return false
+	_, _, ok := SplitLabelKey(key)
+	return ok
 }
 
 // IsTwoStage reports whether the aggregation requires the two-stage
@@ -354,10 +372,6 @@ const (
 	TrendUp   TrendDirection = "up"
 	TrendDown TrendDirection = "down"
 )
-
-func (t TrendDirection) IsValid() bool {
-	return t == TrendFlat || t == TrendUp || t == TrendDown
-}
 
 type Point struct {
 	Timestamp time.Time

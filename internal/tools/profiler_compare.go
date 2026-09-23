@@ -18,26 +18,17 @@ func RegisterProfilerCompare(s *mcp.Server, d Deps) {
 			"Pass the same profile_id and base_profile_id to profiler_top, profiler_peek, or profiler_flamegraph "+
 			"to recompute and navigate the diff in one stateless request. "+
 			"Useful for before/after deploy comparisons and regression hunting."),
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			OpenWorldHint:  new(true),
-			IdempotentHint: true,
-		},
-		InputSchema:  projectInputSchema[ProfilerCompareInput](d.Project),
+		Annotations: readOnlyAnnotations,
+		InputSchema: projectInputSchema[ProfilerCompareInput](d.Project,
+			nonEmptyProp("profile_id"),
+			nonEmptyProp("base_profile_id"),
+			nonNegativeValueIndex,
+		),
 		OutputSchema: outputSchemaFor[gcpdata.ProfileCompareResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerCompareInput) (*mcp.CallToolResult, *gcpdata.ProfileCompareResult, error) {
-		if in.ProfileID == "" {
-			return errResult("profile_id is required (current profile)"), nil, nil
-		}
-		if in.ValueIndex < 0 {
-			return errResult("value_index must be non-negative"), nil, nil
-		}
-		if in.BaseProfileID == "" {
-			return errResult("base_profile_id is required (base profile to compare against)"), nil, nil
-		}
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 
 		// CompareProfiles fetches two profiles, each of which may scan the Export
@@ -49,7 +40,7 @@ func RegisterProfilerCompare(s *mcp.Server, d Deps) {
 		stopHeartbeat()
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "profiler_compare", fmt.Sprintf("compare profiles failed: %v", err))
-			return errResult(fmt.Sprintf("Failed to compare profiles: %v", err)), nil, nil
+			return gcpErrorResult(fmt.Sprintf("Failed to compare profiles: %v", err), err, ""), nil, nil
 		}
 
 		if result.Warning != "" {

@@ -18,59 +18,34 @@ func RegisterProfilerPeek(s *mcp.Server, d Deps) {
 			"Use function names from profiler_top results. Substring matching is used. "+
 			"If the name is ambiguous, the error will list matching candidates — use a more specific name. "+
 			"Add base_profile_id to inspect a request-local diff."),
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			OpenWorldHint:  new(true),
-			IdempotentHint: true,
-		},
-		InputSchema:  projectInputSchema[ProfilerPeekInput](d.Project),
+		Annotations: readOnlyAnnotations,
+		InputSchema: projectInputSchema[ProfilerPeekInput](d.Project,
+			nonEmptyProp("profile_id"),
+			nonEmptyProp("function_name"),
+			nonNegativeValueIndex,
+		),
 		OutputSchema: outputSchemaFor[gcpdata.ProfilePeekResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerPeekInput) (*mcp.CallToolResult, *gcpdata.ProfilePeekResult, error) {
-		if in.ProfileID == "" {
-			return errResult("profile_id is required"), nil, nil
-		}
-		if in.ValueIndex < 0 {
-			return errResult("value_index must be non-negative"), nil, nil
-		}
-		if in.FunctionName == "" {
-			return errResult("function_name is required"), nil, nil
-		}
-		project, err := d.Project.Resolve(in.ProjectID)
-		if err != nil {
-			return errResult(err.Error()), nil, nil
-		}
-
 		limit := clampLimit(in.Limit, 10, 30)
 
-		// Fetching an uncached profile scans the Export API and can run long on
-		// large projects; heartbeat progress keeps the client request alive.
-		stopHeartbeat := startProgressHeartbeat(ctx, req, "Downloading profile…")
-		p, meta, err := d.Profiler.GetProfileOrDiff(ctx, project, in.ProfileID, in.BaseProfileID)
-		stopHeartbeat()
-		if err != nil {
-			mcpLog(ctx, req, logLevelError, "profiler_peek", fmt.Sprintf("fetch profile failed: %v", err))
-			return errResult(fmt.Sprintf("Failed to fetch profile: %v", err)), nil, nil
+		p, meta, errRes := loadProfile(ctx, req, d, "profiler_peek", in.ProjectID, in.ProfileID, in.BaseProfileID)
+		if errRes != nil {
+			return errRes, nil, nil
 		}
 
 		sendProgress(ctx, req, 1, 2, "Analyzing function...")
 
-		vt := gcpdata.ProfileValueTypes(p)
-		if in.ValueIndex >= len(vt) {
-			return errResult(fmt.Sprintf("value_index %d out of range (profile has %d value types)", in.ValueIndex, len(vt))), nil, nil
-		}
-		valueType := vt[in.ValueIndex]
-
 		funcInfo, callers, callees, err := gcpdata.PeekFunction(p, in.FunctionName, in.ValueIndex, limit)
 		if err != nil {
 			mcpLog(ctx, req, logLevelWarning, "profiler_peek", fmt.Sprintf("analysis failed: %v", err))
-			return errResult(fmt.Sprintf("Failed to peek function: %v", err)), nil, nil
+			return ErrorResult(fmt.Sprintf("Failed to peek function: %v", err)), nil, nil
 		}
 
 		callersTrunc := len(callers) >= limit
 		calleesTrunc := len(callees) >= limit
 		result := &gcpdata.ProfilePeekResult{
 			ProfileMeta:      meta,
-			ValueType:        valueType,
+			ValueType:        gcpdata.ProfileValueTypes(p)[in.ValueIndex], // validated by PeekFunction
 			Function:         *funcInfo,
 			Callers:          callers,
 			Callees:          callees,

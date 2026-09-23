@@ -69,8 +69,14 @@ func Reject(w http.ResponseWriter, code, reason string) {
 
 // Handler must enclose the body limiter, cross-origin protection and auth so
 // that rejections from any layer are observed. Successful SSE responses stream
-// directly to the client and are neither buffered nor logged here.
-func Handler(logger *slog.Logger, next http.Handler) http.Handler {
+// directly to the client and are neither buffered nor logged here. routes are
+// the served paths that may be logged verbatim; any other path is logged as
+// "other" so probes and typos never leak into logs.
+func Handler(logger *slog.Logger, routes []string, next http.Handler) http.Handler {
+	known := make(map[string]bool, len(routes))
+	for _, route := range routes {
+		known[route] = true
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
 		id := rand.Text()
@@ -88,7 +94,7 @@ func Handler(logger *slog.Logger, next http.Handler) http.Handler {
 			}
 			attrs := []any{
 				"request_id", id, "http_method", safeHTTPMethod(r.Method),
-				"route", safeRoute(r.URL.Path), "status", rw.status,
+				"route", safeRoute(known, r.URL.Path), "status", rw.status,
 				"reason", reason, "duration_ms", time.Since(started).Milliseconds(),
 				"client", clientClass(r.UserAgent()), "rpc_method", info.method,
 				"body_shape", info.shape, "request_bytes", r.ContentLength,
@@ -190,15 +196,11 @@ func safeHTTPMethod(method string) string {
 	}
 }
 
-func safeRoute(path string) string {
-	switch path {
-	case "/", "/mcp", "/token", "/register", "/revoke", "/authorize", "/authorize/confirm",
-		"/callback", "/readyz", "/healthz", "/__candidate/readyz",
-		"/.well-known/oauth-authorization-server", "/.well-known/oauth-protected-resource":
+func safeRoute(known map[string]bool, path string) string {
+	if known[path] {
 		return path
-	default:
-		return "other"
 	}
+	return "other"
 }
 
 func clientClass(agent string) string {

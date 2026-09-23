@@ -1,6 +1,7 @@
 package authsrv
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -52,7 +53,7 @@ func (a *AuthServer) tokenFromCode(w http.ResponseWriter, r *http.Request, form 
 	key := tokenHash(form.Get("code"))
 	rec, err := a.store.GetCode(r.Context(), key)
 	if err != nil {
-		a.storeTokenError(w, "get_code", err)
+		a.storeTokenError(r.Context(), w, "get_code", err)
 		return
 	}
 	if rec.Status != "active" {
@@ -98,7 +99,7 @@ func (a *AuthServer) tokenFromCode(w http.ResponseWriter, r *http.Request, form 
 			a.tokenError(w, http.StatusBadRequest, "invalid_grant", "authorization code was already used")
 			return
 		}
-		a.storeTokenError(w, "redeem_code", err)
+		a.storeTokenError(r.Context(), w, "redeem_code", err)
 		return
 	}
 	a.writeMintedTokens(w, cc.Subject, cc.Email, cc.Domain, cc.ClientID, cc.Resource, rec.FamilyID, cc.Scopes, cc.GoogleAccessToken, cc.GoogleExpiry, refreshToken)
@@ -113,7 +114,7 @@ func (a *AuthServer) tokenFromRefresh(w http.ResponseWriter, r *http.Request, fo
 	}
 	rec, err := a.store.GetGrant(r.Context(), familyID)
 	if err != nil {
-		a.storeTokenError(w, "get_grant", err)
+		a.storeTokenError(r.Context(), w, "get_grant", err)
 		return
 	}
 	presentedHash := tokenHash(secret)
@@ -124,7 +125,7 @@ func (a *AuthServer) tokenFromRefresh(w http.ResponseWriter, r *http.Request, fo
 	if !secretMatches(secret, rec.ActiveSecretHash) {
 		replayErr := a.store.RotateGrant(r.Context(), familyID, presentedHash, grantRecord{}, now)
 		if replayErr != nil && !errors.Is(replayErr, errGrantReplay) && !errors.Is(replayErr, errGrantInactive) {
-			a.storeTokenError(w, "revoke_replayed_grant", replayErr)
+			a.storeTokenError(r.Context(), w, "revoke_replayed_grant", replayErr)
 			return
 		}
 		a.logger.Warn("grant_replay", "kind", "refresh_token", "family_id", familyID)
@@ -187,7 +188,7 @@ func (a *AuthServer) tokenFromRefresh(w http.ResponseWriter, r *http.Request, fo
 			a.tokenError(w, http.StatusBadRequest, "invalid_grant", "refresh token replay revoked this grant family")
 			return
 		}
-		a.storeTokenError(w, "rotate_grant", err)
+		a.storeTokenError(r.Context(), w, "rotate_grant", err)
 		return
 	}
 	a.writeMintedTokens(w, rc.Subject, rc.Email, rc.Domain, rc.ClientID, rc.Resource, familyID, rc.Scopes, tok.AccessToken, tok.Expiry.Unix(), nextToken)
@@ -211,12 +212,12 @@ func (a *AuthServer) writeMintedTokens(w http.ResponseWriter, subject, email, do
 	a.writeJSON(w, http.StatusOK, &tokenResponse{AccessToken: accessToken, TokenType: "Bearer", ExpiresIn: int64(exp.Sub(now).Seconds()), RefreshToken: refresh, Scope: strings.Join(scopes, " ")})
 }
 
-func (a *AuthServer) storeTokenError(w http.ResponseWriter, operation string, err error) {
+func (a *AuthServer) storeTokenError(ctx context.Context, w http.ResponseWriter, operation string, err error) {
 	if errors.Is(err, errStateNotFound) {
 		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "invalid or expired OAuth grant")
 		return
 	}
-	a.logger.Error("oauth_store_failure", "operation", operation, "err", err)
+	a.logStoreFailure(ctx, operation, err)
 	w.Header().Set("Retry-After", "5")
 	a.tokenError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "OAuth state store unavailable")
 }

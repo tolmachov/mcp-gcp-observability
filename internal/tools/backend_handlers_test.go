@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +12,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
@@ -131,11 +135,62 @@ func TestTraceGetHandler(t *testing.T) {
 		assert.False(t, res.IsError)
 		assert.Equal(t, "abc123", gotTraceID)
 	})
+
+	for _, tc := range []struct {
+		code codes.Code
+		want string
+	}{
+		{codes.InvalidArgument, "Verify the trace_id is a valid 32-character hex string (not the full resource path). Use logs_find_requests to discover valid trace IDs."},
+		{codes.NotFound, "The trace does not exist in this project, may have aged out of retention, or the trace_id/project_id pair is wrong."},
+		{codes.Internal, "Verify the project_id, credentials, and that Cloud Trace API is enabled."},
+	} {
+		t.Run("guidance for "+tc.code.String(), func(t *testing.T) {
+			deps := Deps{
+				Traces: fakeTraces{getTrace: func(context.Context, string, string) (*gcpdata.TraceDetail, error) {
+					return nil, status.Error(tc.code, "failed")
+				}},
+				Project: MustProjectPolicy("test-project"),
+			}
+			ts := newTestToolServer(t)
+			RegisterTraceGet(ts.server, deps)
+			ts.connect(ctx)
+			defer ts.close()
+
+			res, err := ts.callTool(ctx, "trace_get", map[string]any{"trace_id": "abc123"})
+			require.NoError(t, err)
+			require.True(t, res.IsError)
+			assert.True(t, strings.HasSuffix(textFromResult(t, res), ". "+tc.want), textFromResult(t, res))
+		})
+	}
+}
+
+// TestProfilerScanBudgetGuidance pins that a profiler scan that used up the
+// per-call time budget advises narrowing the scan instead of the shared
+// "retry" advice for a deadline.
+func TestProfilerScanBudgetGuidance(t *testing.T) {
+	ctx := context.Background()
+	deps := Deps{
+		Profiler: fakeProfiler{computeTrend: func(context.Context, gcpdata.ComputeTrendsParams, func(int, int, string)) (*gcpdata.ProfileTrendsResult, error) {
+			return nil, fmt.Errorf("scanning profiles: %w", gcpdata.ErrProfilerScanBudget)
+		}},
+		Project: MustProjectPolicy("test-project"),
+	}
+	ts := newTestToolServer(t)
+	RegisterProfilerTrends(ts.server, deps)
+	ts.connect(ctx)
+	defer ts.close()
+
+	res, err := ts.callTool(ctx, "profiler_trends", map[string]any{"profile_type": "CPU", "target": "svc"})
+	require.NoError(t, err)
+	require.True(t, res.IsError)
+	msg := textFromResult(t, res)
+	assert.Contains(t, msg, "lower max_profiles")
+	assert.NotContains(t, msg, sharedCodes[codes.DeadlineExceeded].advice)
 }
 
 // TestErrorPathsSurviveOutputSchema pins the omitempty contract on map-typed
 // output fields: the SDK serializes the zero value of the output struct when a
-// handler returns errResult, and the generated schema rejects null for maps
+// handler returns ErrorResult, and the generated schema rejects null for maps
 // (unlike slices). Without omitempty these calls fail with a protocol-level
 // validation error instead of an IsError tool result.
 func TestErrorPathsSurviveOutputSchema(t *testing.T) {
@@ -279,9 +334,11 @@ func TestProfilerNavigationHandlersValidateBeforeFetch(t *testing.T) {
 		{"flamegraph missing profile_id", "profiler_flamegraph", RegisterProfilerFlamegraph, map[string]any{}},
 		{"flamegraph negative value_index", "profiler_flamegraph", RegisterProfilerFlamegraph, map[string]any{"profile_id": "p", "value_index": -1}},
 		{"top missing profile_id", "profiler_top", RegisterProfilerTop, map[string]any{}},
+		{"top empty profile_id", "profiler_top", RegisterProfilerTop, map[string]any{"profile_id": ""}},
 		{"top negative value_index", "profiler_top", RegisterProfilerTop, map[string]any{"profile_id": "p", "value_index": -1}},
 		{"peek missing profile_id", "profiler_peek", RegisterProfilerPeek, map[string]any{"function_name": "f"}},
 		{"peek missing function_name", "profiler_peek", RegisterProfilerPeek, map[string]any{"profile_id": "p"}},
+		{"peek empty function_name", "profiler_peek", RegisterProfilerPeek, map[string]any{"profile_id": "p", "function_name": ""}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -332,4 +389,42 @@ func TestProfilerListHandler(t *testing.T) {
 		require.NoError(t, err)
 		assert.False(t, res.IsError)
 	})
+}
+
+// TestEnumInputsRejectedBeforeBackend pins that enum inputs are validated by
+// the input schema, case-sensitively, before any backend call: handlers no
+// longer re-check or case-fold them.
+func TestEnumInputsRejectedBeforeBackend(t *testing.T) {
+	ctx := context.Background()
+	called := false
+	deps := Deps{
+		Logs: fakeLogs{queryLogs: func(context.Context, string, string, int, string, string) (*gcpdata.LogQueryResult, error) {
+			called = true
+			return &gcpdata.LogQueryResult{}, nil
+		}},
+		Profiler: fakeProfiler{listProfiles: func(context.Context, gcpdata.ListProfilesParams) (*gcpdata.ProfileListResult, error) {
+			called = true
+			return &gcpdata.ProfileListResult{}, nil
+		}},
+		Project: MustProjectPolicy("test-project"),
+	}
+	ts := newTestToolServer(t)
+	RegisterLogsK8s(ts.server, deps)
+	RegisterProfilerList(ts.server, deps)
+	ts.connect(ctx)
+	defer ts.close()
+
+	for _, tc := range []struct {
+		tool string
+		args map[string]any
+	}{
+		{"logs_k8s", map[string]any{"severity": "error"}},
+		{"logs_k8s", map[string]any{"order": "newest"}},
+		{"profiler_list", map[string]any{"profile_type": "cpu"}},
+	} {
+		res, err := ts.callTool(ctx, tc.tool, tc.args)
+		require.NoError(t, err)
+		assert.True(t, res.IsError, "%s %v", tc.tool, tc.args)
+	}
+	assert.False(t, called, "invalid enum input must not reach the backend")
 }

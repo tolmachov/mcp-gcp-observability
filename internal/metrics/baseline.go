@@ -2,7 +2,7 @@ package metrics
 
 import (
 	"math"
-	"sort"
+	"slices"
 )
 
 // BaselineStats is a precomputed summary of baseline data suitable for
@@ -108,17 +108,7 @@ func isBaselineReliable(actual, expected int) bool {
 	return true
 }
 
-// median returns the median; copies input before sorting to avoid mutation.
+// median returns the median of vals without mutating them.
 func median(vals []float64) float64 {
-	if len(vals) == 0 {
-		return 0
-	}
-	sorted := make([]float64, len(vals))
-	copy(sorted, vals)
-	sort.Float64s(sorted)
-	mid := len(sorted) / 2
-	if len(sorted)%2 == 1 {
-		return sorted[mid]
-	}
-	return (sorted[mid-1] + sorted[mid]) / 2
+	return percentile(slices.Sorted(slices.Values(vals)), 0.5)
 }

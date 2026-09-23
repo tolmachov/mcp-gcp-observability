@@ -2,29 +2,32 @@ package tools
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
-	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-func TestAggregationWarningMessages(t *testing.T) {
+func TestQueryWarningMessages(t *testing.T) {
 	const metricType = "custom.googleapis.com/players_count"
 	const window = "current"
 
 	t.Run("Edge: zero warnings → empty slice", func(t *testing.T) {
-		got := aggregationWarningMessages(metricType, window, gcpdata.AggregationWarnings{})
+		got := queryWarningMessages(metricType, window, gcpdata.QueryWarnings{})
 		assert.Nil(t, got)
 	})
 
 	t.Run("Positive: SingleGroup-only emits one message naming the metric, window, and group count", func(t *testing.T) {
-		got := aggregationWarningMessages(metricType, window, gcpdata.AggregationWarnings{
+		got := queryWarningMessages(metricType, window, gcpdata.QueryWarnings{
 			SingleGroup: true,
 			GroupCount:  1,
 		})
@@ -37,7 +40,7 @@ func TestAggregationWarningMessages(t *testing.T) {
 	})
 
 	t.Run("Positive: CarryForwardBuckets-only emits one message with the ratio", func(t *testing.T) {
-		got := aggregationWarningMessages(metricType, "baseline", gcpdata.AggregationWarnings{
+		got := queryWarningMessages(metricType, "baseline", gcpdata.QueryWarnings{
 			CarryForwardBuckets: 7,
 			TotalBuckets:        20,
 		})
@@ -49,7 +52,7 @@ func TestAggregationWarningMessages(t *testing.T) {
 	})
 
 	t.Run("Positive: DepartedGroupBuckets emits a message naming distinct departed series", func(t *testing.T) {
-		got := aggregationWarningMessages(metricType, window, gcpdata.AggregationWarnings{
+		got := queryWarningMessages(metricType, window, gcpdata.QueryWarnings{
 			DepartedGroupBuckets: 4,
 			DepartedSeries:       2,
 			TotalBuckets:         60,
@@ -61,7 +64,7 @@ func TestAggregationWarningMessages(t *testing.T) {
 	})
 
 	t.Run("Positive: SingleGroup + DepartedGroup + CarryForward → three messages, departed before carry-forward", func(t *testing.T) {
-		got := aggregationWarningMessages(metricType, window, gcpdata.AggregationWarnings{
+		got := queryWarningMessages(metricType, window, gcpdata.QueryWarnings{
 			SingleGroup:          true,
 			GroupCount:           1,
 			DepartedGroupBuckets: 2,
@@ -76,8 +79,15 @@ func TestAggregationWarningMessages(t *testing.T) {
 		assert.NotContains(t, got[2], "departed")
 	})
 
+	t.Run("Positive: UnsupportedPoints emits one message with the count", func(t *testing.T) {
+		got := queryWarningMessages(metricType, window, gcpdata.QueryWarnings{UnsupportedPoints: 4})
+		require.Len(t, got, 1)
+		assert.Contains(t, got[0], "dropped 4 point(s) with unsupported")
+		assert.Contains(t, got[0], window)
+	})
+
 	t.Run("Edge: zero counters with TotalBuckets>0 does NOT emit ragged warning", func(t *testing.T) {
-		got := aggregationWarningMessages(metricType, window, gcpdata.AggregationWarnings{
+		got := queryWarningMessages(metricType, window, gcpdata.QueryWarnings{
 			TotalBuckets: 60,
 		})
 		assert.Nil(t, got)
@@ -171,9 +181,15 @@ func TestBuildTimeFilter(t *testing.T) {
 		assert.Equal(t, want, filter)
 	})
 
+	t.Run("start_time keeps sub-second precision and offset", func(t *testing.T) {
+		filter, err := buildTimeFilter(TimeFilterInput{StartTime: "2025-01-15T00:00:00.5+02:00"})
+		require.NoError(t, err)
+		assert.Equal(t, `timestamp>="2025-01-15T00:00:00.5+02:00"`, filter)
+	})
+
 	t.Run("invalid start_time", func(t *testing.T) {
 		_, err := buildTimeFilter(TimeFilterInput{StartTime: "not-a-date"})
-		assert.Error(t, err)
+		assert.ErrorContains(t, err, `invalid start_time "not-a-date": must be RFC3339 format`)
 	})
 
 	t.Run("invalid end_time", func(t *testing.T) {
@@ -198,32 +214,68 @@ func TestBuildTimeFilter(t *testing.T) {
 	})
 }
 
-func TestResolveErrorsWindow(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   string
-		wantErr bool
-		want    gcpdata.ErrorWindow
-	}{
-		{"default 24h", "", false, gcpdata.ErrorWindow24H},
-		{"7d", "7d", false, gcpdata.ErrorWindow7D},
-		{"arbitrary rejected", "48h", true, ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := resolveErrorsWindow(tt.input)
-			if tt.wantErr {
-				assert.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, got)
-		})
-	}
+func TestParseTimeRange(t *testing.T) {
+	t.Run("both empty defaults to last 1 hour", func(t *testing.T) {
+		before := time.Now().UTC()
+		start, end, err := parseTimeRange("", "", time.Hour)
+		after := time.Now().UTC()
+
+		require.NoError(t, err)
+		assert.True(t, end.After(before.Add(-time.Second)))
+		assert.True(t, end.Before(after.Add(time.Second)))
+		assert.True(t, start.Before(end))
+
+		diff := end.Sub(start)
+		assert.InDelta(t, time.Hour.Seconds(), diff.Seconds(), 1.0)
+	})
+
+	t.Run("both specified", func(t *testing.T) {
+		start, end, err := parseTimeRange("2025-01-15T10:00:00Z", "2025-01-15T11:00:00Z", time.Hour)
+		require.NoError(t, err)
+		assert.Equal(t, "2025-01-15T10:00:00Z", start.Format(time.RFC3339))
+		assert.Equal(t, "2025-01-15T11:00:00Z", end.Format(time.RFC3339))
+	})
+
+	t.Run("only end_time", func(t *testing.T) {
+		start, end, err := parseTimeRange("", "2025-01-15T12:00:00Z", time.Hour)
+		require.NoError(t, err)
+		assert.Equal(t, "2025-01-15T12:00:00Z", end.Format(time.RFC3339))
+		assert.Equal(t, "2025-01-15T11:00:00Z", start.Format(time.RFC3339))
+	})
+
+	t.Run("only start_time", func(t *testing.T) {
+		start, end, err := parseTimeRange("2025-01-15T10:00:00Z", "", time.Hour)
+		require.NoError(t, err)
+		assert.Equal(t, "2025-01-15T10:00:00Z", start.Format(time.RFC3339))
+		assert.True(t, end.After(start))
+	})
+
+	t.Run("end before start", func(t *testing.T) {
+		_, _, err := parseTimeRange("2025-01-15T12:00:00Z", "2025-01-15T10:00:00Z", time.Hour)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "end_time must be after start_time")
+	})
+
+	t.Run("invalid start_time format", func(t *testing.T) {
+		_, _, err := parseTimeRange("not-a-date", "", time.Hour)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid start_time")
+	})
+
+	t.Run("future start_time without end_time", func(t *testing.T) {
+		_, _, err := parseTimeRange(time.Now().Add(time.Hour).Format(time.RFC3339), "", time.Hour)
+		assert.ErrorContains(t, err, "end_time must be after start_time")
+	})
+
+	t.Run("invalid end_time format", func(t *testing.T) {
+		_, _, err := parseTimeRange("", "not-a-date", time.Hour)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid end_time")
+	})
 }
 
-func TestAggregationWarningMessagesTruncation(t *testing.T) {
-	got := aggregationWarningMessages("custom.googleapis.com/foo", "current", gcpdata.AggregationWarnings{
+func TestQueryWarningMessagesTruncation(t *testing.T) {
+	got := queryWarningMessages("custom.googleapis.com/foo", "current", gcpdata.QueryWarnings{
 		TruncatedSeries: true,
 	})
 	require.Len(t, got, 1)
@@ -231,22 +283,67 @@ func TestAggregationWarningMessagesTruncation(t *testing.T) {
 	assert.Contains(t, got[0], "500")
 }
 
-func TestFormatTraceGetError(t *testing.T) {
+func TestGCPErrorResult(t *testing.T) {
+	notFound := codeGuidance{codes.NotFound, "The trace does not exist."}
 	tests := []struct {
 		name string
 		err  error
 		want string
 	}{
-		{"invalid argument", status.Error(codes.InvalidArgument, "bad trace id"), "32-character hex"},
-		{"not found", status.Error(codes.NotFound, "not found"), "does not exist"},
-		{"permission denied", status.Error(codes.PermissionDenied, "denied"), "credentials"},
+		{"tool code guidance", status.Error(codes.NotFound, "missing"), "Failed: rpc error: code = NotFound desc = missing. The trace does not exist."},
+		{"unauthenticated", status.Error(codes.Unauthenticated, "token expired"), "re-connect this MCP server"},
+		{"wrapped permission denied", fmt.Errorf("listing: %w", status.Error(codes.PermissionDenied, "denied")), "IAM permission"},
 		{"unavailable", status.Error(codes.Unavailable, "down"), "temporarily unavailable"},
-		{"deadline", context.DeadlineExceeded, "did not respond in time"},
+		{"rate limited", status.Error(codes.ResourceExhausted, "quota"), "rate-limited"},
+		{"context deadline", fmt.Errorf("query: %w", context.DeadlineExceeded), "did not respond in time"},
+		{"context canceled", context.Canceled, "was canceled"},
+		{"fallback", errors.New("boom"), "Failed: boom. Verify the project_id."},
+		{"tool fallback replaces shared input advice", status.Error(codes.InvalidArgument, "bad filter"), "bad filter. Verify the project_id."},
+		{"panic", fmt.Errorf("task: %w", &panicError{value: "bug"}), "This is a bug in the server"},
+		{"profiler scan budget", fmt.Errorf("scan: %w", gcpdata.ErrProfilerScanBudget), "per-call time budget"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := formatTraceGetError("abc", tt.err)
-			assert.Contains(t, got, tt.want)
+			res := gcpErrorResult("Failed: "+tt.err.Error(), tt.err, "Verify the project_id.", notFound)
+			require.True(t, res.IsError)
+			assert.Contains(t, res.Content[0].(*mcp.TextContent).Text, tt.want)
+		})
+	}
+	t.Run("shared input advice without a tool fallback", func(t *testing.T) {
+		res := gcpErrorResult("Failed", status.Error(codes.InvalidArgument, "bad"), "")
+		assert.Equal(t, "Failed. "+sharedCodes[codes.InvalidArgument].advice, res.Content[0].(*mcp.TextContent).Text)
+	})
+	t.Run("no guidance", func(t *testing.T) {
+		res := gcpErrorResult("Failed: boom", errors.New("boom"), "")
+		assert.Equal(t, "Failed: boom", res.Content[0].(*mcp.TextContent).Text)
+	})
+	t.Run("tool guidance overrides shared guidance for the same code", func(t *testing.T) {
+		own := codeGuidance{codes.DeadlineExceeded, "Lower max_profiles."}
+		res := gcpErrorResult("Failed", status.Error(codes.DeadlineExceeded, "slow"), "", own)
+		assert.Equal(t, "Failed. Lower max_profiles.", res.Content[0].(*mcp.TextContent).Text)
+	})
+}
+
+func TestGCPErrorsResult(t *testing.T) {
+	denied := status.Error(codes.PermissionDenied, "denied")
+	unavailable := status.Error(codes.Unavailable, "down")
+	exhausted := status.Error(codes.ResourceExhausted, "quota")
+	for _, tc := range []struct {
+		name     string
+		errs     []error
+		fallback string
+		want     string
+	}{
+		{"one guidance per distinct code, in order", []error{denied, nil, unavailable, denied}, "",
+			"Failed. " + sharedCodes[codes.PermissionDenied].advice + " " + sharedCodes[codes.Unavailable].advice},
+		{"codes sharing guidance give it once", []error{unavailable, exhausted}, "", "Failed. " + sharedCodes[codes.Unavailable].advice},
+		{"fallback for codes without guidance", []error{errors.New("boom"), denied}, "Retry.",
+			"Failed. Retry. " + sharedCodes[codes.PermissionDenied].advice},
+		{"no errors", []error{nil, nil}, "Retry.", "Failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := gcpErrorsResult("Failed", tc.errs, tc.fallback)
+			assert.Equal(t, tc.want, res.Content[0].(*mcp.TextContent).Text)
 		})
 	}
 }
@@ -319,51 +416,6 @@ func TestApplyMode(t *testing.T) {
 	})
 }
 
-func TestRegistrationModeString(t *testing.T) {
-	assert.Equal(t, "standard", ModeStandard.String())
-	assert.Equal(t, "compact", ModeCompact.String())
-	assert.Equal(t, "RegistrationMode(99)", RegistrationMode(99).String())
-}
-
-// TestRegisterCoreToolCount pins CoreToolsCount against the tools that
-// RegisterCore actually registers. The "monitoring" variant Description
-// interpolates CoreToolsCount, so this test is the choke point that keeps
-// the constant honest. Expected tools: logs_summary, logs_services,
-// errors_list, errors_get, metrics_snapshot, metrics_top_contributors,
-// trace_list, trace_get, profiler_list, profiler_top.
-func TestRegisterCoreToolCount(t *testing.T) {
-	ts := newTestToolServer(t)
-	// Non-nil backend fakes satisfy the requireX guards at registration time;
-	// their methods are never invoked because this test only lists tools.
-	deps := allFakeBackends()
-	deps.Registry = metrics.NewRegistry()
-	deps.Project = MustProjectPolicy("test-project")
-	deps.Mode = ModeStandard
-	RegisterCore(ts.server, deps)
-
-	ctx := context.Background()
-	ts.connect(ctx)
-	defer ts.close()
-
-	result, err := ts.session.ListTools(ctx, nil)
-	require.NoError(t, err)
-	assert.Len(t, result.Tools, CoreToolsCount,
-		"RegisterCore registered %d tools; update CoreToolsCount if the change is intentional", len(result.Tools))
-
-	wantTools := []string{
-		"logs_summary", "logs_services",
-		"errors_list", "errors_get",
-		"metrics_snapshot", "metrics_top_contributors",
-		"trace_list", "trace_get",
-		"profiler_list", "profiler_top",
-	}
-	var gotNames []string
-	for _, tool := range result.Tools {
-		gotNames = append(gotNames, tool.Name)
-	}
-	assert.ElementsMatch(t, wantTools, gotNames)
-}
-
 func TestStartProgressHeartbeat_NoToken(t *testing.T) {
 	// With no request (hence no progress token), the heartbeat must be an inert
 	// no-op: it spawns no goroutine and its stop function returns immediately
@@ -384,4 +436,66 @@ func TestStartProgressHeartbeat_NoToken(t *testing.T) {
 
 	// Calling stop again must stay safe.
 	assert.NotPanics(t, stop)
+}
+
+func TestJoinNote(t *testing.T) {
+	assert.Empty(t, joinNote())
+	assert.Empty(t, joinNote("", ""))
+	assert.Equal(t, "a b", joinNote("", "a", "", "b"))
+}
+
+func TestRunParallel(t *testing.T) {
+	t.Run("collects errors by index and recovers panics", func(t *testing.T) {
+		boom := errors.New("boom")
+		errs := runParallel(context.Background(), "test", 3, 2, func(i int) error {
+			switch i {
+			case 1:
+				return boom
+			case 2:
+				panic("bug")
+			}
+			return nil
+		})
+		require.Len(t, errs, 3)
+		assert.NoError(t, errs[0])
+		assert.ErrorIs(t, errs[1], boom)
+		var pe *panicError
+		require.ErrorAs(t, errs[2], &pe)
+		assert.Equal(t, "bug", pe.value)
+		assert.True(t, isPanic(errs[2]))
+		assert.False(t, isPanic(errs[1]))
+	})
+
+	t.Run("respects the concurrency limit", func(t *testing.T) {
+		var running, peak atomic.Int32
+		runParallel(context.Background(), "test", 8, 2, func(int) error {
+			n := running.Add(1)
+			for {
+				p := peak.Load()
+				if n <= p || peak.CompareAndSwap(p, n) {
+					break
+				}
+			}
+			time.Sleep(5 * time.Millisecond)
+			running.Add(-1)
+			return nil
+		})
+		assert.LessOrEqual(t, peak.Load(), int32(2))
+	})
+
+	t.Run("does not start tasks after cancellation", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		var calls atomic.Int32
+		errs := runParallel(ctx, "test", 2, 0, func(int) error {
+			calls.Add(1)
+			return nil
+		})
+		assert.Zero(t, calls.Load())
+		for _, err := range errs {
+			assert.ErrorIs(t, err, context.Canceled)
+			assert.ErrorContains(t, err, "not started")
+			assert.False(t, isPanic(err))
+		}
+	})
 }

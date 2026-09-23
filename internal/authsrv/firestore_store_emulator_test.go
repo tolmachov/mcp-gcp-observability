@@ -3,6 +3,7 @@ package authsrv
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"sync"
 	"testing"
@@ -19,7 +20,7 @@ func TestFirestoreStoreEmulator(t *testing.T) {
 		t.Skip("FIRESTORE_EMULATOR_HOST is not set")
 	}
 	ctx := context.Background()
-	store, err := newFirestoreStateStore(ctx, "mcp-observability-ci", "(default)")
+	store, err := newFirestoreStateStore(ctx, "mcp-observability-ci", "(default)", slog.New(slog.DiscardHandler))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	now := time.Now().UTC()
@@ -92,6 +93,12 @@ func TestFirestoreStoreEmulator(t *testing.T) {
 	require.NoError(t, store.RevokeGrant(ctx, "missing-"+suffix, now))
 	_, err = store.GetGrant(ctx, "missing-"+suffix)
 	assert.True(t, errors.Is(err, errStateNotFound))
+
+	corrupt := family + "-corrupt"
+	_, err = store.grant(corrupt).Create(ctx, map[string]any{"status": 42})
+	require.NoError(t, err)
+	_, err = store.GetGrant(ctx, corrupt)
+	assert.ErrorIs(t, err, errGrantCorrupt)
 }
 
 func runConcurrentStoreOperations(operation func() error) [2]error {

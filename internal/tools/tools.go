@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/google/pprof/profile"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
@@ -25,18 +27,6 @@ const (
 	ModeStandard RegistrationMode = iota // full descriptions
 	ModeCompact                          // concise descriptions (first sentence only)
 )
-
-// String implements fmt.Stringer for diagnostic output.
-func (m RegistrationMode) String() string {
-	switch m {
-	case ModeStandard:
-		return "standard"
-	case ModeCompact:
-		return "compact"
-	default:
-		return fmt.Sprintf("RegistrationMode(%d)", int(m))
-	}
-}
 
 // compactDesc returns the first sentence of desc — everything up to and
 // including the first ". " (period followed by space). If desc has no
@@ -103,25 +93,12 @@ func (d Deps) WithMode(m RegistrationMode) Deps {
 	return d
 }
 
-// CoreToolsCount is the number of tools RegisterCore registers. Single
-// source of truth for the "monitoring" variant's tool-count claim; pinned
-// by TestRegisterCoreToolCount.
-const CoreToolsCount = 10
-
-// RegisterCore registers the core monitoring tools: logs_summary, logs_services,
-// errors_list, errors_get, metrics_snapshot, metrics_top_contributors, trace_list,
-// trace_get, profiler_list, profiler_top. Count is CoreToolsCount.
-func RegisterCore(s *mcp.Server, d Deps) {
-	RegisterLogsSummary(s, d)
-	RegisterLogsServices(s, d)
-	RegisterErrorsList(s, d)
-	RegisterErrorsGet(s, d)
-	RegisterMetricsSnapshot(s, d)
-	RegisterMetricsTop(s, d)
-	RegisterTraceList(s, d)
-	RegisterTraceGet(s, d)
-	RegisterProfilerList(s, d)
-	RegisterProfilerTop(s, d)
+// readOnlyAnnotations is shared by every tool: all of them only read GCP
+// observability data, so calls are idempotent and reach an open world.
+var readOnlyAnnotations = &mcp.ToolAnnotations{
+	ReadOnlyHint:   true,
+	OpenWorldHint:  new(true),
+	IdempotentHint: true,
 }
 
 // Logging level constants for MCP log notifications.
@@ -217,22 +194,27 @@ func mcpLog(ctx context.Context, req *mcp.CallToolRequest, level mcp.LoggingLeve
 	}
 }
 
-// logAggregationWarnings forwards non-fatal AggregationWarnings to the client.
-// Helps operators spot registry typos and sparse coverage. windowLabel
-// distinguishes current/baseline/windowA/windowB sites.
-func logAggregationWarnings(ctx context.Context, req *mcp.CallToolRequest, logger, metricType, windowLabel string, warnings gcpdata.AggregationWarnings) {
-	for _, msg := range aggregationWarningMessages(metricType, windowLabel, warnings) {
-		mcpLog(ctx, req, logLevelWarning, logger, msg)
+// reportQueryWarnings logs each non-fatal query warning to the client and
+// returns them joined as a note for the tool result, so the log and the note
+// always say the same thing. windowLabel names the queried window (current,
+// baseline (prev_window), window_a, ...).
+func reportQueryWarnings(ctx context.Context, req *mcp.CallToolRequest, tool, metricType, windowLabel string, warnings gcpdata.QueryWarnings) string {
+	msgs := queryWarningMessages(metricType, windowLabel, warnings)
+	for _, msg := range msgs {
+		mcpLog(ctx, req, logLevelWarning, tool, msg)
 	}
+	return joinNote(msgs...)
 }
 
-// aggregationWarningMessages returns warning messages from AggregationWarnings.
+// queryWarningMessages returns one message per warning in warnings.
 // Pure function; testable without an MCP server context.
-func aggregationWarningMessages(metricType, windowLabel string, warnings gcpdata.AggregationWarnings) []string {
-	if !warnings.HasAny() {
-		return nil
-	}
+func queryWarningMessages(metricType, windowLabel string, warnings gcpdata.QueryWarnings) []string {
 	var msgs []string
+	if warnings.UnsupportedPoints > 0 {
+		msgs = append(msgs, fmt.Sprintf(
+			"metric %q (%s): dropped %d point(s) with unsupported or malformed value types during decode.",
+			metricType, windowLabel, warnings.UnsupportedPoints))
+	}
 	if warnings.NonFinitePoints > 0 {
 		msgs = append(msgs, fmt.Sprintf(
 			"metric %q (%s): discarded %d non-finite point(s) (NaN or infinity); no public numeric field contains a non-finite value.",
@@ -262,27 +244,15 @@ func aggregationWarningMessages(metricType, windowLabel string, warnings gcpdata
 	return msgs
 }
 
-func stripTruncatedSeries(series []gcpdata.MetricTimeSeries) ([]gcpdata.MetricTimeSeries, bool) {
-	return gcpdata.StripTruncationSentinel(series)
-}
-
+// joinNote joins the non-empty parts with a space.
 func joinNote(parts ...string) string {
-	var out string
+	kept := make([]string, 0, len(parts))
 	for _, part := range parts {
-		if part == "" {
-			continue
-		}
-		if out == "" {
-			out = part
-		} else {
-			out += " " + part
+		if part != "" {
+			kept = append(kept, part)
 		}
 	}
-	return out
-}
-
-func aggregationWarningsNote(metricType, windowLabel string, warnings gcpdata.AggregationWarnings) string {
-	return joinNote(aggregationWarningMessages(metricType, windowLabel, warnings)...)
+	return strings.Join(kept, " ")
 }
 
 // invalidAggregationSpecError reports whether err is a registry validation error
@@ -297,8 +267,22 @@ func formatRegistryMisconfigError(metricType string, err error) string {
 	return fmt.Sprintf("Registry misconfiguration for metric %q: %v. Fix the metric's aggregation block in the registry YAML — retrying will not help.", metricType, err)
 }
 
+// metricQueryErrorResult reports failed time-series queries of metricType as
+// a tool error: a registry misconfiguration names the YAML to fix, an invalid
+// label filter lists the labels the metric accepts, and any other failure is
+// msg followed by the guidance for errs. Nil errs are ignored.
+func metricQueryErrorResult(ctx context.Context, req *mcp.CallToolRequest, q gcpdata.MetricsQuerier, project, metricType, filter, msg string, errs ...error) *mcp.CallToolResult {
+	if slices.ContainsFunc(errs, invalidAggregationSpecError) {
+		return ErrorResult(formatRegistryMisconfigError(metricType, errors.Join(errs...)))
+	}
+	if slices.ContainsFunc(errs, isInvalidFilterError) {
+		return ErrorResult(enrichInvalidFilterError(ctx, req, q, project, metricType, filter, errors.Join(errs...)))
+	}
+	return gcpErrorsResult(msg, errs, "")
+}
+
 // lookupMetricDescriptor fetches the Cloud Monitoring descriptor for metricType,
-// logging and returning a ready-to-send errResult on failure. Shared by the
+// logging and returning a ready-to-send ErrorResult on failure. Shared by the
 // snapshot/top/compare handlers, which all need the descriptor's Kind and
 // ValueType to build a query. On success the returned *mcp.CallToolResult is
 // nil; callers forward a non-nil one as (errRes, nil, nil). tool names the
@@ -307,13 +291,13 @@ func lookupMetricDescriptor(ctx context.Context, req *mcp.CallToolRequest, q gcp
 	descriptor, err := q.GetMetricDescriptor(ctx, project, metricType)
 	if err != nil {
 		mcpLog(ctx, req, logLevelError, tool, fmt.Sprintf("metric descriptor lookup failed: %v", err))
-		return descriptor, errResult(fmt.Sprintf("Failed to look up metric descriptor: %v. Verify the metric_type.", err))
+		return descriptor, gcpErrorResult(fmt.Sprintf("Failed to look up metric descriptor: %v", err), err, "Verify the metric_type.")
 	}
 	return descriptor, nil
 }
 
 // resolveValidAggSpec resolves meta's aggregation strategy and validates it,
-// logging and returning a ready-to-send errResult on registry
+// logging and returning a ready-to-send ErrorResult on registry
 // misconfiguration. Shared by the snapshot/top/compare handlers; on success the
 // returned *mcp.CallToolResult is nil. metrics_related is intentionally not a
 // caller — it skips a misconfigured related metric rather than failing the
@@ -323,82 +307,70 @@ func resolveValidAggSpec(ctx context.Context, req *mcp.CallToolRequest, tool, me
 	if err := aggSpec.Validate(); err != nil {
 		mcpLog(ctx, req, logLevelError, tool,
 			fmt.Sprintf("registry misconfiguration for %s: %v", metricType, err))
-		return aggSpec, errResult(formatRegistryMisconfigError(metricType, err))
+		return aggSpec, ErrorResult(formatRegistryMisconfigError(metricType, err))
 	}
 	return aggSpec, nil
 }
 
-// reportUnsupportedPoints sums and logs dropped points across series.
-// Returns total so callers can surface drops on results.
-func reportUnsupportedPoints(ctx context.Context, req *mcp.CallToolRequest, tool, metricType string, series []gcpdata.MetricTimeSeries) int {
-	total := 0
-	for _, s := range series {
-		total += s.UnsupportedCount
-	}
-	if total > 0 {
-		mcpLog(ctx, req, logLevelWarning, tool,
-			fmt.Sprintf("metric %q: dropped %d points with unsupported or malformed value types during decode", metricType, total))
-	}
-	return total
-}
-
-func reportNonFinitePoints(ctx context.Context, req *mcp.CallToolRequest, tool, metricType, window string, series []gcpdata.MetricTimeSeries) int {
-	total := 0
-	for _, s := range series {
-		total += s.NonFiniteCount
-	}
-	if total > 0 {
-		mcpLog(ctx, req, logLevelWarning, tool,
-			fmt.Sprintf("metric %q (%s): discarded %d non-finite point(s) (NaN or infinity)", metricType, window, total))
-	}
-	return total
-}
-
-// errResult creates a tool error result.
-func errResult(msg string) *mcp.CallToolResult {
+// ErrorResult creates a tool error result.
+func ErrorResult(msg string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
 		IsError: true,
 		Content: []mcp.Content{&mcp.TextContent{Text: msg}},
 	}
 }
 
-// buildTimeFilter constructs a Cloud Logging timestamp filter from TimeFilterInput.
+// parseRFC3339Opt parses an optional RFC3339 input field; an empty string
+// yields the zero time. field names the input in the error message.
+func parseRFC3339Opt(s, field string) (time.Time, error) {
+	if s == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid %s %q: must be RFC3339 format (e.g. 2025-01-15T00:00:00Z)", field, s)
+	}
+	return t, nil
+}
+
+// parseTimeRange parses the start_time/end_time inputs. A missing end
+// defaults to now and a missing start to defaultSpan before the end; the
+// range must be non-empty.
+func parseTimeRange(startStr, endStr string, defaultSpan time.Duration) (start, end time.Time, err error) {
+	start, err = parseRFC3339Opt(startStr, "start_time")
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	end, err = parseRFC3339Opt(endStr, "end_time")
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	if end.IsZero() {
+		end = time.Now().UTC()
+	}
+	if start.IsZero() {
+		start = end.Add(-defaultSpan)
+	}
+	if !end.After(start) {
+		return time.Time{}, time.Time{}, fmt.Errorf("end_time must be after start_time (got start=%s, end=%s)",
+			start.Format(time.RFC3339), end.Format(time.RFC3339))
+	}
+	return start, end, nil
+}
+
+// buildTimeFilter constructs a Cloud Logging timestamp filter from
+// TimeFilterInput, defaulting to the 24 hours before end_time (or now). The
+// upper bound is only emitted when end_time is given, so an open range keeps
+// matching entries ingested while the query runs.
 func buildTimeFilter(in TimeFilterInput) (string, error) {
-	startTime := in.StartTime
-	endTime := in.EndTime
-
-	if startTime == "" && endTime == "" {
-		startTime = time.Now().Add(-24 * time.Hour).Format(time.RFC3339)
+	start, end, err := parseTimeRange(in.StartTime, in.EndTime, 24*time.Hour)
+	if err != nil {
+		return "", err
 	}
-
-	var parsedStart, parsedEnd time.Time
-	var filter string
-	if startTime != "" {
-		var err error
-		parsedStart, err = time.Parse(time.RFC3339, startTime)
-		if err != nil {
-			return "", fmt.Errorf("invalid start_time %q: must be RFC3339 format (e.g. 2025-01-15T00:00:00Z)", startTime)
-		}
-		filter = fmt.Sprintf(`timestamp>="%s"`, startTime)
+	filter := fmt.Sprintf(`timestamp>="%s"`, start.Format(time.RFC3339Nano))
+	if in.EndTime != "" {
+		filter = gcpdata.AppendFilter(filter, fmt.Sprintf(`timestamp<="%s"`, end.Format(time.RFC3339Nano)))
 	}
-	if endTime != "" {
-		var err error
-		parsedEnd, err = time.Parse(time.RFC3339, endTime)
-		if err != nil {
-			return "", fmt.Errorf("invalid end_time %q: must be RFC3339 format (e.g. 2025-01-15T23:59:59Z)", endTime)
-		}
-		// Default start to 24h before end to avoid unbounded scans
-		if startTime == "" {
-			parsedStart = parsedEnd.Add(-24 * time.Hour)
-			filter = fmt.Sprintf(`timestamp>="%s"`, parsedStart.Format(time.RFC3339))
-		}
-		filter = gcpdata.AppendFilter(filter, fmt.Sprintf(`timestamp<="%s"`, endTime))
-	}
-
-	if !parsedStart.IsZero() && !parsedEnd.IsZero() && !parsedEnd.After(parsedStart) {
-		return "", fmt.Errorf("end_time must be after start_time (got start=%s, end=%s)", startTime, endTime)
-	}
-
 	return filter, nil
 }
 
@@ -427,6 +399,27 @@ func requireProfiler(q gcpdata.ProfilerQuerier) {
 	if q == nil {
 		panic("nil ProfilerQuerier")
 	}
+}
+
+// loadProfile resolves the project and fetches the profile (or the
+// request-local current-minus-base diff when baseProfileID is set) for
+// profiler_top, profiler_peek and profiler_flamegraph. On failure it returns
+// the tool error result to send back.
+func loadProfile(ctx context.Context, req *mcp.CallToolRequest, d Deps, tool, projectID, profileID, baseProfileID string) (*profile.Profile, gcpdata.ProfileMeta, *mcp.CallToolResult) {
+	project, err := d.Project.Resolve(projectID)
+	if err != nil {
+		return nil, gcpdata.ProfileMeta{}, ErrorResult(err.Error())
+	}
+	// Fetching an uncached profile scans the Export API and can run long on
+	// large projects; heartbeat progress keeps the client request alive.
+	stopHeartbeat := startProgressHeartbeat(ctx, req, "Downloading profile…")
+	p, meta, err := d.Profiler.GetProfileOrDiff(ctx, project, profileID, baseProfileID)
+	stopHeartbeat()
+	if err != nil {
+		mcpLog(ctx, req, logLevelError, tool, fmt.Sprintf("fetch profile failed: %v", err))
+		return nil, gcpdata.ProfileMeta{}, gcpErrorResult(fmt.Sprintf("Failed to fetch profile: %v", err), err, "")
+	}
+	return p, meta, nil
 }
 
 // requireQuerier/requireRegistry guard the two dependencies every metrics tool
@@ -459,111 +452,57 @@ func clampLimit(limit, fallback, maxLimit int) int {
 	return limit
 }
 
-// weeklyBaselineWeeks is the number of prior same-weekday windows sampled for
-// the same_weekday_hour baseline mode.
-const weeklyBaselineWeeks = 4
-
-// panicError wraps a value recovered from a panic in a weekly-baseline
-// goroutine. It exists so callers can distinguish a code bug (which no retry
-// will fix) from a transient fetch failure via errors.As, rather than
+// panicError wraps a value recovered from a panic in a runParallel task. It
+// exists so a code bug (which no retry will fix) is told apart from a
+// transient fetch failure via errors.As (see causeGuidance), rather than by
 // substring-matching the error text.
 type panicError struct {
-	weeksBack int
-	value     any
+	value any
 }
 
 func (e *panicError) Error() string {
-	return fmt.Sprintf("week -%d: panic: %v", e.weeksBack, e.value)
+	return fmt.Sprintf("panic: %v", e.value)
 }
 
-// containsPanic reports whether any error in errs wraps a recovered panic.
-func containsPanic(errs []error) bool {
-	for _, e := range errs {
-		var pe *panicError
-		if errors.As(e, &pe) {
-			return true
-		}
-	}
-	return false
+// isPanic reports whether err wraps a recovered panic.
+func isPanic(err error) bool {
+	var pe *panicError
+	return errors.As(err, &pe)
 }
 
-// runWeeklyBaseline runs work for each of the last weeklyBaselineWeeks weeks
-// (1..N weeks back) concurrently and returns the collected errors. Each work
-// call gets the 1-based weeksBack and should write only its own result slot —
-// indices are disjoint, so those writes need no locking; any other shared
-// state it touches must do its own synchronization. A work error is wrapped
-// with the week offset; a panic is recovered, logged (labeled with tool) to the
+// runParallel calls task(i) for every i in [0, n), running at most limit
+// tasks at a time (limit <= 0 means all at once), and returns the error of
+// each task by index (nil on success). Tasks should write only their own
+// result slot; any other shared state needs its own synchronization. A task
+// is not started once ctx is done — its slot gets a "not started" error
+// wrapping ctx.Err() — but a running task must observe cancellation itself. A
+// panic is recovered, logged with its stack (labeled with tool) to the
 // server-side notifyErrLog, and recorded as a *panicError (detectable via
-// containsPanic) rather than crashing the request. ctx is only consulted once
-// before each work call — a pre-canceled ctx yields one error per week — and
-// is not passed to work, so work must observe cancellation itself by closing
-// over the same ctx. Shared by metrics_snapshot and metrics_top_contributors,
-// whose same_weekday_hour baselines differ only in the per-week body.
-func runWeeklyBaseline(ctx context.Context, tool string, work func(weeksBack int) error) []error {
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	var errs []error
-	addErr := func(e error) {
-		mu.Lock()
-		errs = append(errs, e)
-		mu.Unlock()
+// isPanic) rather than crashing the server.
+func runParallel(ctx context.Context, tool string, n, limit int, task func(i int) error) []error {
+	if limit <= 0 {
+		limit = n
 	}
-	for w := 1; w <= weeklyBaselineWeeks; w++ {
-		wg.Add(1)
-		go func(weeksBack int) {
-			defer wg.Done()
+	errs := make([]error, n)
+	sem := make(chan struct{}, limit)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() {
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			defer func() {
 				if r := recover(); r != nil {
-					stack := debug.Stack()
-					notifyErrLog.Load().Error(tool+": panic in baseline goroutine", "weeks_back", weeksBack, "panic", r, "stack", string(stack))
-					addErr(&panicError{weeksBack: weeksBack, value: r})
+					notifyErrLog.Load().Error(tool+": panic in parallel task", "index", i, "panic", r, "stack", string(debug.Stack()))
+					errs[i] = &panicError{value: r}
 				}
 			}()
-			if ctx.Err() != nil {
-				addErr(fmt.Errorf("week -%d: %w", weeksBack, ctx.Err()))
+			if err := ctx.Err(); err != nil {
+				errs[i] = fmt.Errorf("not started: %w", err)
 				return
 			}
-			if err := work(weeksBack); err != nil {
-				addErr(fmt.Errorf("week -%d: %w", weeksBack, err))
-			}
-		}(w)
+			errs[i] = task(i)
+		})
 	}
 	wg.Wait()
 	return errs
-}
-
-// weeklyBaselinePartialNote builds the user-facing note and emits the matching
-// MCP log for a partial same_weekday_hour baseline failure — some weeks failed
-// but at least one produced data (nonEmpty > 0). Recovered panics are reported
-// distinctly from transient fetch failures (error-level log, "report this
-// issue" wording) because they signal a code bug a retry will not fix. Returns
-// "" when errs is empty. Shared by metrics_snapshot and metrics_top_contributors
-// so both surface panics identically.
-func weeklyBaselinePartialNote(ctx context.Context, req *mcp.CallToolRequest, tool string, errs []error, nonEmpty int) string {
-	if len(errs) == 0 {
-		return ""
-	}
-	joined := errors.Join(errs...)
-	if containsPanic(errs) {
-		mcpLog(ctx, req, logLevelError, tool,
-			fmt.Sprintf("baseline partial failure: UNEXPECTED PANICS in %d of %d weeks; %v",
-				len(errs), weeklyBaselineWeeks, joined))
-		return fmt.Sprintf("Baseline partial failure (%s): UNEXPECTED PANICS occurred in %d of %d weekly queries. This is a bug in the code, not a transient failure. Baseline computed from %d weeks, but results may be unreliable. Please report this issue.",
-			string(BaselineModeSameWeekdayHour), len(errs), weeklyBaselineWeeks, nonEmpty)
-	}
-	mcpLog(ctx, req, logLevelWarning, tool,
-		fmt.Sprintf("baseline partial failure: %d of %d weeks failed (%v); using %d weeks of data",
-			len(errs), weeklyBaselineWeeks, joined, nonEmpty))
-	return fmt.Sprintf("Baseline partial failure (%s): %d of %d weekly samples could not be fetched; baseline computed from %d weeks. Results may be less reliable.",
-		string(BaselineModeSameWeekdayHour), len(errs), weeklyBaselineWeeks, nonEmpty)
-}
-
-// safeClassification converts a Classification to string for JSON output,
-// mapping the zero value ClassNotComputed ("") to ClassInsufficientData
-// so consumers never receive an empty classification string.
-func safeClassification(c metrics.Classification) string {
-	if c == metrics.ClassNotComputed {
-		return string(metrics.ClassInsufficientData)
-	}
-	return string(c)
 }

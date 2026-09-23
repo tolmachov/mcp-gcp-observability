@@ -72,7 +72,7 @@ func (a *AuthServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	if err := a.store.PutAuthorizationState(r.Context(), tokenHash(stateToken), authorizationStateRecord{
 		Claims: claims, Status: "active", ExpiresAt: a.now().Add(stateTTL),
 	}); err != nil {
-		a.logger.Error("oauth_store_failure", "operation", "put_authorization_state", "err", err)
+		a.logStoreFailure(r.Context(), "put_authorization_state", err)
 		redirectError(w, r, redirectURI, state, "server_error", "authorization state store unavailable")
 		return
 	}
@@ -101,7 +101,7 @@ func (a *AuthServer) handleAuthorizeConfirm(w http.ResponseWriter, r *http.Reque
 			"The authorization request expired. Start over from your MCP client.")
 		return
 	case err != nil && !errors.Is(err, errStateNotFound) && !errors.Is(err, errStateReplay):
-		a.logger.Error("oauth_store_failure", "operation", "get_authorization_state", "err", err)
+		a.logStoreFailure(r.Context(), "get_authorization_state", err)
 		a.renderErrorPageStatus(w, http.StatusServiceUnavailable, "Service unavailable",
 			"The authorization state store is unavailable. Try again later.")
 		return
@@ -155,22 +155,7 @@ func (a *AuthServer) loadAuthorizationState(ctx context.Context, raw string, con
 
 // redirectError returns a protocol error to an already-validated redirect URI.
 func redirectError(w http.ResponseWriter, r *http.Request, redirectURI, state, code, description string) {
-	u, err := url.Parse(redirectURI)
-	if err != nil {
-		http.Error(w, "invalid redirect", http.StatusBadRequest)
-		return
-	}
-	q := u.Query()
-	q.Set("error", code)
-	q.Set("error_description", description)
-	if state != "" {
-		q.Set("state", state)
-	}
-	u.RawQuery = q.Encode()
-	// Callers pass only redirect URIs already validated against the
-	// client's registration and the redirect policy (see handleAuthorize)
-	// or recovered from encrypted server-side state (see handleCallback).
-	http.Redirect(w, r, u.String(), http.StatusFound) //nolint:gosec // G710: pre-validated redirect target
+	redirectWithParams(w, r, redirectURI, state, url.Values{"error": {code}, "error_description": {description}})
 }
 
 var consentTemplate = sync.OnceValue(func() *template.Template {
@@ -190,7 +175,7 @@ button:hover{background:#1765cc}
 <h1>{{.ClientName}} wants to access Google Cloud data as you</h1>
 <p>Signing in grants this MCP client access to Google Cloud on your behalf, <strong>bounded by your own IAM permissions</strong>. This server only reads observability data (Logging, Monitoring, Trace, Error Reporting, Profiler).</p>
 <p class="muted">After approval you will be redirected to:<br><code>{{.RedirectURI}}</code></p>
-<form method="post" action="/authorize/confirm">
+<form method="post" action="` + AuthorizeConfirmPath + `">
 <input type="hidden" name="request" value="{{.Request}}">
 <button type="submit">Continue with Google</button>
 </form>

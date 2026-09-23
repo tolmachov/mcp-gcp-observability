@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -26,22 +27,15 @@ func TestLoadRegistryFileNotFound(t *testing.T) {
 
 // TestEmbeddedDefaultRegistry verifies that the registry YAML embedded into
 // the binary (default_registry.yaml) parses cleanly, validates every entry,
-// and is reachable via both NewDefaultRegistry() and LoadRegistry("") (the
-// empty-path path falls back to embedded-only).
+// and is what LoadRegistry("") returns (the empty path loads embedded-only).
 func TestEmbeddedDefaultRegistry(t *testing.T) {
-	reg, err := NewDefaultRegistry()
-	require.NoError(t, err, "NewDefaultRegistry() failed")
+	reg, err := LoadRegistry("")
+	require.NoError(t, err, "LoadRegistry(\"\") failed")
 
-	got := reg.Count()
 	// Soft floor — the shipped default set is intentionally sized so this
 	// check is stable. When adding new metrics bump this; if the count
 	// drops unexpectedly the YAML is probably silently malformed.
-	assert.GreaterOrEqual(t, got, 50, "embedded default registry should load at least 50 metrics")
-
-	// Empty-path LoadRegistry must return the same set as NewDefaultRegistry.
-	reg2, err := LoadRegistry("")
-	require.NoError(t, err, "LoadRegistry(\"\") failed")
-	assert.Equal(t, got, reg2.Count(), "LoadRegistry(\"\") and NewDefaultRegistry() should return same count")
+	assert.GreaterOrEqual(t, reg.Count(), 50, "embedded default registry should load at least 50 metrics")
 
 	// Sanity check: a few representative metrics from each section should
 	// be present and come back with their configured kind.
@@ -236,19 +230,18 @@ func TestRegistryOverlay_UntouchedDefaults(t *testing.T) {
 
 // TestRegistryOverlay_TypeMismatchCollectsAllErrors verifies that when an
 // overlay entry contains multiple fields with wrong Go types, LoadRegistry
-// collects every mismatch into a single returned error (via errors.Join)
-// instead of bailing on the first one. This is the R2-C3 contract: an
-// operator fixing a broken overlay should see every mistake per run, not
-// play whack-a-mole across map-iteration-order failures.
+// collects every mismatch into a single returned error instead of bailing
+// on the first one, so an operator fixing a broken overlay sees every
+// mistake per run.
 func TestRegistryOverlay_TypeMismatchCollectsAllErrors(t *testing.T) {
-	// Two wrong types on the same base metric — `kind: 1` (should be
-	// string) and `slo_threshold: "high"` (should be number). A regression
-	// that early-returned on the first mismatch would produce an error
-	// containing only one of the two substrings.
+	// Two wrong types on the same base metric — `slo_threshold: "high"`
+	// (should be number) and `keywords: cpu` (should be a list). A
+	// regression that early-returned on the first mismatch would produce an
+	// error containing only one of the two lines.
 	overlay := `metrics:
   "compute.googleapis.com/instance/cpu/utilization":
-    kind: 1
     slo_threshold: "high"
+    keywords: cpu
 `
 	dir := t.TempDir()
 	overlayPath := filepath.Join(dir, "overlay.yaml")
@@ -257,11 +250,55 @@ func TestRegistryOverlay_TypeMismatchCollectsAllErrors(t *testing.T) {
 	require.Error(t, err, "expected error for overlay with type mismatches")
 	msg := err.Error()
 	for _, want := range []string{
-		`field "kind" must be string`,
-		`field "slo_threshold" must be number`,
+		"line 3: cannot unmarshal !!str `high` into float64",
+		"line 4: cannot unmarshal !!str `cpu` into []string",
 	} {
 		assert.Contains(t, msg, want, "error message should include all type mismatches")
 	}
+}
+
+// TestRegistryOverlay_RejectsNull pins that an explicit null in an overlay
+// entry fails the load with its line instead of being read as an absent key,
+// which would silently keep the base value the operator meant to change.
+func TestRegistryOverlay_RejectsNull(t *testing.T) {
+	const metric = `"compute.googleapis.com/instance/cpu/utilization"`
+	for _, tc := range []struct {
+		name, entry, want string
+	}{
+		{"slo_threshold null", "    slo_threshold: null\n", "line 3: metrics.compute.googleapis.com/instance/cpu/utilization.slo_threshold is null"},
+		{"aggregation tilde", "    aggregation: ~\n", "line 3: metrics.compute.googleapis.com/instance/cpu/utilization.aggregation is null"},
+		{"empty thresholds", "    thresholds:\n", "line 3: metrics.compute.googleapis.com/instance/cpu/utilization.thresholds is null"},
+		{"nested threshold", "    thresholds:\n      cv_for_noisy: null\n", "line 4: metrics.compute.googleapis.com/instance/cpu/utilization.thresholds.cv_for_noisy is null"},
+		{"empty entry", "", "line 2: metrics.compute.googleapis.com/instance/cpu/utilization is null"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			overlayPath := filepath.Join(t.TempDir(), "overlay.yaml")
+			require.NoError(t, os.WriteFile(overlayPath, []byte("metrics:\n  "+metric+":\n"+tc.entry), 0o644))
+			_, err := LoadRegistry(overlayPath)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+// TestMetricOverlayCoversMetricMeta pins that every YAML key of MetricMeta
+// (and of ClassificationThresholds) can be set by an overlay, so a new field
+// cannot be forgotten in metricOverlay.
+func TestMetricOverlayCoversMetricMeta(t *testing.T) {
+	assert.ElementsMatch(t, yamlKeys(reflect.TypeFor[MetricMeta]()), yamlKeys(reflect.TypeFor[metricOverlay]()))
+	assert.ElementsMatch(t, yamlKeys(reflect.TypeFor[ClassificationThresholds]()), yamlKeys(reflect.TypeFor[thresholdsOverlay]()))
+}
+
+// yamlKeys returns the YAML keys of the fields of struct type typ.
+func yamlKeys(typ reflect.Type) []string {
+	var keys []string
+	for f := range typ.Fields() {
+		name, _, _ := strings.Cut(f.Tag.Get("yaml"), ",")
+		if name != "" && name != "-" {
+			keys = append(keys, name)
+		}
+	}
+	return keys
 }
 
 // loadOverlay is a test helper that writes the given YAML to a temp file
@@ -283,4 +320,21 @@ func containsString(list []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// TestRegistryOverlay_UnknownFieldRejected verifies that a misspelled metric
+// or threshold key fails the load instead of being silently ignored.
+func TestRegistryOverlay_UnknownFieldRejected(t *testing.T) {
+	overlay := `metrics:
+  "compute.googleapis.com/instance/cpu/utilization":
+    slo_treshold: 0.9
+    thresholds:
+      cv_noisy: 0.5
+`
+	overlayPath := filepath.Join(t.TempDir(), "overlay.yaml")
+	require.NoError(t, os.WriteFile(overlayPath, []byte(overlay), 0o644))
+	_, err := LoadRegistry(overlayPath)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "line 3: field slo_treshold not found")
+	assert.Contains(t, err.Error(), "line 5: field cv_noisy not found")
 }

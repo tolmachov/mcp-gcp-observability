@@ -2,13 +2,15 @@ package server
 
 import (
 	"context"
+	"regexp"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 	"github.com/tolmachov/mcp-gcp-observability/internal/tools"
 )
@@ -19,18 +21,15 @@ func projectContractSession(t *testing.T, pinned string) *mcp.ClientSession {
 	s.project = tools.MustProjectPolicy(pinned)
 	s.completer.project = s.project
 	srv := s.newMCPInstance(s.completer)
-	client := gcpclient.NewForTesting(gcpclient.Config{DefaultProject: pinned})
-	require.NoError(t, s.registerResources(srv, client, metrics.NewRegistry()))
+	s.registerResources(srv, tools.Deps{
+		Logs:     stubBackends{},
+		Errors:   stubBackends{},
+		Traces:   stubBackends{},
+		Registry: metrics.NewRegistry(),
+		Project:  s.project,
+	})
 	s.registerPrompts(srv)
-	ct, st := mcp.NewInMemoryTransports()
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go func() { _ = srv.Run(ctx, st) }()
-	mcpClient := mcp.NewClient(&mcp.Implementation{Name: "contract", Version: "1"}, nil)
-	session, err := mcpClient.Connect(ctx, ct, nil)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = session.Close() })
-	return session
+	return connectInMemory(t, srv)
 }
 
 func TestPinnedResourcesAreExactAndUnpinnedResourcesAreTemplates(t *testing.T) {
@@ -124,4 +123,42 @@ func TestPromptProjectPolicyCannotBeBypassed(t *testing.T) {
 	text, ok := result.Messages[0].Content.(*mcp.TextContent)
 	require.True(t, ok)
 	assert.Contains(t, text.Text, "GCP PROJECT: allowed-project")
+}
+
+// TestPromptsRenderEveryDeclaredArgument sets every argument a prompt
+// declares to a unique value and requires each value in the rendered text, so
+// a render that reads a renamed or misspelled key fails here. It also pins
+// that the numbered steps run 1, 2, 3, ... with and without the optional
+// arguments.
+func TestPromptsRenderEveryDeclaredArgument(t *testing.T) {
+	step := regexp.MustCompile(`(?m)^(\d+)\. `)
+	session := projectContractSession(t, "")
+	listed, err := session.ListPrompts(context.Background(), nil)
+	require.NoError(t, err)
+	require.Len(t, listed.Prompts, len(promptSpecs))
+	for _, prompt := range listed.Prompts {
+		t.Run(prompt.Name, func(t *testing.T) {
+			all, required := map[string]string{}, map[string]string{}
+			for _, arg := range prompt.Arguments {
+				value := "value-of-" + strings.ReplaceAll(arg.Name, "_", "-")
+				all[arg.Name] = value
+				if arg.Required {
+					required[arg.Name] = value
+				}
+			}
+			for name, args := range map[string]map[string]string{"all arguments": all, "required only": required} {
+				result, err := session.GetPrompt(context.Background(), &mcp.GetPromptParams{Name: prompt.Name, Arguments: args})
+				require.NoError(t, err, name)
+				require.Len(t, result.Messages, 1)
+				text, ok := result.Messages[0].Content.(*mcp.TextContent)
+				require.True(t, ok)
+				for arg, value := range args {
+					assert.Contains(t, text.Text, value, "%s: argument %s is not rendered", name, arg)
+				}
+				for i, m := range step.FindAllStringSubmatch(text.Text, -1) {
+					assert.Equal(t, strconv.Itoa(i+1), m[1], "%s: step numbering", name)
+				}
+			}
+		})
+	}
 }

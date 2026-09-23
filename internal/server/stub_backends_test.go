@@ -10,12 +10,20 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
 
-// stubBackends implements every gcpdata backend interface with panicking
-// method bodies. Variant-build tests only register tools and list them; the
-// handlers are never invoked, so a non-nil-but-unusable backend is exactly
-// what requireLogs/requireErrors/requireTraces/requireProfiler/requireQuerier
-// need to pass.
-type stubBackends struct{}
+// stubBackends implements every gcpdata backend interface with methods that
+// all fail with err. Variant-build tests only register tools and list them,
+// so they leave err nil: a non-nil-but-unusable backend is exactly what
+// requireLogs/requireErrors/requireTraces/requireProfiler/requireQuerier need
+// to pass, and a handler invoked anyway panics.
+type stubBackends struct{ err error }
+
+// fail returns the error every method fails with.
+func (s stubBackends) fail() error {
+	if s.err == nil {
+		panic("stubBackends: handler invoked without an error to fail with")
+	}
+	return s.err
+}
 
 var (
 	_ gcpdata.LogsQuerier     = stubBackends{}
@@ -25,90 +33,92 @@ var (
 	_ gcpdata.MetricsQuerier  = stubBackends{}
 )
 
-func (stubBackends) QueryLogs(context.Context, string, string, int, string, string) (*gcpdata.LogQueryResult, error) {
-	panic("stubBackends: handler not invoked in this test")
+func (s stubBackends) QueryLogs(context.Context, string, string, int, string, string) (*gcpdata.LogQueryResult, error) {
+	return nil, s.fail()
 }
 
-func (stubBackends) QueryLogsByTrace(context.Context, string, string, string, int, string) (*gcpdata.LogQueryResult, error) {
-	panic("stubBackends: handler not invoked in this test")
+func (s stubBackends) QueryLogsByTrace(context.Context, string, string, string, int, string) (*gcpdata.LogQueryResult, error) {
+	return nil, s.fail()
 }
 
-func (stubBackends) QueryLogsByRequestID(context.Context, string, string, string, int, string) (*gcpdata.LogQueryResult, error) {
-	panic("stubBackends: handler not invoked in this test")
+func (s stubBackends) QueryLogsByRequestID(context.Context, string, string, string, int, string) (*gcpdata.LogQueryResult, error) {
+	return nil, s.fail()
 }
 
-func (stubBackends) FindRequests(context.Context, gcpdata.FindRequestsParams) (*gcpdata.RequestList, error) {
-	panic("stubBackends: handler not invoked in this test")
+func (s stubBackends) FindRequests(context.Context, gcpdata.FindRequestsParams) (*gcpdata.RequestList, error) {
+	return nil, s.fail()
 }
 
-func (stubBackends) ListServices(context.Context, string, string) (*gcpdata.ServiceList, error) {
-	panic("stubBackends: handler not invoked in this test")
+func (s stubBackends) ListServices(context.Context, string, string) (*gcpdata.ServiceList, error) {
+	return nil, s.fail()
 }
 
-func (stubBackends) SummarizeLogs(context.Context, string, string, gcpdata.ProgressFunc) (*gcpdata.LogsSummary, error) {
-	panic("stubBackends: handler not invoked in this test")
+func (s stubBackends) SummarizeLogs(context.Context, string, string, gcpdata.ProgressFunc) (*gcpdata.LogsSummary, error) {
+	return nil, s.fail()
 }
 
-func (stubBackends) FindTracesFromLogs(context.Context, string, string, string, int, int) (*gcpdata.TraceFromLogsList, error) {
-	panic("stubBackends: handler not invoked in this test")
+func (s stubBackends) FindTracesFromLogs(context.Context, string, string, string, int, int) (*gcpdata.TraceFromLogsList, error) {
+	return nil, s.fail()
 }
 
-func (stubBackends) ListErrors(context.Context, string, gcpdata.ErrorWindow, int, string, string) (*gcpdata.ErrorGroupList, error) {
-	panic("stubBackends: handler not invoked in this test")
+func (s stubBackends) ListErrors(context.Context, string, gcpdata.ErrorWindow, int, string, string) (*gcpdata.ErrorGroupList, error) {
+	return nil, s.fail()
 }
 
-func (stubBackends) GetErrorGroup(context.Context, string, string, int, string) (*gcpdata.ErrorGroupDetail, error) {
-	panic("stubBackends: handler not invoked in this test")
+func (s stubBackends) GetErrorGroup(context.Context, string, string, int, string) (*gcpdata.ErrorGroupDetail, error) {
+	return nil, s.fail()
 }
 
-func (stubBackends) AnalyzeErrorTrends(context.Context, string, gcpdata.ErrorWindow, int, string, string) (*gcpdata.ErrorTrendList, error) {
-	panic("stubBackends: handler not invoked in this test")
+func (s stubBackends) AnalyzeErrorTrends(context.Context, string, gcpdata.ErrorWindow, int, string, string) (*gcpdata.ErrorTrendList, error) {
+	return nil, s.fail()
 }
 
-func (stubBackends) GetTrace(context.Context, string, string) (*gcpdata.TraceDetail, error) {
-	panic("stubBackends: handler not invoked in this test")
+func (s stubBackends) GetTrace(context.Context, string, string) (*gcpdata.TraceDetail, error) {
+	return nil, s.fail()
 }
 
-func (stubBackends) ListTraces(context.Context, string, string, string, string, time.Time, time.Time, int, string) (*gcpdata.TraceListResult, error) {
-	panic("stubBackends: handler not invoked in this test")
+func (s stubBackends) ListTraces(context.Context, string, string, string, string, time.Time, time.Time, int, string) (*gcpdata.TraceListResult, error) {
+	return nil, s.fail()
 }
 
-func (stubBackends) ListProfiles(context.Context, gcpdata.ListProfilesParams) (*gcpdata.ProfileListResult, error) {
-	panic("stubBackends: handler not invoked in this test")
+func (s stubBackends) ListProfiles(context.Context, gcpdata.ListProfilesParams) (*gcpdata.ProfileListResult, error) {
+	return nil, s.fail()
 }
 
-func (stubBackends) GetOrFetchProfile(context.Context, string, string) (*profile.Profile, gcpdata.ProfileMeta, error) {
-	panic("stubBackends: handler not invoked in this test")
+func (s stubBackends) GetOrFetchProfile(context.Context, string, string) (*profile.Profile, gcpdata.ProfileMeta, error) {
+	return nil, gcpdata.ProfileMeta{}, s.fail()
 }
 
-func (stubBackends) GetProfileOrDiff(context.Context, string, string, string) (*profile.Profile, gcpdata.ProfileMeta, error) {
-	panic("stubBackends: handler not invoked in this test")
+func (s stubBackends) GetProfileOrDiff(context.Context, string, string, string) (*profile.Profile, gcpdata.ProfileMeta, error) {
+	return nil, gcpdata.ProfileMeta{}, s.fail()
 }
 
-func (stubBackends) CompareProfiles(context.Context, string, string, string, int, int) (*gcpdata.ProfileCompareResult, error) {
-	panic("stubBackends: handler not invoked in this test")
+func (s stubBackends) CompareProfiles(context.Context, string, string, string, int, int) (*gcpdata.ProfileCompareResult, error) {
+	return nil, s.fail()
 }
 
-func (stubBackends) ComputeTrends(context.Context, gcpdata.ComputeTrendsParams, func(int, int, string)) (*gcpdata.ProfileTrendsResult, error) {
-	panic("stubBackends: handler not invoked in this test")
+func (s stubBackends) ComputeTrends(context.Context, gcpdata.ComputeTrendsParams, func(int, int, string)) (*gcpdata.ProfileTrendsResult, error) {
+	return nil, s.fail()
 }
 
-func (stubBackends) GetMetricDescriptor(context.Context, string, string) (gcpdata.MetricDescriptorBasic, error) {
-	panic("stubBackends: handler not invoked in this test")
+func (stubBackends) Close() error { return nil }
+
+func (s stubBackends) GetMetricDescriptor(context.Context, string, string) (gcpdata.MetricDescriptorBasic, error) {
+	return gcpdata.MetricDescriptorBasic{}, s.fail()
 }
 
-func (stubBackends) ListMetricDescriptors(context.Context, string, string, int) ([]gcpdata.MetricDescriptorInfo, error) {
-	panic("stubBackends: handler not invoked in this test")
+func (s stubBackends) ListMetricDescriptors(context.Context, string, string, int) ([]gcpdata.MetricDescriptorInfo, error) {
+	return nil, s.fail()
 }
 
-func (stubBackends) QueryTimeSeries(context.Context, gcpdata.QueryTimeSeriesParams) ([]gcpdata.MetricTimeSeries, error) {
-	panic("stubBackends: handler not invoked in this test")
+func (s stubBackends) QueryTimeSeries(context.Context, gcpdata.QueryTimeSeriesParams) ([]gcpdata.MetricTimeSeries, gcpdata.QueryWarnings, error) {
+	return nil, gcpdata.QueryWarnings{}, s.fail()
 }
 
-func (stubBackends) QueryTimeSeriesAggregated(context.Context, gcpdata.QueryTimeSeriesParams, metrics.AggregationSpec) ([]gcpdata.MetricTimeSeries, gcpdata.AggregationWarnings, error) {
-	panic("stubBackends: handler not invoked in this test")
+func (s stubBackends) QueryTimeSeriesAggregated(context.Context, gcpdata.QueryTimeSeriesParams, metrics.AggregationSpec) ([]gcpdata.MetricTimeSeries, gcpdata.QueryWarnings, error) {
+	return nil, gcpdata.QueryWarnings{}, s.fail()
 }
 
-func (stubBackends) GetResourceLabels(context.Context, string, string) ([]string, error) {
-	panic("stubBackends: handler not invoked in this test")
+func (s stubBackends) GetResourceLabels(context.Context, string, string) ([]string, error) {
+	return nil, s.fail()
 }

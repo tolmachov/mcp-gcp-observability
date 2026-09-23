@@ -341,28 +341,6 @@ func TestClassifyFlapping(t *testing.T) {
 	})
 }
 
-func TestClassificationIsValid(t *testing.T) {
-	valid := []Classification{ClassStable, ClassNoisy, ClassSpike, ClassStepRegression, ClassSustainedRegression, ClassRecovery, ClassSaturation, ClassImprovement, ClassFlapping, ClassInsufficientData}
-	for _, c := range valid {
-		assert.True(t, c.IsValid())
-	}
-	invalid := []Classification{"", "garbage", "Stable", "STABLE"}
-	for _, c := range invalid {
-		assert.False(t, c.IsValid())
-	}
-}
-
-func TestTrendDirectionIsValid(t *testing.T) {
-	valid := []TrendDirection{TrendFlat, TrendUp, TrendDown}
-	for _, d := range valid {
-		assert.True(t, d.IsValid())
-	}
-	invalid := []TrendDirection{"", "sideways", "Flat", "UP"}
-	for _, d := range invalid {
-		assert.False(t, d.IsValid())
-	}
-}
-
 func TestClassificationThresholdsValidate(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -447,4 +425,38 @@ func TestEffectiveThresholds_ValidCustom(t *testing.T) {
 	}
 	got := meta.EffectiveThresholds()
 	assert.Equal(t, *custom, got)
+}
+
+func TestClassificationSeverity(t *testing.T) {
+	tests := []struct {
+		class Classification
+		want  int
+	}{
+		{ClassImprovement, -1},
+		{ClassInsufficientData, 0},
+		{ClassStable, 0},
+		{ClassNoisy, 1},
+		{ClassRecovery, 2},
+		{ClassSpike, 3},
+		{ClassFlapping, 4},
+		{ClassStepRegression, 5},
+		{ClassSustainedRegression, 6},
+		{ClassSaturation, 7},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.class), func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.class.Severity())
+		})
+	}
+	// Unknown classifications are treated as high severity (fail-safe).
+	assert.GreaterOrEqual(t, Classification("some_future_classification").Severity(), ClassStepRegression.Severity())
+}
+
+func TestClassificationIsAnomalous(t *testing.T) {
+	for _, c := range []Classification{ClassStable, ClassNoisy} {
+		assert.False(t, c.IsAnomalous(), "%s", c)
+	}
+	for _, c := range []Classification{ClassSpike, ClassStepRegression, ClassSustainedRegression, ClassRecovery, ClassSaturation, ClassImprovement, ClassFlapping, ClassInsufficientData} {
+		assert.True(t, c.IsAnomalous(), "%s", c)
+	}
 }

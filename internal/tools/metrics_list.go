@@ -24,46 +24,34 @@ func RegisterMetricsList(s *mcp.Server, d Deps) {
 			"the literal word isn't in the metric name. "+
 			"Results include kind, unit, and direction for each metric. "+
 			"Does NOT return time series data — use metrics_snapshot for that."),
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			OpenWorldHint:  new(true),
-			IdempotentHint: true,
-		},
+		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[MetricsListInput](d.Project,
-			enumPatch{"kind", toAny(metrics.ValidMetricKindsForInput())},
+			enumProp("kind", metrics.ValidMetricKindsForInput(), ""),
 		),
 		OutputSchema: outputSchemaFor[MetricsListResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsListInput) (*mcp.CallToolResult, *MetricsListResult, error) {
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 
-		var kind metrics.MetricKind
-		if in.Kind != "" {
-			kind = metrics.MetricKind(in.Kind)
-			if !kind.IsValid() || kind == metrics.KindUnknown {
-				return errResult(fmt.Sprintf("invalid kind %q: must be one of %v", in.Kind, metrics.ValidMetricKindsForInput())), nil, nil
-			}
-		}
+		kind := metrics.MetricKind(in.Kind)
 		limit := clampLimit(in.Limit, 50, 200)
 
 		sendProgress(ctx, req, 0, 1, "Discovering metrics...")
 
 		// Registry entries.
-		registryEntries := d.Registry.List(in.Match, kind)
-		seen := make(map[string]bool, len(registryEntries))
-
+		seen := make(map[string]bool)
 		var entries []MetricsListEntry
-		for _, re := range registryEntries {
-			seen[re.MetricType] = true
+		for name, meta := range d.Registry.List(in.Match, kind) {
+			seen[name] = true
 			entries = append(entries, MetricsListEntry{
-				MetricType:      re.MetricType,
-				Kind:            string(re.Kind),
-				Unit:            re.Unit,
-				BetterDirection: string(re.BetterDirection),
-				SLOThreshold:    re.SLOThreshold,
-				RelatedMetrics:  re.RelatedMetrics,
+				MetricType:      name,
+				Kind:            string(meta.Kind),
+				Unit:            meta.Unit,
+				BetterDirection: string(meta.BetterDirection),
+				SLOThreshold:    meta.SLOThreshold,
+				RelatedMetrics:  meta.RelatedMetrics,
 			})
 		}
 
@@ -80,7 +68,7 @@ func RegisterMetricsList(s *mcp.Server, d Deps) {
 			descriptors, err := d.Querier.ListMetricDescriptors(ctx, project, apiFilter, apiLimit)
 			if err != nil {
 				mcpLog(ctx, req, logLevelError, "metrics_list", fmt.Sprintf("listing metric descriptors failed: %v", err))
-				return errResult(fmt.Sprintf("Failed to list metrics: %v", err)), nil, nil
+				return gcpErrorResult(fmt.Sprintf("Failed to list metrics: %v", err), err, ""), nil, nil
 			}
 
 			for _, desc := range descriptors {

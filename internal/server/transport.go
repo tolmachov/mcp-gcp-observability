@@ -71,7 +71,7 @@ func (s *Server) serveHTTP(ctx context.Context, handler http.Handler, addr strin
 	s.logger.Info("Starting streamable HTTP server", "addr", addr)
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: httpdiag.Handler(s.logger, withCrossOriginProtection(limitRequestBody(handler), corsBypass...)),
+		Handler: httpdiag.Handler(s.logger, diagnosticRoutes, withCrossOriginProtection(limitRequestBody(handler), corsBypass...)),
 		// Bound the header-read phase to blunt Slowloris-style slow-header attacks.
 		ReadHeaderTimeout: 10 * time.Second,
 		MaxHeaderBytes:    64 << 10,
@@ -147,7 +147,19 @@ func limitRequestBody(next http.Handler) http.Handler {
 // browser-based MCP clients send an Origin header on token exchange). The
 // MCP endpoint stays protected — it is additionally guarded by the bearer
 // token.
-var authCORSBypassPaths = []string{"/token", "/register", "/revoke"}
+var authCORSBypassPaths = []string{authsrv.TokenPath, authsrv.RegisterPath, authsrv.RevokePath}
+
+// Paths buildAuthMux serves besides the OAuth endpoints.
+const (
+	healthzPath         = "/healthz"
+	readyzPath          = "/readyz"
+	candidateReadyzPath = "/__candidate/readyz"
+)
+
+// diagnosticRoutes are the served paths httpdiag may log verbatim: the MCP
+// endpoint ("/" catch-all, conventionally reached as "/mcp"), the health
+// endpoints and every OAuth endpoint.
+var diagnosticRoutes = append([]string{"/", "/mcp", healthzPath, readyzPath, candidateReadyzPath}, authsrv.RoutePaths...)
 
 // buildAuthMux assembles the authenticated HTTP surface: the OAuth endpoints
 // (unauthenticated by nature) plus the MCP handler behind RequireBearerToken.
@@ -156,27 +168,27 @@ var authCORSBypassPaths = []string{"/token", "/register", "/revoke"}
 func buildAuthMux(as *authsrv.AuthServer, issuerURL string, mcpHandler http.Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 	as.Routes(mux)
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET "+healthzPath, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	requireBearer := auth.RequireBearerToken(as.Verifier(), &auth.RequireBearerTokenOptions{
+	requireBearer := as.RequireBearerToken(&auth.RequireBearerTokenOptions{
 		ResourceMetadataURL: issuerURL + authsrv.ProtectedResourceMetadataPath,
 	})
-	ready := as.RequireStoreAvailable(requireBearer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ready := requireBearer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := as.CheckStore(r.Context()); err != nil {
 			http.Error(w, "OAuth state store unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ready"))
-	})))
-	mux.Handle("GET /readyz", ready)
+	}))
+	mux.Handle("GET "+readyzPath, ready)
 	// Cloud Armor and the load balancer route this path to the no-traffic
 	// revision's tagged serverless NEG. It has exactly the same bearer and
 	// Firestore checks as the normal readiness endpoint.
-	mux.Handle("GET /__candidate/readyz", ready)
-	mux.Handle("/", as.RequireStoreAvailable(requireBearer(mcpHandler)))
+	mux.Handle("GET "+candidateReadyzPath, ready)
+	mux.Handle("/", requireBearer(mcpHandler))
 	return mux
 }
 

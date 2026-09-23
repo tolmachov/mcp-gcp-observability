@@ -12,7 +12,7 @@ import (
 func TestBuildAggregation(t *testing.T) {
 	tests := []struct {
 		name        string
-		metricKind  string
+		metricKind  MetricKind
 		valueType   string
 		wantAligner monitoringpb.Aggregation_Aligner
 	}{

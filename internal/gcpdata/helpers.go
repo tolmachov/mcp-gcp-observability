@@ -31,23 +31,8 @@ func EscapeFilterValue(s string) string {
 	return s
 }
 
-// validSeverities is the set of valid Cloud Logging severity levels.
-var validSeverities = map[string]bool{
-	"DEFAULT":   true,
-	"DEBUG":     true,
-	"INFO":      true,
-	"NOTICE":    true,
-	"WARNING":   true,
-	"ERROR":     true,
-	"CRITICAL":  true,
-	"ALERT":     true,
-	"EMERGENCY": true,
-}
-
-// IsValidSeverity checks if a severity string is a valid Cloud Logging severity.
-func IsValidSeverity(s string) bool {
-	return validSeverities[strings.ToUpper(s)]
-}
+// Severities lists the Cloud Logging severity levels in ascending order.
+var Severities = []string{"DEFAULT", "DEBUG", "INFO", "NOTICE", "WARNING", "ERROR", "CRITICAL", "ALERT", "EMERGENCY"}
 
 // AppendFilter joins two filter parts with newline (implicit AND).
 // Returns the other part unchanged if either is empty.
@@ -101,25 +86,27 @@ func extractTraceID(trace string) string {
 	return trace
 }
 
+// serviceLabelKeys are the resource labels that name a service, in priority
+// order: Cloud Run, Kubernetes container and namespace, Cloud Functions.
+var serviceLabelKeys = []string{"service_name", "container_name", "namespace_name", "function_name"}
+
+// serviceName derives a service name from resource labels, falling back to
+// the resource type when no service label is set.
+func serviceName(resourceType string, labels map[string]string) string {
+	for _, key := range serviceLabelKeys {
+		if v := labels[key]; v != "" {
+			return v
+		}
+	}
+	return resourceType
+}
+
 // extractServiceName extracts a service name from a log entry's resource labels.
 func extractServiceName(entry *loggingpb.LogEntry) string {
 	if entry.Resource == nil {
 		return ""
 	}
-	labels := entry.Resource.Labels
-
-	// Cloud Run: service_name
-	if name, ok := labels["service_name"]; ok {
-		return name
-	}
-	// K8s: container_name or namespace_name
-	if name, ok := labels["container_name"]; ok {
-		return name
-	}
-	if name, ok := labels["namespace_name"]; ok {
-		return name
-	}
-	return entry.Resource.Type
+	return serviceName(entry.Resource.Type, entry.Resource.Labels)
 }
 
 // structToMap converts a protobuf Struct to a Go map.

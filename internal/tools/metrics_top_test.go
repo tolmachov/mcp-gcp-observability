@@ -13,34 +13,6 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
 
-func TestSplitDimension(t *testing.T) {
-	tests := []struct {
-		input      string
-		wantPrefix string
-		wantKey    string
-	}{
-		{"metric.labels.response_code", "metric", "response_code"},
-		{"resource.labels.instance_id", "resource", "instance_id"},
-		// Metadata namespaces exist so top_contributors can break down by
-		// GCE system metadata (machine_type) or user-supplied labels (env).
-		// A typo in these prefixes must NOT silently fall back to the bare
-		// key — the test locks the four accepted prefixes.
-		{"metadata.system_labels.machine_type", "metadata_system", "machine_type"},
-		{"metadata.user_labels.env", "metadata_user", "env"},
-		{"response_code", "", "response_code"},
-		{"metric.labels.", "", "metric.labels."}, // malformed: treated as bare key
-		{"resource.labels.zone", "resource", "zone"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			p := splitDimension(tt.input)
-			assert.Equal(t, tt.wantPrefix, p.prefix)
-			assert.Equal(t, tt.wantKey, p.key)
-		})
-	}
-}
-
 // TestLabelValueFromSeries_MetadataNamespaces verifies that the four
 // supported dimension shapes all resolve to the correct label map on a
 // MetricTimeSeries. Regression guard: swapping the switch arms for the two
@@ -61,9 +33,6 @@ func TestLabelValueFromSeries_MetadataNamespaces(t *testing.T) {
 		{"resource.labels.zone", "us-central1-a"},
 		{"metadata.system_labels.machine_type", "e2-medium"},
 		{"metadata.user_labels.env", "prod"},
-		// Unprefixed: fall back to every namespace until found.
-		{"machine_type", "e2-medium"},
-		{"instance_id", "i-metric"},
 		// Missing everywhere: missing-dimension sentinel (distinct from ""
 		// which means "label present, value empty").
 		{"metric.labels.bogus", "(missing_dimension)"},
@@ -196,7 +165,7 @@ func TestTopContributorsTwoStageDoesNotCrash(t *testing.T) {
 	_ = metrics.ReducerSum // anchor the metrics import even if no other reference exists
 }
 
-func TestTopContributorsTruncationSentinelDoesNotMasqueradeAsMissingDimension(t *testing.T) {
+func TestTopContributorsTruncationDoesNotMasqueradeAsMissingDimension(t *testing.T) {
 	const metricType = "custom.googleapis.com/business_kpi_counter"
 	registry := loadTestRegistry(t, aggregationTestRegistryYAML)
 
@@ -206,8 +175,8 @@ func TestTopContributorsTruncationSentinelDoesNotMasqueradeAsMissingDimension(t 
 	fq.series[metricType] = []gcpdata.MetricTimeSeries{
 		makeTimeSeriesWithLabels(time.Now().Add(-30*time.Minute), []float64{10, 20, 30, 40, 50},
 			map[string]string{"response_code": "200"}),
-		{Truncated: true},
 	}
+	fq.warnings = gcpdata.QueryWarnings{TruncatedSeries: true}
 
 	ctx := context.Background()
 	tts := newTestToolServer(t)
@@ -225,7 +194,7 @@ func TestTopContributorsTruncationSentinelDoesNotMasqueradeAsMissingDimension(t 
 
 	var top TopContributorsResult
 	unmarshalResult(t, result, &top)
-	require.NotContains(t, top.Note, "Partial dimension coverage", "truncation sentinel must not look like missing-dimension coverage loss")
+	require.NotContains(t, top.Note, "Partial dimension coverage", "truncation must not look like missing-dimension coverage loss")
 	require.Contains(t, top.Note, "time-series cap", "want explicit truncation warning")
 	require.Len(t, top.Contributors, 1)
 }

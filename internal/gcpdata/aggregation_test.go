@@ -48,8 +48,9 @@ func testFoldSum(t *testing.T) {
 		},
 	}
 
-	got, stats := foldGroupSeries(series, metrics.ReducerSum)
-	assert.Equal(t, foldStats{}, stats, "all buckets fully covered")
+	var stats QueryWarnings
+	got := foldGroupSeries(series, metrics.ReducerSum, &stats)
+	assertNoFoldWarnings(t, stats) // all buckets fully covered
 	require.Len(t, got, 2)
 	assert.True(t, got[0].Timestamp.Equal(t0))
 	assert.Equal(t, 15.0, got[0].Value)
@@ -65,8 +66,9 @@ func testFoldMax(t *testing.T) {
 		{Points: []metrics.Point{{Timestamp: t0, Value: 7}}},
 	}
 
-	got, stats := foldGroupSeries(series, metrics.ReducerMax)
-	assert.Equal(t, foldStats{}, stats)
+	var stats QueryWarnings
+	got := foldGroupSeries(series, metrics.ReducerMax, &stats)
+	assertNoFoldWarnings(t, stats)
 	require.Len(t, got, 1)
 	assert.Equal(t, 10.0, got[0].Value)
 }
@@ -79,19 +81,21 @@ func testFoldMean(t *testing.T) {
 		{Points: []metrics.Point{{Timestamp: t0, Value: 1.0}}},
 	}
 
-	got, _ := foldGroupSeries(series, metrics.ReducerMean)
+	got := foldGroupSeries(series, metrics.ReducerMean, &QueryWarnings{})
 	require.Len(t, got, 1)
 	const want = 0.9
 	assert.InDelta(t, want, got[0].Value, 1e-9)
 }
 
 func testFoldEmpty(t *testing.T) {
-	got, stats := foldGroupSeries(nil, metrics.ReducerSum)
+	var stats QueryWarnings
+	got := foldGroupSeries(nil, metrics.ReducerSum, &stats)
 	assert.Nil(t, got)
-	assert.Equal(t, foldStats{}, stats)
-	got, stats = foldGroupSeries([]MetricTimeSeries{}, metrics.ReducerSum)
+	assertNoFoldWarnings(t, stats)
+	stats = QueryWarnings{}
+	got = foldGroupSeries([]MetricTimeSeries{}, metrics.ReducerSum, &stats)
 	assert.Nil(t, got)
-	assert.Equal(t, foldStats{}, stats)
+	assertNoFoldWarnings(t, stats)
 }
 
 func testFoldSingleGroup(t *testing.T) {
@@ -102,7 +106,7 @@ func testFoldSingleGroup(t *testing.T) {
 			{Timestamp: t0.Add(time.Minute), Value: 43},
 		}},
 	}
-	got, _ := foldGroupSeries(series, metrics.ReducerSum)
+	got := foldGroupSeries(series, metrics.ReducerSum, &QueryWarnings{})
 	require.Len(t, got, 2)
 	assert.Equal(t, 42.0, got[0].Value)
 	assert.Equal(t, 43.0, got[1].Value)
@@ -124,7 +128,8 @@ func testFoldDisjointTimestamps(t *testing.T) {
 		{Points: []metrics.Point{{Timestamp: t0, Value: 10}}},
 		{Points: []metrics.Point{{Timestamp: t1, Value: 20}}},
 	}
-	got, stats := foldGroupSeries(series, metrics.ReducerSum)
+	var stats QueryWarnings
+	got := foldGroupSeries(series, metrics.ReducerSum, &stats)
 	// t0: A is fresh, B has not started → counted as nothing (pre-start
 	// is not a carry). t1: A carries 10, B is fresh → carry-forward.
 	assert.Equal(t, 1, stats.CarryForwardBuckets, "t1 used carry-forward of group A")
@@ -160,7 +165,8 @@ func testFoldRaggedBuckets(t *testing.T) {
 			{Timestamp: t2, Value: 3},
 		}},
 	}
-	got, stats := foldGroupSeries(series, metrics.ReducerSum)
+	var stats QueryWarnings
+	got := foldGroupSeries(series, metrics.ReducerSum, &stats)
 	assert.Equal(t, 1, stats.CarryForwardBuckets, "t1 missed a fresh point from group 2")
 	assert.Zero(t, stats.DepartedGroupBuckets, "single missed bucket is well within the carry bound")
 	require.Len(t, got, 3)
@@ -181,7 +187,7 @@ func testFoldSortsOutput(t *testing.T) {
 		points[i] = metrics.Point{Timestamp: t0.Add(time.Duration(i) * time.Minute), Value: float64(i)}
 	}
 	series := []MetricTimeSeries{{Points: points}}
-	got, _ := foldGroupSeries(series, metrics.ReducerSum)
+	got := foldGroupSeries(series, metrics.ReducerSum, &QueryWarnings{})
 	require.Len(t, got, len(points))
 	for i := 1; i < len(got); i++ {
 		assert.True(t, got[i-1].Timestamp.Before(got[i].Timestamp))
@@ -207,7 +213,8 @@ func testFoldCarryForwardBounded(t *testing.T) {
 	b := []metrics.Point{{Timestamp: t0, Value: 100}}
 	series := []MetricTimeSeries{{Points: a}, {Points: b}}
 
-	got, stats := foldGroupSeries(series, metrics.ReducerSum)
+	var stats QueryWarnings
+	got := foldGroupSeries(series, metrics.ReducerSum, &stats)
 	require.Len(t, got, total)
 
 	// Bucket 0: both fresh → 1 + 100 = 101.
@@ -261,7 +268,7 @@ func testFoldCarryForwardResurrect(t *testing.T) {
 	}
 	series := []MetricTimeSeries{{Points: a}, {Points: b}}
 
-	got, _ := foldGroupSeries(series, metrics.ReducerSum)
+	got := foldGroupSeries(series, metrics.ReducerSum, &QueryWarnings{})
 	require.Len(t, got, total)
 
 	// Bucket 0: 1 + 50 = 51.
@@ -297,7 +304,8 @@ func testFoldMeanWithDepartedGroup(t *testing.T) {
 	b := []metrics.Point{{Timestamp: t0, Value: 100}}
 	series := []MetricTimeSeries{{Points: a}, {Points: b}}
 
-	got, stats := foldGroupSeries(series, metrics.ReducerMean)
+	var stats QueryWarnings
+	got := foldGroupSeries(series, metrics.ReducerMean, &stats)
 	require.Len(t, got, total)
 
 	for i := 0; i < total; i++ {
@@ -367,7 +375,8 @@ func testFoldSingleSeriesDeparture(t *testing.T) {
 		{Points: phantom},
 	}
 
-	got, stats := foldGroupSeries(series, metrics.ReducerMean)
+	var stats QueryWarnings
+	got := foldGroupSeries(series, metrics.ReducerMean, &stats)
 
 	// Expect 1 fresh bucket (t0, mean of [42,0]=21) + extraBuckets buckets
 	// (where only the second series contributes after first departs).
@@ -425,9 +434,29 @@ func TestFoldGroupSeriesDropsPostAggregationOverflow(t *testing.T) {
 		{Points: []metrics.Point{{Timestamp: ts, Value: math.MaxFloat64}}},
 		{Points: []metrics.Point{{Timestamp: ts, Value: math.MaxFloat64}}},
 	}
-	points, stats := foldGroupSeries(series, metrics.ReducerSum)
+	var stats QueryWarnings
+	points := foldGroupSeries(series, metrics.ReducerSum, &stats)
 	assert.Empty(t, points)
 	assert.Equal(t, 1, stats.NonFinitePoints)
+}
+
+// TestFoldGroupSeriesDroppedBucketsStayOutOfCoverage pins that a bucket
+// dropped as non-finite is not counted as a carry-forward bucket, so the
+// coverage counters never exceed TotalBuckets.
+func TestFoldGroupSeriesDroppedBucketsStayOutOfCoverage(t *testing.T) {
+	t1, t2 := time.Unix(60, 0), time.Unix(120, 0)
+	series := []MetricTimeSeries{
+		{Points: []metrics.Point{{Timestamp: t1, Value: math.MaxFloat64}}},
+		{Points: []metrics.Point{{Timestamp: t1, Value: 0}, {Timestamp: t2, Value: math.MaxFloat64}}},
+	}
+	var stats QueryWarnings
+	points := foldGroupSeries(series, metrics.ReducerSum, &stats)
+	// t2 sums the fresh MaxFloat64 with the first series' carried MaxFloat64
+	// and overflows, so only t1 survives.
+	require.Len(t, points, 1)
+	assert.Equal(t, 1, stats.TotalBuckets)
+	assert.Equal(t, 1, stats.NonFinitePoints)
+	assert.Zero(t, stats.CarryForwardBuckets)
 }
 
 // TestBuildAggregatedParams pins the single-vs-two-stage path selection
@@ -559,13 +588,20 @@ func TestBuildAggregationReduceNoneIsOptOut(t *testing.T) {
 // client: an invalid spec must be rejected up front with a wrapped error
 // so callers never reach the RPC path with nonsense aggregation.
 func TestQueryTimeSeriesAggregatedInvalidSpec(t *testing.T) {
-	// Passing nil client is intentional: QueryTimeSeriesAggregated validates
+	// A querier without a client is intentional: QueryTimeSeriesAggregated validates
 	// the AggregationSpec before making any RPC calls, so the client is never used.
-	_, _, err := QueryTimeSeriesAggregated(context.Background(), nil, QueryTimeSeriesParams{}, metrics.AggregationSpec{}) //nolint:GoMaybeNil
+	_, _, err := (&MonitoringQuerier{}).QueryTimeSeriesAggregated(context.Background(), QueryTimeSeriesParams{}, metrics.AggregationSpec{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid aggregation spec")
 	// The error must wrap the sentinel so tool handlers can escalate
-	// registry misconfiguration to LoggingLevelError instead of lumping
+	// registry misconfiguration to logLevelError instead of lumping
 	// it with transient GCP failures.
 	assert.True(t, errors.Is(err, metrics.ErrInvalidAggregationSpec))
+}
+
+// assertNoFoldWarnings asserts that a fold reported no warning: only the
+// TotalBuckets context counter may be set.
+func assertNoFoldWarnings(t *testing.T, w QueryWarnings) {
+	t.Helper()
+	assert.Equal(t, QueryWarnings{TotalBuckets: w.TotalBuckets}, w)
 }

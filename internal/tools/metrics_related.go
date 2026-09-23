@@ -2,50 +2,24 @@ package tools
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"runtime/debug"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
 
-// classifyErr buckets an error from a per-signal goroutine into either a
-// benign skip or a real failure. Only context.Canceled is benign — the
-// client hung up and there is nothing to report. context.DeadlineExceeded is
-// intentionally treated as a real failure: it signals a performance issue and
-// operators need to see Partial=true when it occurs. This distinction drives
-// the rpcFailures counter and the all-failed error path.
-func classifyErr(err error) (reason string, benign bool) {
-	if err == nil {
-		return "", true
-	}
-	if errors.Is(err, context.Canceled) {
-		return "canceled", true
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Sprintf("deadline exceeded: %v", err), false
-	}
-	if st, ok := status.FromError(err); ok {
-		switch st.Code() {
-		case codes.Canceled:
-			return "canceled", true
-		case codes.DeadlineExceeded:
-			return fmt.Sprintf("deadline exceeded: %v", err), false
-		case codes.NotFound:
-			return fmt.Sprintf("metric type not found in project — check the registry entry is correct: %v", err), false
-		}
-	}
-	return err.Error(), false
-}
+// relatedConcurrency bounds how many related metrics are queried at once.
+// Each issues its descriptor, current and baseline queries one after another,
+// so at most this many Monitoring API calls are in flight — a conservative
+// bound for the default rate limits.
+const relatedConcurrency = 10
 
 func RegisterMetricsRelated(s *mcp.Server, d Deps) {
 	requireQuerier(d.Querier)
@@ -57,31 +31,21 @@ func RegisterMetricsRelated(s *mcp.Server, d Deps) {
 			"Requires the metric to be configured in the registry with related_metrics. "+
 			"Use this after metrics_snapshot to understand whether correlated signals moved together. "+
 			"For breaking down a single metric by dimension, use metrics_top_contributors instead."),
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			OpenWorldHint:  new(true),
-			IdempotentHint: true,
-		},
+		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[MetricsRelatedInput](d.Project,
-			enumPatch{"window", enumWindow},
+			nonEmptyProp("metric_type"),
+			enumProp("window", metricWindowNames(), defaultMetricWindow),
 		),
 		OutputSchema: outputSchemaFor[RelatedSignalsResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in MetricsRelatedInput) (*mcp.CallToolResult, *RelatedSignalsResult, error) {
-		if in.MetricType == "" {
-			return errResult("metric_type is required"), nil, nil
-		}
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 
-		windowStr := in.Window
-		if windowStr == "" {
-			windowStr = "1h"
-		}
-		windowDur, err := parseWindow(windowStr)
+		_, windowDur, err := parseWindow(in.Window)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 
 		related := d.Registry.RelatedMetrics(in.MetricType)
@@ -94,191 +58,154 @@ func RegisterMetricsRelated(s *mcp.Server, d Deps) {
 
 		now := time.Now().UTC()
 		start := now.Add(-windowDur)
-		stepSeconds := int64(60)
+		stepSeconds := int64(metrics.DefaultStepSeconds)
 		totalSignals := float64(len(related))
 
 		sendProgress(ctx, req, 0, totalSignals, fmt.Sprintf("Querying %d related signals", len(related)))
 
 		var signals []RelatedSignal
 		var skipped []SkippedSignal
-		var rpcFailures int
 		var warningNotes []string
-		var warningNotesSeen = make(map[string]bool)
 		var mu sync.Mutex
-		var wg sync.WaitGroup
 		completed := float64(0)
 
-		// addSkip must be called with a pre-classified benign flag —
-		// distinctRpcFailureReasons uses the flag, not the reason text.
-		addSkip := func(relMetric, reason string, benign bool) {
+		addSkip := func(relMetric, reason string, cause skipCause, err error) {
 			mu.Lock()
 			defer mu.Unlock()
-			skipped = append(skipped, SkippedSignal{MetricType: relMetric, Reason: reason, benign: benign})
-			if !benign {
-				rpcFailures++
+			skipped = append(skipped, SkippedSignal{MetricType: relMetric, Reason: reason, cause: cause, err: err})
+		}
+		// skipFailure records err, the failure of relMetric's task, as a
+		// benign skip or a query failure.
+		skipFailure := func(relMetric string, err error) {
+			cause := skipQueryFailed
+			if isBenign(err) {
+				cause = skipBenign
 			}
+			addSkip(relMetric, err.Error(), cause, err)
 		}
 		addWarningNote := func(note string) {
-			if note == "" {
-				return
-			}
 			mu.Lock()
 			defer mu.Unlock()
-			if warningNotesSeen[note] {
-				return
+			if note != "" && !slices.Contains(warningNotes, note) {
+				warningNotes = append(warningNotes, note)
 			}
-			warningNotesSeen[note] = true
-			warningNotes = append(warningNotes, note)
 		}
 
-		// sem limits concurrent GCP API calls to avoid quota exhaustion; capacity
-		// 10 is a conservative bound for Monitoring API default rate limits.
-		sem := make(chan struct{}, 10)
+		errs := runParallel(ctx, "metrics_related", len(related), relatedConcurrency, func(i int) error {
+			relMetric := related[i]
+			relMeta := d.Registry.Lookup(relMetric)
 
-		for _, relMetric := range related {
-			wg.Add(1)
-			go func(relMetric string) {
-				sem <- struct{}{}
-				defer func() { <-sem }()
-				defer wg.Done()
-				defer func() {
-					if r := recover(); r != nil {
-						stack := debug.Stack()
-						msg := fmt.Sprintf("panic querying %s: %v\n%s", relMetric, r, stack)
-						notifyErrLog.Load().Error("metrics_related: panic in handler", "metric", relMetric, "panic", r, "stack", string(stack))
-						mcpLog(ctx, req, logLevelError, "metrics_related", msg)
-						addSkip(relMetric, fmt.Sprintf("internal error: %v", r), false)
-					}
-				}()
+			relDesc, err := d.Querier.GetMetricDescriptor(ctx, project, relMetric)
+			if err != nil {
+				mcpLog(ctx, req, logLevelWarning, "metrics_related",
+					fmt.Sprintf("descriptor lookup failed for %s: %v", relMetric, err))
+				skipFailure(relMetric, fmt.Errorf("failed to get metric descriptor: %w", err))
+				return nil
+			}
 
-				if ctx.Err() != nil {
-					reason, benign := classifyErr(ctx.Err())
-					addSkip(relMetric, reason, benign)
-					return
-				}
+			relAggSpec := relMeta.ResolveAggregation()
+			if err := relAggSpec.Validate(); err != nil {
+				mcpLog(ctx, req, logLevelError, "metrics_related",
+					fmt.Sprintf("registry misconfiguration for %s: %v", relMetric, err))
+				addSkip(relMetric, formatRegistryMisconfigError(relMetric, err), skipMisconfig, err)
+				return nil
+			}
 
-				relMeta := d.Registry.Lookup(relMetric)
-
-				relDesc, err := d.Querier.GetMetricDescriptor(ctx, project, relMetric)
-				if err != nil {
-					mcpLog(ctx, req, logLevelWarning, "metrics_related",
-						fmt.Sprintf("descriptor lookup failed for %s: %v", relMetric, err))
-					reason, benign := classifyErr(err)
-					addSkip(relMetric, fmt.Sprintf("failed to get metric descriptor: %s", reason), benign)
-					return
-				}
-
-				params := gcpdata.QueryTimeSeriesParams{
-					Project:     project,
-					MetricType:  relMetric,
-					LabelFilter: in.Filter,
-					Start:       start,
-					End:         now,
-					StepSeconds: stepSeconds,
-					MetricKind:  relDesc.Kind,
-					ValueType:   relDesc.ValueType,
-				}
-
-				relAggSpec := relMeta.ResolveAggregation()
-				if err := relAggSpec.Validate(); err != nil {
-					mcpLog(ctx, req, logLevelError, "metrics_related",
-						fmt.Sprintf("registry misconfiguration for %s: %v", relMetric, err))
-					addSkip(relMetric, formatRegistryMisconfigError(relMetric, err), false)
-					return
-				}
-
-				currentSeries, currentWarnings, qErr := d.Querier.QueryTimeSeriesAggregated(ctx, params, relAggSpec)
-				logAggregationWarnings(ctx, req, "metrics_related", relMetric, "current", currentWarnings)
-				addWarningNote(aggregationWarningsNote(relMetric, "current", currentWarnings))
-				if qErr != nil {
-					mcpLog(ctx, req, logLevelWarning, "metrics_related",
-						fmt.Sprintf("current window query failed for %s: %v", relMetric, qErr))
-					reason, benign := classifyErr(qErr)
-					addSkip(relMetric, fmt.Sprintf("query failed: %s", reason), benign)
-					return
-				}
-				reportUnsupportedPoints(ctx, req, "metrics_related", relMetric, currentSeries)
-
-				currentPoints := mergePoints(currentSeries)
-				if len(currentPoints) == 0 {
-					reason := "no data in window"
-					switch relDesc.Kind {
-					case "DELTA", "CUMULATIVE":
-						reason = "no events in window (counter inactive)"
-					case "GAUGE":
-						reason = "no data in window (no resources reporting)"
-					}
-					addSkip(relMetric, reason, true)
-					return
-				}
-
-				baselineParams := params
-				baselineParams.End = start
-				baselineParams.Start = start.Add(-windowDur)
-				baselineSeries, baselineWarnings, qErr := d.Querier.QueryTimeSeriesAggregated(ctx, baselineParams, relAggSpec)
-				logAggregationWarnings(ctx, req, "metrics_related", relMetric, "baseline", baselineWarnings)
-				addWarningNote(aggregationWarningsNote(relMetric, "baseline", baselineWarnings))
-				if qErr != nil {
-					mcpLog(ctx, req, logLevelWarning, "metrics_related",
-						fmt.Sprintf("baseline query failed for %s: %v", relMetric, qErr))
-					reason, benign := classifyErr(qErr)
-					addSkip(relMetric, fmt.Sprintf("baseline query failed: %s", reason), benign)
-					return
-				}
-				baselinePoints := mergePoints(baselineSeries)
-				expectedBaseline := expectedPointsForWindow(windowDur, int(stepSeconds))
-
-				f := metrics.Process(currentPoints, baselinePoints, relMeta, int(stepSeconds), expectedBaseline, metrics.Window{Start: start, End: now})
-
-				anomaly := f.Classification != metrics.ClassStable && f.Classification != metrics.ClassNoisy
-				mu.Lock()
-				signals = append(signals, RelatedSignal{
-					MetricType:               relMetric,
-					Kind:                     string(relMeta.Kind),
-					Current:                  f.Current,
-					Baseline:                 f.Baseline,
-					DeltaPct:                 f.DeltaPct,
-					Trend:                    string(f.Trend),
-					TrendScore:               f.TrendScore,
-					CV:                       f.CV,
-					Classification:           safeClassification(f.Classification),
-					ClassificationConfidence: string(f.Confidence),
-					Anomaly:                  anomaly,
-					NonFinitePoints:          currentWarnings.NonFinitePoints + baselineWarnings.NonFinitePoints,
+			params := gcpdata.QueryTimeSeriesParams{
+				Project:     project,
+				MetricType:  relMetric,
+				LabelFilter: in.Filter,
+				Start:       start,
+				End:         now,
+				StepSeconds: stepSeconds,
+				MetricKind:  relDesc.Kind,
+				ValueType:   relDesc.ValueType,
+			}
+			baselineWindows := baselineSpec{mode: baselinePrevWindow}.windows(start, now)
+			current, baselineResults := queryWithBaseline(ctx, "metrics_related", params, baselineWindows,
+				func(p gcpdata.QueryTimeSeriesParams) ([]gcpdata.MetricTimeSeries, gcpdata.QueryWarnings, error) {
+					return d.Querier.QueryTimeSeriesAggregated(ctx, p, relAggSpec)
 				})
-				completed++
-				progress := completed
-				mu.Unlock()
-				sendProgress(ctx, req, progress, totalSignals, fmt.Sprintf("Queried %s", relMetric))
-			}(relMetric)
+
+			addWarningNote(reportQueryWarnings(ctx, req, "metrics_related", relMetric, "current", current.warnings))
+			if current.err != nil {
+				mcpLog(ctx, req, logLevelWarning, "metrics_related",
+					fmt.Sprintf("current window query failed for %s: %v", relMetric, current.err))
+				skipFailure(relMetric, fmt.Errorf("query failed: %w", current.err))
+				return nil
+			}
+			if !current.hasPoints() {
+				addSkip(relMetric, gcpdata.EmptyWindowReason(relDesc.Kind), skipBenign, nil)
+				return nil
+			}
+
+			baseline := baselineResults[0]
+			addWarningNote(reportQueryWarnings(ctx, req, "metrics_related", relMetric, baselineWindows[0].label, baseline.warnings))
+			if baseline.err != nil {
+				mcpLog(ctx, req, logLevelWarning, "metrics_related",
+					fmt.Sprintf("baseline query failed for %s: %v", relMetric, baseline.err))
+				skipFailure(relMetric, fmt.Errorf("baseline query failed: %w", baseline.err))
+				return nil
+			}
+			expectedBaseline := expectedPointsForWindow(windowDur, int(stepSeconds))
+
+			f := metrics.Process(mergePoints(current.series), mergePoints(baseline.series), relMeta, int(stepSeconds), expectedBaseline, metrics.Window{Start: start, End: now})
+
+			mu.Lock()
+			signals = append(signals, RelatedSignal{
+				MetricType:               relMetric,
+				Kind:                     string(relMeta.Kind),
+				Current:                  f.Current,
+				Baseline:                 f.Baseline,
+				DeltaPct:                 f.DeltaPct,
+				Trend:                    string(f.Trend),
+				TrendScore:               f.TrendScore,
+				CV:                       f.CV,
+				Classification:           string(f.Classification),
+				ClassificationConfidence: string(f.Confidence),
+				Anomaly:                  f.Classification.IsAnomalous(),
+				NonFinitePoints:          current.warnings.NonFinitePoints + baseline.warnings.NonFinitePoints,
+			})
+			completed++
+			progress := completed
+			mu.Unlock()
+			sendProgress(ctx, req, progress, totalSignals, fmt.Sprintf("Queried %s", relMetric))
+			return nil
+		})
+		// The task reports its own skips; a returned error is a recovered
+		// panic or a task that never started, and says which.
+		for i, err := range errs {
+			if err != nil {
+				skipFailure(related[i], err)
+			}
 		}
-		wg.Wait()
 
 		sort.Slice(signals, func(i, j int) bool {
 			return signals[i].MetricType < signals[j].MetricType
 		})
 
-		if len(signals) == 0 && rpcFailures > 0 {
-			reasons := distinctRpcFailureReasons(skipped)
-			msg := fmt.Sprintf("All related signal queries failed (or were skipped) and %d had real RPC failures — correlation coverage is unavailable. Reasons: %s",
-				rpcFailures, strings.Join(reasons, "; "))
+		if err := ctx.Err(); err != nil && len(signals) == 0 {
+			return gcpErrorResult(fmt.Sprintf("metrics_related stopped before any related signal was queried: %v", err), err, ""), nil, nil
+		}
+
+		failures, failedErrs := failureSummary(skipped)
+		if len(signals) == 0 && failures != "" {
+			msg := "Every related signal failed or was skipped — correlation coverage is unavailable. " + failures
 			mcpLog(ctx, req, logLevelError, "metrics_related", msg)
-			return errResult(msg), nil, nil
+			return gcpErrorsResult(msg, failedErrs, ""), nil, nil
 		}
 
 		var partialNote string
-		if rpcFailures > 0 {
-			reasons := distinctRpcFailureReasons(skipped)
-			partialNote = fmt.Sprintf("%d related signal(s) could not be queried due to RPC failures and are excluded from results. Reasons: %s",
-				rpcFailures, strings.Join(reasons, "; "))
+		if failures != "" {
+			partialNote = joinNote("Some related signals could not be queried and are excluded from results. "+failures,
+				errorGuidance(failedErrs, ""))
 			mcpLog(ctx, req, logLevelWarning, "metrics_related", partialNote)
 		}
-		partialNote = joinNote(partialNote, joinNote(warningNotes...))
 		return nil, &RelatedSignalsResult{
 			RelatedSignals: signals,
 			Skipped:        skipped,
-			Partial:        rpcFailures > 0 || len(warningNotes) > 0,
-			Note:           partialNote,
+			Partial:        failures != "" || len(warningNotes) > 0,
+			Note:           joinNote(partialNote, joinNote(warningNotes...)),
 		}, nil
 	})
 }
@@ -307,23 +234,53 @@ type RelatedSignal struct {
 }
 
 type SkippedSignal struct {
-	MetricType string `json:"metric_type"`
-	Reason     string `json:"reason"`
-	benign     bool
+	MetricType string    `json:"metric_type"`
+	Reason     string    `json:"reason"`
+	cause      skipCause // not serialized
+	err        error     // the failure behind Reason, nil for a skip without one; not serialized
 }
 
-func distinctRpcFailureReasons(skipped []SkippedSignal) []string {
-	seen := make(map[string]bool, len(skipped))
-	out := make([]string, 0, len(skipped))
+// skipCause is why a related signal was skipped. Every cause but skipBenign
+// makes the result partial.
+type skipCause int
+
+const (
+	skipBenign      skipCause = iota // no data in the window, or the client canceled
+	skipQueryFailed                  // a GCP call failed, or the task panicked or never started
+	skipMisconfig                    // the registry entry is invalid
+)
+
+// skipCauseCounts labels the count of the skips of each non-benign cause.
+var skipCauseCounts = [...]string{
+	skipQueryFailed: "%d query failure(s)",
+	skipMisconfig:   "%d registry misconfiguration(s) (fix the registry YAML; retrying will not help)",
+}
+
+// failureSummary describes the non-benign skips: how many there are of each
+// cause, then their distinct reasons. It is empty when every skip is benign.
+// It also returns the errors behind those skips, for their guidance.
+func failureSummary(skipped []SkippedSignal) (string, []error) {
+	var counts [len(skipCauseCounts)]int
+	var reasons []string
+	var errs []error
 	for _, s := range skipped {
-		if s.benign {
+		if s.cause == skipBenign {
 			continue
 		}
-		if seen[s.Reason] {
-			continue
+		counts[s.cause]++
+		errs = append(errs, s.err)
+		if !slices.Contains(reasons, s.Reason) {
+			reasons = append(reasons, s.Reason)
 		}
-		seen[s.Reason] = true
-		out = append(out, s.Reason)
 	}
-	return out
+	if len(reasons) == 0 {
+		return "", nil
+	}
+	var labels []string
+	for cause, n := range counts {
+		if n > 0 {
+			labels = append(labels, fmt.Sprintf(skipCauseCounts[cause], n))
+		}
+	}
+	return strings.Join(labels, ", ") + ". Reasons: " + strings.Join(reasons, "; "), errs
 }

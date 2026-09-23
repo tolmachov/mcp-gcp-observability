@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,8 @@ var (
 	errCodeReplay    = errors.New("authorization code replay")
 	errGrantReplay   = errors.New("refresh token replay")
 	errGrantInactive = errors.New("oauth grant inactive")
+	// errGrantCorrupt marks a stored grant record that no longer decodes.
+	errGrantCorrupt = errors.New("decoding OAuth grant")
 )
 
 type authorizationStateRecord struct {
@@ -105,6 +108,26 @@ func parseRefreshToken(raw string) (familyID, secret string, err error) {
 		return "", "", errGrantInactive
 	}
 	return familyID, secret, nil
+}
+
+// corruptGrantError logs a grant record that no longer decodes and returns
+// the error GetGrant reports for it. Such a record can never authorize
+// anything again, so the error is errStateNotFound (the token is rejected)
+// rather than a store outage, which would answer 503 on every retry.
+func corruptGrantError(logger *slog.Logger, familyID string, err error) error {
+	logger.Error("oauth_grant_corrupt", "family_id", familyID, "err", err)
+	return fmt.Errorf("%w: %w: %w", errStateNotFound, errGrantCorrupt, err)
+}
+
+// logStoreFailure logs a failed OAuth state store call. A call that failed
+// because the client abandoned the request says nothing about the store and
+// is logged at Debug.
+func (a *AuthServer) logStoreFailure(ctx context.Context, operation string, err error) {
+	level := slog.LevelError
+	if errors.Is(ctx.Err(), context.Canceled) {
+		level = slog.LevelDebug
+	}
+	a.logger.Log(ctx, level, "oauth_store_failure", "operation", operation, "err", err)
 }
 
 // memoryStateStore is used only by unit tests; production always constructs

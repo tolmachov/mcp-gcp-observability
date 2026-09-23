@@ -178,7 +178,8 @@ func TestIsBreachDirectionNone(t *testing.T) {
 func TestProcessEmptyPoints(t *testing.T) {
 	meta := MetricMeta{Kind: KindLatency}
 	f := Process(nil, nil, meta, 60, 0, Window{})
-	assert.Empty(t, f.Classification, "expected empty classification for no points")
+	assert.Equal(t, ClassInsufficientData, f.Classification, "no points cannot be classified")
+	assert.Equal(t, ConfidenceLow, f.Confidence)
 }
 
 func TestPercentile(t *testing.T) {

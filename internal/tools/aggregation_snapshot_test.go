@@ -115,8 +115,8 @@ func testSnapshotRatioOverride(t *testing.T) {
 // reliable-point threshold. Each point carries the given value and is
 // stamped at 10-second intervals ending at now(); both current and
 // baseline windows fall into the generated range.
-func fixedAggregatedSeries(_ string, value float64) func(gcpdata.QueryTimeSeriesParams, metrics.AggregationSpec) ([]gcpdata.MetricTimeSeries, gcpdata.AggregationWarnings, error) {
-	return func(params gcpdata.QueryTimeSeriesParams, _ metrics.AggregationSpec) ([]gcpdata.MetricTimeSeries, gcpdata.AggregationWarnings, error) {
+func fixedAggregatedSeries(_ string, value float64) func(gcpdata.QueryTimeSeriesParams, metrics.AggregationSpec) ([]gcpdata.MetricTimeSeries, gcpdata.QueryWarnings, error) {
+	return func(params gcpdata.QueryTimeSeriesParams, _ metrics.AggregationSpec) ([]gcpdata.MetricTimeSeries, gcpdata.QueryWarnings, error) {
 		const pointsPerWindow = 60
 		points := make([]metrics.Point, pointsPerWindow)
 		step := params.End.Sub(params.Start) / pointsPerWindow
@@ -133,7 +133,7 @@ func fixedAggregatedSeries(_ string, value float64) func(gcpdata.QueryTimeSeries
 			MetricKind: params.MetricKind,
 			ValueType:  params.ValueType,
 			Points:     points,
-		}}, gcpdata.AggregationWarnings{}, nil
+		}}, gcpdata.QueryWarnings{}, nil
 	}
 }
 
@@ -214,9 +214,9 @@ func testSnapshotSameWeekdayHourSpecThreading(t *testing.T) {
 }
 
 // TestSnapshotAggregationWarningsDoNotBreakResult verifies that non-zero
-// AggregationWarnings returned by QueryTimeSeriesAggregated flow through
+// QueryWarnings returned by QueryTimeSeriesAggregated flow through
 // the handler without preventing a valid result. This exercises the
-// logAggregationWarnings → mcpLog plumbing: if the warning path panicked
+// reportQueryWarnings → mcpLog plumbing: if the warning path panicked
 // or short-circuited the handler, the result would be an error.
 // Note: capturing the actual MCP log notification on the client side would
 // require registering a LoggingHandler on the client — this test guards
@@ -228,14 +228,13 @@ func TestSnapshotAggregationWarningsDoNotBreakResult(t *testing.T) {
 	fq.metricKinds[metricType] = "GAUGE"
 	fq.valueTypes[metricType] = "INT64"
 	// Populate .series (not aggregatedQueryFn) so the default QueryTimeSeriesAggregated
-	// path is used, which propagates fq.aggregatedWarnings to the handler.
+	// path is used, which propagates fq.warnings to the handler.
 	fq.series[metricType] = []gcpdata.MetricTimeSeries{
 		makeTimeSeries(time.Now().Add(-1*time.Hour), []float64{10, 20, 30, 40, 50, 60, 70, 80}),
 	}
 	// Set SingleGroup, DepartedGroupBuckets, and CarryForwardBuckets to cover
-	// all three message-producing branches of aggregationWarningMessages (and
-	// thus logAggregationWarnings).
-	fq.aggregatedWarnings = gcpdata.AggregationWarnings{
+	// the fold branches of queryWarningMessages (and thus reportQueryWarnings).
+	fq.warnings = gcpdata.QueryWarnings{
 		SingleGroup:          true,
 		GroupCount:           1,
 		DepartedGroupBuckets: 2,
@@ -246,7 +245,7 @@ func TestSnapshotAggregationWarningsDoNotBreakResult(t *testing.T) {
 
 	snap := runAggregationSnapshot(t, fq, registry, metricType)
 	assert.False(t, snap.NoData, "expected valid snapshot, got no_data=true")
-	assert.NotEmpty(t, snap.Classification, "classification must not be empty — safeClassification guard may have been dropped")
+	assert.NotEmpty(t, snap.Classification, "classification must not be empty")
 }
 
 func runAggregationSnapshot(t *testing.T, fq *fakeQuerier, registry *metrics.Registry, metricType string) *MetricSnapshotResult {

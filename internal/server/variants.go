@@ -3,11 +3,11 @@ package server
 import (
 	"fmt"
 	"runtime/debug"
+	"strings"
 
 	"github.com/modelcontextprotocol/experimental-ext-variants/go/sdk/variants"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/tolmachov/mcp-gcp-observability/internal/gcpclient"
 	"github.com/tolmachov/mcp-gcp-observability/internal/tools"
 )
 
@@ -21,13 +21,94 @@ const (
 	VariantMonitoring VariantID = "monitoring"
 )
 
-// allToolsCount is the number of tools registerAllTools registers. Single
-// source of truth for the "full"/"compact" variants' tool-count claim;
-// pinned by TestRegisterAllToolsCount.
-const allToolsCount = 24
+// toolSpec declares one tool: its registration function, whether the
+// monitoring variant includes it, and whether it scans Cloud Profiler (such
+// calls share the process-wide profiler concurrency limit and run under
+// gcpdata.ProfilerScanTimeout, see toolLimitsMiddleware). name must equal the
+// name register gives the tool; TestToolSpecsMatchRegisteredTools pins it.
+type toolSpec struct {
+	name        string
+	register    func(*mcp.Server, tools.Deps)
+	core        bool
+	profileScan bool
+}
+
+// toolSpecs is the single table of tools. registerAllTools, registerCoreTools,
+// the variant descriptions and the profiler limit all derive from it.
+var toolSpecs = []toolSpec{
+	// Logs
+	{name: "logs_query", register: tools.RegisterLogsQuery},
+	{name: "logs_by_trace", register: tools.RegisterLogsByTrace},
+	{name: "logs_by_request_id", register: tools.RegisterLogsByRequestID},
+	{name: "logs_find_requests", register: tools.RegisterLogsFindRequests},
+	{name: "logs_k8s", register: tools.RegisterLogsK8s},
+	{name: "logs_services", register: tools.RegisterLogsServices, core: true},
+	{name: "logs_summary", register: tools.RegisterLogsSummary, core: true},
+	// Errors
+	{name: "errors_list", register: tools.RegisterErrorsList, core: true},
+	{name: "errors_get", register: tools.RegisterErrorsGet, core: true},
+	{name: "errors_trends", register: tools.RegisterErrorsTrends},
+	// Traces
+	{name: "trace_get", register: tools.RegisterTraceGet, core: true},
+	{name: "trace_list", register: tools.RegisterTraceList, core: true},
+	{name: "trace_find_from_logs", register: tools.RegisterTraceFindFromLogs},
+	// Metrics
+	{name: "metrics_list", register: tools.RegisterMetricsList},
+	{name: "metrics_snapshot", register: tools.RegisterMetricsSnapshot, core: true},
+	{name: "metrics_top_contributors", register: tools.RegisterMetricsTop, core: true},
+	{name: "metrics_related", register: tools.RegisterMetricsRelated},
+	{name: "metrics_compare", register: tools.RegisterMetricsCompare},
+	// Profiler
+	{name: "profiler_list", register: tools.RegisterProfilerList, core: true, profileScan: true},
+	{name: "profiler_top", register: tools.RegisterProfilerTop, core: true, profileScan: true},
+	{name: "profiler_peek", register: tools.RegisterProfilerPeek, profileScan: true},
+	{name: "profiler_flamegraph", register: tools.RegisterProfilerFlamegraph, profileScan: true},
+	{name: "profiler_compare", register: tools.RegisterProfilerCompare, profileScan: true},
+	{name: "profiler_trends", register: tools.RegisterProfilerTrends, profileScan: true},
+}
+
+// coreToolNames lists the monitoring variant's tools in table order.
+var coreToolNames = func() []string {
+	var names []string
+	for _, t := range toolSpecs {
+		if t.core {
+			names = append(names, t.name)
+		}
+	}
+	return names
+}()
+
+// profileScanTools is the set of tools subject to the profiler limits.
+var profileScanTools = func() map[string]bool {
+	set := make(map[string]bool)
+	for _, t := range toolSpecs {
+		if t.profileScan {
+			set[t.name] = true
+		}
+	}
+	return set
+}()
+
+// registerAllTools registers every tool in toolSpecs on srv. The Mode field
+// of d controls description verbosity (Standard vs Compact).
+func registerAllTools(srv *mcp.Server, d tools.Deps) {
+	for _, t := range toolSpecs {
+		t.register(srv, d)
+	}
+}
+
+// registerCoreTools registers the monitoring variant's tools (core entries of
+// toolSpecs) on srv.
+func registerCoreTools(srv *mcp.Server, d tools.Deps) {
+	for _, t := range toolSpecs {
+		if t.core {
+			t.register(srv, d)
+		}
+	}
+}
 
 // variantSpec declares one capability set: a register function (signature
-// shared with registerAllTools / tools.RegisterCore), the mode it should
+// shared with registerAllTools / registerCoreTools), the mode it should
 // register tools with, and the metadata exposed during variants negotiation.
 type variantSpec struct {
 	id          VariantID
@@ -43,14 +124,14 @@ type variantSpec struct {
 // the forced-variant build path, and the variants-protocol negotiation —
 // the table is the single source of truth, so the slice and dispatch cannot
 // drift apart. Built via buildVariantSpecs so the description strings can
-// interpolate allToolsCount / tools.CoreToolsCount.
+// interpolate the tool counts and core tool names from toolSpecs.
 var variantSpecs = buildVariantSpecs()
 
 func buildVariantSpecs() []variantSpec {
 	return []variantSpec{
 		{
 			id:          VariantFull,
-			description: fmt.Sprintf("All GCP observability tools (%d) with complete descriptions. Optimized for interactive incident investigation.", allToolsCount),
+			description: fmt.Sprintf("All GCP observability tools (%d) with complete descriptions. Optimized for interactive incident investigation.", len(toolSpecs)),
 			hints:       map[string]string{variants.HintUseCase: "human-assistant", variants.HintContextSize: "standard"},
 			status:      variants.Stable,
 			register:    registerAllTools,
@@ -58,7 +139,7 @@ func buildVariantSpecs() []variantSpec {
 		},
 		{
 			id:          VariantCompact,
-			description: fmt.Sprintf("All GCP observability tools (%d) with concise descriptions (~50%% shorter). Optimized for autonomous agents and tight context budgets.", allToolsCount),
+			description: fmt.Sprintf("All GCP observability tools (%d) with concise descriptions (~50%% shorter). Optimized for autonomous agents and tight context budgets.", len(toolSpecs)),
 			hints:       map[string]string{variants.HintUseCase: "autonomous-agent", variants.HintContextSize: "compact"},
 			status:      variants.Stable,
 			register:    registerAllTools,
@@ -66,10 +147,10 @@ func buildVariantSpecs() []variantSpec {
 		},
 		{
 			id:          VariantMonitoring,
-			description: fmt.Sprintf("Core GCP tools only (%d): logs_summary, logs_services, errors_list/get, metrics_snapshot/top_contributors, trace_list/get, profiler_list/top. For automated monitoring bots and scheduled health checks.", tools.CoreToolsCount),
+			description: fmt.Sprintf("Core GCP tools only (%d): %s. For automated monitoring bots and scheduled health checks.", len(coreToolNames), strings.Join(coreToolNames, ", ")),
 			hints:       map[string]string{variants.HintUseCase: "autonomous-agent", variants.HintContextSize: "compact"},
 			status:      variants.Experimental,
-			register:    tools.RegisterCore,
+			register:    registerCoreTools,
 			mode:        tools.ModeCompact,
 		},
 	}
@@ -116,7 +197,6 @@ func (s *Server) recoverRegistrationPanic(variant string, retErr *error) {
 // is converted to an error so server startup stays non-fatal.
 func (s *Server) buildSingleVariantServer(
 	variantID VariantID,
-	client *gcpclient.Client,
 	deps tools.Deps,
 	completer *promptCompleter,
 ) (result *mcp.Server, retErr error) {
@@ -129,46 +209,9 @@ func (s *Server) buildSingleVariantServer(
 
 	srv := s.newMCPInstance(completer)
 	spec.register(srv, deps.WithMode(spec.mode))
-	if err := s.registerResources(srv, client, deps.Registry); err != nil {
-		return nil, err
-	}
+	s.registerResources(srv, deps)
 	s.registerPrompts(srv)
 	return srv, nil
-}
-
-// registerAllTools registers every GCP observability tool on srv. The Mode
-// field of d controls description verbosity (Standard vs Compact). Count is
-// allToolsCount; TestRegisterAllToolsCount asserts the two match.
-func registerAllTools(srv *mcp.Server, d tools.Deps) {
-	// Logs
-	tools.RegisterLogsQuery(srv, d)
-	tools.RegisterLogsByTrace(srv, d)
-	tools.RegisterLogsByRequestID(srv, d)
-	tools.RegisterLogsFindRequests(srv, d)
-	tools.RegisterLogsK8s(srv, d)
-	tools.RegisterLogsServices(srv, d)
-	tools.RegisterLogsSummary(srv, d)
-	// Errors
-	tools.RegisterErrorsList(srv, d)
-	tools.RegisterErrorsGet(srv, d)
-	tools.RegisterErrorsTrends(srv, d)
-	// Traces
-	tools.RegisterTraceGet(srv, d)
-	tools.RegisterTraceList(srv, d)
-	tools.RegisterTraceFindFromLogs(srv, d)
-	// Metrics
-	tools.RegisterMetricsList(srv, d)
-	tools.RegisterMetricsSnapshot(srv, d)
-	tools.RegisterMetricsTop(srv, d)
-	tools.RegisterMetricsRelated(srv, d)
-	tools.RegisterMetricsCompare(srv, d)
-	// Profiler
-	tools.RegisterProfilerList(srv, d)
-	tools.RegisterProfilerTop(srv, d)
-	tools.RegisterProfilerPeek(srv, d)
-	tools.RegisterProfilerFlamegraph(srv, d)
-	tools.RegisterProfilerCompare(srv, d)
-	tools.RegisterProfilerTrends(srv, d)
 }
 
 // buildVariantsServer constructs a variants.Server with one *mcp.Server per
@@ -176,7 +219,6 @@ func registerAllTools(srv *mcp.Server, d tools.Deps) {
 // Any panic during registration is caught, the stack is logged, and the panic
 // is converted to an error so server startup stays non-fatal.
 func (s *Server) buildVariantsServer(
-	client *gcpclient.Client,
 	deps tools.Deps,
 	completer *promptCompleter,
 ) (result *variants.Server, retErr error) {
@@ -188,9 +230,7 @@ func (s *Server) buildVariantsServer(
 	for i, spec := range variantSpecs {
 		srv := s.newMCPInstance(completer)
 		spec.register(srv, deps.WithMode(spec.mode))
-		if err := s.registerResources(srv, client, deps.Registry); err != nil {
-			return nil, err
-		}
+		s.registerResources(srv, deps)
 		s.registerPrompts(srv)
 
 		vs = vs.WithVariant(variants.ServerVariant{

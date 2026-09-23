@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -123,22 +124,12 @@ func isConsumerDomain(d string) bool {
 }
 
 func (c *Config) domainAllowed(hd, email string) bool {
+	allowed := func(domain string) bool {
+		return slices.ContainsFunc(c.AllowedDomains, func(d string) bool { return strings.EqualFold(domain, d) })
+	}
 	if hd != "" {
-		for _, d := range c.AllowedDomains {
-			if strings.EqualFold(hd, d) {
-				return true
-			}
-		}
-		return false
+		return allowed(hd)
 	}
 	at := strings.LastIndex(email, "@")
-	if at < 0 || !isConsumerDomain(email[at+1:]) {
-		return false
-	}
-	for _, d := range c.AllowedDomains {
-		if strings.EqualFold(email[at+1:], d) {
-			return true
-		}
-	}
-	return false
+	return at >= 0 && isConsumerDomain(email[at+1:]) && allowed(email[at+1:])
 }

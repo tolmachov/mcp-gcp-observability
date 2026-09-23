@@ -17,7 +17,7 @@ import (
 // drift is a compile error rather than a silently-zero type assertion.
 const extraIdentityKey = "mcp-gcp-observability/identity"
 
-// identityExtra is the identity payload the verifier stores in
+// identityExtra is the identity payload verifyAccessToken stores in
 // TokenInfo.Extra and Identity/GoogleTokenSource read back.
 type identityExtra struct {
 	Email             string
@@ -26,79 +26,93 @@ type identityExtra struct {
 	GoogleExpiry      time.Time
 }
 
-// Verifier returns the auth.TokenVerifier for RequireBearerToken. It opens
-// the sealed access token and exposes the user identity plus the embedded
-// Google access token via TokenInfo.Extra. TokenInfo.UserID is the Google
-// subject, which the streamable transport uses to bind a reusable GCP client
-// pool to one user. MCP transport requests themselves remain stateless.
-//
-// Rejections are logged server-side (reason class only, never the token):
-// a mass 401 after a botched key rotation or an issuer change must be
-// diagnosable from the logs.
-func (a *AuthServer) Verifier() auth.TokenVerifier {
-	return func(ctx context.Context, token string, _ *http.Request) (*auth.TokenInfo, error) {
-		now := a.now()
-		c, err := openBlob(a.sealer, accessBlob, token, now)
-		if err != nil {
-			a.logger.Warn("access token rejected", "reason", err)
-			return nil, fmt.Errorf("%w: not a valid access token", auth.ErrInvalidToken)
-		}
-		if !now.Before(time.Unix(c.ExpiresAt, 0)) {
-			return nil, fmt.Errorf("%w: token expired", auth.ErrInvalidToken)
-		}
-		grant, err := a.store.GetGrant(ctx, c.FamilyID)
-		if err != nil {
-			if errors.Is(err, errStateNotFound) {
-				return nil, fmt.Errorf("%w: grant not found", auth.ErrInvalidToken)
-			}
-			a.logger.Error("oauth_store_failure", "operation", "verify_grant", "err", err)
-			return nil, fmt.Errorf("OAuth state store unavailable: %w", err)
-		}
-		if grant.Status != "active" || !now.Before(grant.ExpiresAt) {
-			return nil, fmt.Errorf("%w: grant revoked or expired", auth.ErrInvalidToken)
-		}
-		// Re-check the domain at use time: this is the enforcement point
-		// that cuts off already-issued tokens after a domain is removed
-		// from the allowlist (and redeployed). Project IAM remains enforced by
-		// every delegated GCP RPC, with an extra pinned-project probe on refresh.
-		if len(a.cfg.AllowedDomains) > 0 && !a.cfg.domainAllowed(c.Domain, c.Email) {
-			a.logger.Warn("access token rejected: domain no longer allowed", "email", c.Email, "hd", c.Domain)
-			return nil, fmt.Errorf("%w: domain not allowed", auth.ErrInvalidToken)
-		}
-		return &auth.TokenInfo{
-			Scopes:     c.Scopes,
-			Expiration: time.Unix(c.ExpiresAt, 0),
-			UserID:     c.Subject,
-			Extra: map[string]any{
-				extraIdentityKey: identityExtra{
-					Email:             c.Email,
-					Domain:            c.Domain,
-					GoogleAccessToken: c.GoogleAccessToken,
-					GoogleExpiry:      time.Unix(c.GoogleExpiry, 0),
-				},
-			},
-		}, nil
-	}
-}
+// errStoreUnavailable marks a verification that could not consult the grant
+// store; RequireBearerToken answers it with 503 instead of 401.
+var errStoreUnavailable = errors.New("OAuth state store unavailable")
 
-// RequireStoreAvailable preserves the security distinction between an invalid
-// token (401) and an unavailable revocation store (503). The SDK bearer
-// middleware otherwise maps verifier infrastructure errors to 500.
-func (a *AuthServer) RequireStoreAvailable(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fields := strings.Fields(r.Header.Get("Authorization"))
-		if len(fields) == 2 && strings.EqualFold(fields[0], "bearer") {
-			if claims, err := openBlob(a.sealer, accessBlob, fields[1], a.now()); err == nil {
-				if _, err := a.store.GetGrant(r.Context(), claims.FamilyID); err != nil && !errors.Is(err, errStateNotFound) {
-					a.logger.Error("oauth_store_failure", "operation", "preflight_grant", "err", err)
+// RequireBearerToken guards next with the SDK bearer-token middleware backed
+// by this server's sealed access tokens. Each request's token is verified
+// once, before the SDK middleware runs, so an unavailable grant store is
+// answered with 503 and Retry-After (the SDK maps every non-token verifier
+// error to 500) while token rejections keep the SDK's 401 and
+// WWW-Authenticate handling.
+func (a *AuthServer) RequireBearerToken(opts *auth.RequireBearerTokenOptions) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var info *auth.TokenInfo
+			var verifyErr error
+			// Same header parsing as the SDK middleware, which rejects any
+			// other shape as "no bearer token" without calling the verifier.
+			fields := strings.Fields(r.Header.Get("Authorization"))
+			if len(fields) == 2 && strings.EqualFold(fields[0], "bearer") {
+				info, verifyErr = a.verifyAccessToken(r.Context(), fields[1])
+				if errors.Is(verifyErr, errStoreUnavailable) {
 					w.Header().Set("Retry-After", "5")
-					http.Error(w, "OAuth state store unavailable", http.StatusServiceUnavailable)
+					http.Error(w, errStoreUnavailable.Error(), http.StatusServiceUnavailable)
 					return
 				}
 			}
-		}
-		next.ServeHTTP(w, r)
-	})
+			verified := func(context.Context, string, *http.Request) (*auth.TokenInfo, error) {
+				return info, verifyErr
+			}
+			auth.RequireBearerToken(verified, opts)(next).ServeHTTP(w, r)
+		})
+	}
+}
+
+// verifyAccessToken opens the sealed access token and exposes the user
+// identity plus the embedded Google access token via TokenInfo.Extra.
+// TokenInfo.UserID is the Google subject, which the streamable transport uses
+// to bind a reusable GCP client pool to one user. MCP transport requests
+// themselves remain stateless.
+//
+// The grant is read before any other check, so a store outage is reported
+// as errStoreUnavailable for every well-formed token, expired or not.
+// Rejections are logged server-side (reason class only, never the token):
+// a mass 401 after a botched key rotation or an issuer change must be
+// diagnosable from the logs.
+func (a *AuthServer) verifyAccessToken(ctx context.Context, token string) (*auth.TokenInfo, error) {
+	now := a.now()
+	c, err := openBlob(a.sealer, accessBlob, token, now)
+	if err != nil {
+		a.logger.Warn("access token rejected", "reason", err)
+		return nil, fmt.Errorf("%w: not a valid access token", auth.ErrInvalidToken)
+	}
+	grant, grantErr := a.store.GetGrant(ctx, c.FamilyID)
+	if grantErr != nil && !errors.Is(grantErr, errStateNotFound) {
+		a.logStoreFailure(ctx, "verify_grant", grantErr)
+		return nil, fmt.Errorf("%w: %w", errStoreUnavailable, grantErr)
+	}
+	if !now.Before(time.Unix(c.ExpiresAt, 0)) {
+		return nil, fmt.Errorf("%w: token expired", auth.ErrInvalidToken)
+	}
+	if grantErr != nil {
+		return nil, fmt.Errorf("%w: grant not found", auth.ErrInvalidToken)
+	}
+	if grant.Status != "active" || !now.Before(grant.ExpiresAt) {
+		return nil, fmt.Errorf("%w: grant revoked or expired", auth.ErrInvalidToken)
+	}
+	// Re-check the domain at use time: this is the enforcement point
+	// that cuts off already-issued tokens after a domain is removed
+	// from the allowlist (and redeployed). Project IAM remains enforced by
+	// every delegated GCP RPC, with an extra pinned-project probe on refresh.
+	if len(a.cfg.AllowedDomains) > 0 && !a.cfg.domainAllowed(c.Domain, c.Email) {
+		a.logger.Warn("access token rejected: domain no longer allowed", "email", c.Email, "hd", c.Domain)
+		return nil, fmt.Errorf("%w: domain not allowed", auth.ErrInvalidToken)
+	}
+	return &auth.TokenInfo{
+		Scopes:     c.Scopes,
+		Expiration: time.Unix(c.ExpiresAt, 0),
+		UserID:     c.Subject,
+		Extra: map[string]any{
+			extraIdentityKey: identityExtra{
+				Email:             c.Email,
+				Domain:            c.Domain,
+				GoogleAccessToken: c.GoogleAccessToken,
+				GoogleExpiry:      time.Unix(c.GoogleExpiry, 0),
+			},
+		},
+	}, nil
 }
 
 // UserIdentity describes the authenticated user of the current request.
@@ -149,9 +163,9 @@ func GoogleTokenSource(ctx context.Context) (oauth2.TokenSource, bool) {
 	}), true
 }
 
-// NewTokenInfoForTesting fabricates the TokenInfo this package's Verifier
-// would produce. It exists so other packages can unit-test handlers that sit
-// behind auth.RequireBearerToken (e.g. the per-user pool) without running the
+// NewTokenInfoForTesting is test-only. It fabricates the TokenInfo
+// verifyAccessToken produces, so other packages can unit-test handlers that
+// sit behind RequireBearerToken (e.g. the per-user pool) without running the
 // OAuth flow.
 func NewTokenInfoForTesting(subject, email, domain, googleAccessToken string, expiry time.Time) *auth.TokenInfo {
 	return &auth.TokenInfo{

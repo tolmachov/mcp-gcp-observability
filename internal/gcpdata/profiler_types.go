@@ -104,16 +104,17 @@ type FlamegraphNode struct {
 
 // ProfileFlamegraphResult is the response for profiler_flamegraph.
 type ProfileFlamegraphResult struct {
-	ProfileMeta  ProfileMeta    `json:"profile_meta"`
-	ValueType    ValueTypeInfo  `json:"value_type"`
-	TotalValue   int64          `json:"total_value"`
-	Root         FlamegraphNode `json:"root"`
-	MaxDepth     int            `json:"max_depth"`
-	MinPct       float64        `json:"min_pct"`
-	PrunedNodes  int            `json:"pruned_nodes,omitempty"`
-	Truncated    bool           `json:"truncated,omitempty"`
-	OmittedNodes int            `json:"omitted_nodes,omitempty"`
-	Warning      string         `json:"warning,omitempty"`
+	ProfileMeta ProfileMeta    `json:"profile_meta"`
+	ValueType   ValueTypeInfo  `json:"value_type"`
+	TotalValue  int64          `json:"total_value"`
+	Root        FlamegraphNode `json:"root"`
+	MaxDepth    int            `json:"max_depth"`
+	MinPct      float64        `json:"min_pct"`
+	// PrunedNodes counts the subtrees cut by max_depth, min_pct or the node
+	// budget: one per omitted child of a returned node, however many
+	// descendants that child has.
+	PrunedNodes int    `json:"pruned_nodes,omitempty"`
+	Warning     string `json:"warning,omitempty"`
 }
 
 // CompareTopEntry is a function entry in the compare result showing the delta.
@@ -166,17 +167,17 @@ type TrendsFunctionSeries struct {
 
 // ProfileTrendsResult is the response for profiler_trends.
 type ProfileTrendsResult struct {
-	Target            string                 `json:"target"`
-	ProfileType       string                 `json:"profile_type"`
-	ValueType         ValueTypeInfo          `json:"value_type"`
-	ProfileCount      int                    `json:"profile_count"`
-	AnalyzedCount     int                    `json:"analyzed_count"`
-	TimeRangeStart    string                 `json:"time_range_start,omitempty"`
-	TimeRangeEnd      string                 `json:"time_range_end,omitempty"`
-	Functions         []TrendsFunctionSeries `json:"functions"`
-	DownloadErrors    int                    `json:"download_errors,omitempty"`
-	LastDownloadError string                 `json:"last_download_error,omitempty"`
-	Warning           string                 `json:"warning,omitempty"`
-	Truncated         bool                   `json:"truncated,omitempty"`
-	TruncationHint    string                 `json:"truncation_hint,omitempty"`
+	Target         string                 `json:"target"`
+	ProfileType    string                 `json:"profile_type"`
+	ValueType      ValueTypeInfo          `json:"value_type"`
+	ProfileCount   int                    `json:"profile_count"`
+	AnalyzedCount  int                    `json:"analyzed_count"`
+	TimeRangeStart string                 `json:"time_range_start,omitempty"`
+	TimeRangeEnd   string                 `json:"time_range_end,omitempty"`
+	Functions      []TrendsFunctionSeries `json:"functions"`
+	FailedProfiles int                    `json:"failed_profiles,omitempty"`
+	LastError      string                 `json:"last_error,omitempty"`
+	Warning        string                 `json:"warning,omitempty"`
+	Truncated      bool                   `json:"truncated,omitempty"`
+	TruncationHint string                 `json:"truncation_hint,omitempty"`
 }

@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
 	"google.golang.org/api/iterator"
+	"google.golang.org/protobuf/types/known/durationpb"
 
-	errorreporting "cloud.google.com/go/errorreporting/apiv1beta1"
 	"cloud.google.com/go/errorreporting/apiv1beta1/errorreportingpb"
 )
 
@@ -32,44 +33,67 @@ type ErrorWindowSpec struct {
 	Bucket time.Duration
 }
 
-func (w ErrorWindow) Spec() (ErrorWindowSpec, bool) {
-	switch w {
-	case ErrorWindow1H:
-		return ErrorWindowSpec{errorreportingpb.QueryTimeRange_PERIOD_1_HOUR, time.Hour, 5 * time.Minute}, true
-	case ErrorWindow6H:
-		return ErrorWindowSpec{errorreportingpb.QueryTimeRange_PERIOD_6_HOURS, 6 * time.Hour, 30 * time.Minute}, true
-	case ErrorWindow24H:
-		return ErrorWindowSpec{errorreportingpb.QueryTimeRange_PERIOD_1_DAY, 24 * time.Hour, time.Hour}, true
-	case ErrorWindow7D:
-		return ErrorWindowSpec{errorreportingpb.QueryTimeRange_PERIOD_1_WEEK, 7 * 24 * time.Hour, 6 * time.Hour}, true
-	case ErrorWindow30D:
-		return ErrorWindowSpec{errorreportingpb.QueryTimeRange_PERIOD_30_DAYS, 30 * 24 * time.Hour, 24 * time.Hour}, true
-	default:
-		return ErrorWindowSpec{}, false
-	}
+// errorWindowSpecs maps every supported window, in ascending order, to the
+// Error Reporting period and trend bucket it uses.
+var errorWindowSpecs = []struct {
+	window ErrorWindow
+	spec   ErrorWindowSpec
+}{
+	{ErrorWindow1H, ErrorWindowSpec{errorreportingpb.QueryTimeRange_PERIOD_1_HOUR, time.Hour, 5 * time.Minute}},
+	{ErrorWindow6H, ErrorWindowSpec{errorreportingpb.QueryTimeRange_PERIOD_6_HOURS, 6 * time.Hour, 30 * time.Minute}},
+	{ErrorWindow24H, ErrorWindowSpec{errorreportingpb.QueryTimeRange_PERIOD_1_DAY, 24 * time.Hour, time.Hour}},
+	{ErrorWindow7D, ErrorWindowSpec{errorreportingpb.QueryTimeRange_PERIOD_1_WEEK, 7 * 24 * time.Hour, 6 * time.Hour}},
+	{ErrorWindow30D, ErrorWindowSpec{errorreportingpb.QueryTimeRange_PERIOD_30_DAYS, 30 * 24 * time.Hour, 24 * time.Hour}},
 }
 
-// ListErrors lists error groups sorted by occurrence count.
-// Error Reporting only supports lookback periods ending at "now"; callers
-// must not promise historical absolute-window semantics on top of this API.
-func ListErrors(ctx context.Context, client *errorreporting.ErrorStatsClient, project string, window ErrorWindow, limit int, serviceFilter, versionFilter string) (*ErrorGroupList, error) {
+// ErrorWindows lists the supported Error Reporting windows in ascending order.
+func ErrorWindows() []ErrorWindow {
+	windows := make([]ErrorWindow, len(errorWindowSpecs))
+	for i, e := range errorWindowSpecs {
+		windows[i] = e.window
+	}
+	return windows
+}
+
+// Spec returns the Error Reporting parameters for w, or false if w is not a
+// supported window.
+func (w ErrorWindow) Spec() (ErrorWindowSpec, bool) {
+	for _, e := range errorWindowSpecs {
+		if e.window == w {
+			return e.spec, true
+		}
+	}
+	return ErrorWindowSpec{}, false
+}
+
+// groupStatsPage is one bounded read of Error Reporting group stats.
+type groupStatsPage struct {
+	stats          []*errorreportingpb.ErrorGroupStats
+	timeRangeBegin string
+	truncated      bool
+}
+
+// listGroupStats reads up to limit group stats for window, ordered by count.
+// bucketed requests timed counts at the window's trend bucket size.
+// timeRangeBegin is the API-reported start of the window, or now minus the
+// window span when the API omits it; truncated reports that more groups exist.
+func (q *ErrorReportingQuerier) listGroupStats(ctx context.Context, project string, window ErrorWindow, limit int, serviceFilter, versionFilter string, bucketed bool) (groupStatsPage, error) {
 	ctx, cancel := context.WithTimeout(ctx, errorReportingTimeout)
 	defer cancel()
 	spec, ok := window.Spec()
 	if !ok {
-		return nil, fmt.Errorf("invalid error window %q", window)
+		return groupStatsPage{}, fmt.Errorf("invalid error window %q", window)
 	}
-	timeRangeBegin := time.Now().Add(-spec.Span).UTC()
 
 	req := &errorreportingpb.ListGroupStatsRequest{
 		ProjectName: fmt.Sprintf("projects/%s", project),
-		TimeRange: &errorreportingpb.QueryTimeRange{
-			Period: spec.Period,
-		},
-		PageSize: safeInt32(limit),
-		Order:    errorreportingpb.ErrorGroupOrder_COUNT_DESC,
+		TimeRange:   &errorreportingpb.QueryTimeRange{Period: spec.Period},
+		PageSize:    safeInt32(limit),
+		Order:       errorreportingpb.ErrorGroupOrder_COUNT_DESC,
 	}
-
+	if bucketed {
+		req.TimedCountDuration = durationpb.New(spec.Bucket)
+	}
 	if serviceFilter != "" || versionFilter != "" {
 		req.ServiceFilter = &errorreportingpb.ServiceContextFilter{
 			Service: serviceFilter,
@@ -77,18 +101,38 @@ func ListErrors(ctx context.Context, client *errorreporting.ErrorStatsClient, pr
 		}
 	}
 
-	it := client.ListGroupStats(ctx, req)
-
-	var groups []ErrorGroup
+	it := q.client.ListGroupStats(ctx, req)
+	var page groupStatsPage
 	for i := 0; i < limit; i++ {
 		stats, err := it.Next()
 		if errors.Is(err, iterator.Done) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("iterating error groups: %w", err)
+			return groupStatsPage{}, fmt.Errorf("iterating error group stats: %w", err)
 		}
+		page.stats = append(page.stats, stats)
+	}
 
+	page.timeRangeBegin = time.Now().Add(-spec.Span).UTC().Format(time.RFC3339)
+	if resp, ok := it.Response.(*errorreportingpb.ListGroupStatsResponse); ok && resp.TimeRangeBegin != nil {
+		page.timeRangeBegin = formatTimestamp(resp.TimeRangeBegin)
+	}
+	page.truncated = it.PageInfo().Token != ""
+	return page, nil
+}
+
+// ListErrors lists error groups sorted by occurrence count.
+// Error Reporting only supports lookback periods ending at "now"; callers
+// must not promise historical absolute-window semantics on top of this API.
+func (q *ErrorReportingQuerier) ListErrors(ctx context.Context, project string, window ErrorWindow, limit int, serviceFilter, versionFilter string) (*ErrorGroupList, error) {
+	page, err := q.listGroupStats(ctx, project, window, limit, serviceFilter, versionFilter, false)
+	if err != nil {
+		return nil, err
+	}
+
+	var groups []ErrorGroup
+	for _, stats := range page.stats {
 		g := ErrorGroup{
 			Count:     stats.Count,
 			FirstSeen: formatTimestamp(stats.FirstSeenTime),
@@ -108,10 +152,7 @@ func ListErrors(ctx context.Context, client *errorreporting.ErrorStatsClient, pr
 					versions[svc.Version] = true
 				}
 			}
-			for v := range versions {
-				g.AffectedVersions = append(g.AffectedVersions, v)
-			}
-			sort.Strings(g.AffectedVersions)
+			g.AffectedVersions = slices.Sorted(maps.Keys(versions))
 		}
 
 		// Extract message from representative event
@@ -122,11 +163,8 @@ func ListErrors(ctx context.Context, client *errorreporting.ErrorStatsClient, pr
 		groups = append(groups, g)
 	}
 
-	result := &ErrorGroupList{Count: len(groups), Groups: groups, Window: window, TimeRangeBegin: timeRangeBegin.Format(time.RFC3339)}
-	if resp, ok := it.Response.(*errorreportingpb.ListGroupStatsResponse); ok && resp.TimeRangeBegin != nil {
-		result.TimeRangeBegin = formatTimestamp(resp.TimeRangeBegin)
-	}
-	if tok := it.PageInfo().Token; tok != "" {
+	result := &ErrorGroupList{Count: len(groups), Groups: groups, Window: window, TimeRangeBegin: page.timeRangeBegin}
+	if page.truncated {
 		result.Truncated = true
 		result.TruncationHint = fmt.Sprintf("Showing the first %d error group(s). More groups are available for this lookback window; narrow service/version filters or lower the time range for a more focused result.", limit)
 	}
@@ -134,7 +172,7 @@ func ListErrors(ctx context.Context, client *errorreporting.ErrorStatsClient, pr
 }
 
 // GetErrorGroup retrieves details for a specific error group.
-func GetErrorGroup(ctx context.Context, client *errorreporting.ErrorStatsClient, project, groupID string, limit int, pageToken string) (*ErrorGroupDetail, error) {
+func (q *ErrorReportingQuerier) GetErrorGroup(ctx context.Context, project, groupID string, limit int, pageToken string) (*ErrorGroupDetail, error) {
 	ctx, cancel := context.WithTimeout(ctx, errorReportingTimeout)
 	defer cancel()
 
@@ -145,7 +183,7 @@ func GetErrorGroup(ctx context.Context, client *errorreporting.ErrorStatsClient,
 		PageToken:   pageToken,
 	}
 
-	it := client.ListEvents(ctx, req)
+	it := q.client.ListEvents(ctx, req)
 
 	detail := &ErrorGroupDetail{
 		GroupID: groupID,
@@ -210,15 +248,12 @@ func splitReportedErrorMessage(message string) (headline, stackTrace string) {
 	if message == "" {
 		return "", ""
 	}
-	lines := strings.Split(message, "\n")
-	headline = strings.TrimSpace(lines[0])
-	if headline == "" {
-		headline = message
-	}
-	if len(lines) > 1 {
+	// message is trimmed, so its first line is never blank.
+	first, _, multiline := strings.Cut(message, "\n")
+	if multiline {
 		stackTrace = message
 	}
-	return headline, stackTrace
+	return strings.TrimSpace(first), stackTrace
 }
 
 func convertErrorContext(ctx *errorreportingpb.ErrorContext) *ErrorContext {

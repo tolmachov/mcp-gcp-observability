@@ -17,44 +17,31 @@ func RegisterLogsQuery(s *mcp.Server, d Deps) {
 			"Use Cloud Logging filter language (e.g. severity>=ERROR, resource.type=\"k8s_container\"). "+
 			"For Kubernetes logs, prefer logs_k8s which builds filters automatically. "+
 			"For initial triage, use logs_summary instead."),
-		Annotations: &mcp.ToolAnnotations{
-			ReadOnlyHint:   true,
-			OpenWorldHint:  new(true),
-			IdempotentHint: true,
-		},
+		Annotations: readOnlyAnnotations,
 		InputSchema: projectInputSchema[LogsQueryInput](d.Project,
-			enumPatch{"order", enumSortOrder},
+			nonEmptyProp("filter"),
+			enumProp("order", sortOrders, defaultSortOrder),
 		),
 		OutputSchema: outputSchemaFor[gcpdata.LogQueryResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in LogsQueryInput) (*mcp.CallToolResult, *gcpdata.LogQueryResult, error) {
 		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
-		}
-		if in.Filter == "" {
-			return errResult("filter is required"), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 		limit := clampLimit(in.Limit, 100, LogsHardLimit)
-		order := in.Order
-		if order == "" {
-			order = "desc"
-		}
-		if order != "asc" && order != "desc" {
-			return errResult(fmt.Sprintf("invalid order %q: must be \"asc\" or \"desc\"", order)), nil, nil
-		}
 
 		timeFilter, err := buildTimeFilter(in.TimeFilterInput)
 		if err != nil {
-			return errResult(err.Error()), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
 		filter := gcpdata.AppendFilter(in.Filter, timeFilter)
 
 		sendProgress(ctx, req, 0, 1, "Querying logs...")
 
-		result, err := d.Logs.QueryLogs(ctx, project, filter, limit, order, in.PageToken)
+		result, err := d.Logs.QueryLogs(ctx, project, filter, limit, in.Order, in.PageToken)
 		if err != nil {
 			mcpLog(ctx, req, logLevelError, "logs_query", fmt.Sprintf("query failed for project %s: %v", project, err))
-			return errResult(fmt.Sprintf("Failed to query logs: %v. Verify the project_id and filter syntax.", err)), nil, nil
+			return gcpErrorResult(fmt.Sprintf("Failed to query logs: %v", err), err, "Verify the project_id and filter syntax."), nil, nil
 		}
 
 		return nil, result, nil

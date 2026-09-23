@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	cloudtrace "cloud.google.com/go/trace/apiv1"
 	"cloud.google.com/go/trace/apiv1/tracepb"
 	"google.golang.org/api/iterator"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -20,11 +19,11 @@ const traceQueryTimeout = 30 * time.Second
 
 // GetTrace retrieves a trace with all its spans by trace ID,
 // returning spans as a tree based on parent-child relationships.
-func GetTrace(ctx context.Context, client *cloudtrace.Client, project, traceID string) (*TraceDetail, error) {
+func (q *CloudTraceQuerier) GetTrace(ctx context.Context, project, traceID string) (*TraceDetail, error) {
 	ctx, cancel := context.WithTimeout(ctx, traceQueryTimeout)
 	defer cancel()
 
-	trace, err := client.GetTrace(ctx, &tracepb.GetTraceRequest{
+	trace, err := q.client.GetTrace(ctx, &tracepb.GetTraceRequest{
 		ProjectId: project,
 		TraceId:   traceID,
 	})
@@ -45,9 +44,8 @@ func GetTrace(ctx context.Context, client *cloudtrace.Client, project, traceID s
 
 // ListTraces searches for traces matching the given criteria.
 // startTime and endTime are required by the Cloud Trace API.
-func ListTraces(
+func (q *CloudTraceQuerier) ListTraces(
 	ctx context.Context,
-	client *cloudtrace.Client,
 	project string,
 	filter string,
 	view string,
@@ -56,12 +54,16 @@ func ListTraces(
 	pageSize int,
 	pageToken string,
 ) (*TraceListResult, error) {
+	viewType, err := parseViewType(view)
+	if err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithTimeout(ctx, traceQueryTimeout)
 	defer cancel()
 
 	req := &tracepb.ListTracesRequest{
 		ProjectId: project,
-		View:      parseViewType(view),
+		View:      viewType,
 		PageSize:  safeInt32(pageSize),
 		StartTime: timestamppb.New(startTime),
 		EndTime:   timestamppb.New(endTime),
@@ -76,7 +78,7 @@ func ListTraces(
 		req.PageToken = pageToken
 	}
 
-	it := client.ListTraces(ctx, req)
+	it := q.client.ListTraces(ctx, req)
 	it.PageInfo().MaxSize = pageSize
 
 	var traces []TraceSummary
@@ -169,15 +171,19 @@ func parseLatencyToMs(s string) (int64, error) {
 	return ms, nil
 }
 
-func parseViewType(view string) tracepb.ListTracesRequest_ViewType {
-	switch strings.ToUpper(view) {
+// parseViewType maps a tool's view input to the API view type. The tool
+// schema supplies the default, so an empty view is rejected like any other
+// unknown value.
+func parseViewType(view string) (tracepb.ListTracesRequest_ViewType, error) {
+	switch view {
 	case "MINIMAL":
-		return tracepb.ListTracesRequest_MINIMAL
+		return tracepb.ListTracesRequest_MINIMAL, nil
+	case "ROOTSPAN":
+		return tracepb.ListTracesRequest_ROOTSPAN, nil
 	case "COMPLETE":
-		return tracepb.ListTracesRequest_COMPLETE
-	default:
-		return tracepb.ListTracesRequest_ROOTSPAN
+		return tracepb.ListTracesRequest_COMPLETE, nil
 	}
+	return 0, fmt.Errorf("invalid view %q: must be \"MINIMAL\", \"ROOTSPAN\" or \"COMPLETE\"", view)
 }
 
 func traceToSummary(t *tracepb.Trace) TraceSummary {

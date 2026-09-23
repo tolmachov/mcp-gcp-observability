@@ -4,8 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
-	"sort"
+	"slices"
 	"strconv"
 	"time"
 
@@ -19,11 +20,35 @@ import (
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
 
+// MetricKind is a Cloud Monitoring metric kind: how a metric's points relate
+// in time. Not to be confused with metrics.MetricKind, the semantic kind
+// (latency, throughput, ...) assigned by the registry.
+type MetricKind string
+
+const (
+	MetricKindGauge      MetricKind = "GAUGE"
+	MetricKindDelta      MetricKind = "DELTA"
+	MetricKindCumulative MetricKind = "CUMULATIVE"
+)
+
+// EmptyWindowReason explains why a metric of the given kind that exists in
+// Cloud Monitoring has no points in a query window.
+func EmptyWindowReason(kind MetricKind) string {
+	switch kind {
+	case MetricKindDelta, MetricKindCumulative:
+		return "no events occurred in the window (the counter was inactive)"
+	case MetricKindGauge:
+		return "no matching resources reported values in the window (check that they exist and the metric is being collected)"
+	default:
+		return "no data in window"
+	}
+}
+
 type MetricDescriptorInfo struct {
 	Type        string            `json:"type"`
 	DisplayName string            `json:"display_name"`
 	Description string            `json:"description,omitempty"`
-	MetricKind  string            `json:"metric_kind"`
+	MetricKind  MetricKind        `json:"metric_kind"`
 	ValueType   string            `json:"value_type"`
 	Unit        string            `json:"unit,omitempty"`
 	Labels      []LabelDescriptor `json:"labels,omitempty"`
@@ -77,24 +102,15 @@ type MetricTimeSeries struct {
 	ResourceLabels       map[string]string `json:"resource_labels,omitempty"`
 	MetadataSystemLabels map[string]string `json:"metadata_system_labels,omitempty"`
 	MetadataUserLabels   map[string]string `json:"metadata_user_labels,omitempty"`
-	MetricKind           string            `json:"metric_kind"`
+	MetricKind           MetricKind        `json:"metric_kind"`
 	ValueType            string            `json:"value_type"`
 	Points               []metrics.Point   `json:"points"`
-	Truncated            bool              `json:"truncated,omitempty"`
-	// UnsupportedCount is the number of points in the upstream series that
-	// had a value type this tool does not decode (e.g. BOOL, STRING, or a
-	// future type not covered by extractValue). Points with usable values
-	// land in Points as usual; this counter lets downstream consumers
-	// surface lossy decoding without dropping the whole series.
-	UnsupportedCount int `json:"unsupported_count,omitempty"`
-	// NonFiniteCount counts NaN and infinity values rejected at ingestion.
-	NonFiniteCount int `json:"non_finite_count,omitempty"`
 }
 
 // MetricDescriptorBasic contains fields needed for aligner selection and response enrichment.
 // Everything from one ListMetricDescriptors call; no second RPC needed.
 type MetricDescriptorBasic struct {
-	Kind      string // GAUGE, DELTA, CUMULATIVE
+	Kind      MetricKind
 	ValueType string // INT64, DOUBLE, DISTRIBUTION, BOOL, STRING
 	// Labels are the keys available under metric.labels.* for this metric.
 	// May be empty for metrics that expose no metric-level labels.
@@ -108,9 +124,9 @@ type MetricDescriptorBasic struct {
 
 // GetMetricDescriptor returns kind, value_type, labels, and resource types.
 // Kind+ValueType determine the valid aligner (e.g., ALIGN_RATE rejected for DELTA+DISTRIBUTION).
-func GetMetricDescriptor(ctx context.Context, client *monitoring.MetricClient, project, metricType string) (MetricDescriptorBasic, error) {
+func (q *MonitoringQuerier) GetMetricDescriptor(ctx context.Context, project, metricType string) (MetricDescriptorBasic, error) {
 	filter := fmt.Sprintf(`metric.type = "%s"`, EscapeFilterValue(metricType))
-	descriptors, err := ListMetricDescriptors(ctx, client, project, filter, 1)
+	descriptors, err := q.ListMetricDescriptors(ctx, project, filter, 1)
 	if err != nil {
 		return MetricDescriptorBasic{}, err
 	}
@@ -121,12 +137,12 @@ func GetMetricDescriptor(ctx context.Context, client *monitoring.MetricClient, p
 	return MetricDescriptorBasic{
 		Kind:                   d.MetricKind,
 		ValueType:              d.ValueType,
-		Labels:                 append([]LabelDescriptor(nil), d.Labels...),
-		MonitoredResourceTypes: append([]string(nil), d.MonitoredResourceTypes...),
+		Labels:                 d.Labels,
+		MonitoredResourceTypes: d.MonitoredResourceTypes,
 	}, nil
 }
 
-func ListMetricDescriptors(ctx context.Context, client *monitoring.MetricClient, project, filter string, limit int) ([]MetricDescriptorInfo, error) {
+func (q *MonitoringQuerier) ListMetricDescriptors(ctx context.Context, project, filter string, limit int) ([]MetricDescriptorInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, metricsQueryTimeout)
 	defer cancel()
 
@@ -134,9 +150,13 @@ func ListMetricDescriptors(ctx context.Context, client *monitoring.MetricClient,
 		Name:   fmt.Sprintf("projects/%s", project),
 		Filter: filter,
 	}
+	if limit > 0 {
+		// Fetch no more than the caller keeps; the API clamps oversized pages.
+		req.PageSize = safeInt32(limit)
+	}
 
 	var result []MetricDescriptorInfo
-	it := client.ListMetricDescriptors(ctx, req)
+	it := q.client.ListMetricDescriptors(ctx, req)
 	for i := 0; limit <= 0 || i < limit; i++ {
 		desc, err := it.Next()
 		if errors.Is(err, iterator.Done) {
@@ -149,10 +169,10 @@ func ListMetricDescriptors(ctx context.Context, client *monitoring.MetricClient,
 			Type:                   desc.Type,
 			DisplayName:            desc.DisplayName,
 			Description:            desc.Description,
-			MetricKind:             desc.MetricKind.String(),
+			MetricKind:             MetricKind(desc.MetricKind.String()),
 			ValueType:              desc.ValueType.String(),
 			Unit:                   desc.Unit,
-			MonitoredResourceTypes: append([]string(nil), desc.MonitoredResourceTypes...),
+			MonitoredResourceTypes: desc.MonitoredResourceTypes,
 		}
 		for _, l := range desc.Labels {
 			info.Labels = append(info.Labels, LabelDescriptor{
@@ -165,14 +185,11 @@ func ListMetricDescriptors(ctx context.Context, client *monitoring.MetricClient,
 	return result, nil
 }
 
-// ListMonitoredResourceDescriptors returns all monitored resource descriptors
+// listMonitoredResourceDescriptors returns all monitored resource descriptors
 // visible to the project, each with its defined label keys. Results are
 // globally stable (the resource schema is part of the Cloud Monitoring API,
-// not per-project state), so callers should cache.
-func ListMonitoredResourceDescriptors(ctx context.Context, client *monitoring.MetricClient, project string) ([]MonitoredResourceDescriptor, error) {
-	ctx, cancel := context.WithTimeout(ctx, metricsQueryTimeout)
-	defer cancel()
-
+// not per-project state), so callers should cache. The caller bounds ctx.
+func listMonitoredResourceDescriptors(ctx context.Context, client *monitoring.MetricClient, project string) ([]MonitoredResourceDescriptor, error) {
 	req := &monitoringpb.ListMonitoredResourceDescriptorsRequest{
 		Name: fmt.Sprintf("projects/%s", project),
 	}
@@ -205,8 +222,10 @@ type QueryTimeSeriesParams struct {
 	LabelFilter string
 	Start       time.Time
 	End         time.Time
+	// StepSeconds is the alignment period; callers must set it (tools
+	// default to metrics.DefaultStepSeconds).
 	StepSeconds int64
-	MetricKind  string
+	MetricKind  MetricKind
 	// ValueType is the metric descriptor's value type (INT64, DOUBLE,
 	// DISTRIBUTION, BOOL). Combined with MetricKind, it determines the
 	// per-series aligner — critical because some combinations (e.g.
@@ -224,11 +243,10 @@ type QueryTimeSeriesParams struct {
 	Reducer       monitoringpb.Aggregation_Reducer
 }
 
-// QueryTimeSeries fetches time series data from Cloud Monitoring.
-// Returns at most MaxTimeSeries real series. If the result was truncated,
-// a sentinel MetricTimeSeries{Truncated: true} is appended as the final
-// element; it carries no Points and should be excluded from data aggregation.
-func QueryTimeSeries(ctx context.Context, client *monitoring.MetricClient, params QueryTimeSeriesParams) ([]MetricTimeSeries, error) {
+// QueryTimeSeries fetches time series data from Cloud Monitoring. It returns
+// at most MaxTimeSeries series; the warnings report whether the result was
+// cut off there and how many points were dropped during decoding.
+func (q *MonitoringQuerier) QueryTimeSeries(ctx context.Context, params QueryTimeSeriesParams) ([]MetricTimeSeries, QueryWarnings, error) {
 	ctx, cancel := context.WithTimeout(ctx, metricsQueryTimeout)
 	defer cancel()
 
@@ -237,12 +255,7 @@ func QueryTimeSeries(ctx context.Context, client *monitoring.MetricClient, param
 		filter += " AND " + params.LabelFilter
 	}
 
-	stepSeconds := params.StepSeconds
-	if stepSeconds <= 0 {
-		stepSeconds = 60
-	}
-
-	agg := buildAggregation(params.MetricKind, params.ValueType, stepSeconds, params.GroupByFields, params.Reducer)
+	agg := buildAggregation(params.MetricKind, params.ValueType, params.StepSeconds, params.GroupByFields, params.Reducer)
 
 	req := &monitoringpb.ListTimeSeriesRequest{
 		Name:   fmt.Sprintf("projects/%s", params.Project),
@@ -256,18 +269,23 @@ func QueryTimeSeries(ctx context.Context, client *monitoring.MetricClient, param
 	}
 
 	var result []MetricTimeSeries
-	it := client.ListTimeSeries(ctx, req)
+	var warnings QueryWarnings
+	it := q.client.ListTimeSeries(ctx, req)
 	for {
 		ts, err := it.Next()
 		if errors.Is(err, iterator.Done) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("listing time series: %w", err)
+			return nil, warnings, fmt.Errorf("listing time series: %w", err)
+		}
+		if len(result) == MaxTimeSeries {
+			warnings.TruncatedSeries = true
+			break
 		}
 
 		mts := MetricTimeSeries{
-			MetricKind: ts.MetricKind.String(),
+			MetricKind: MetricKind(ts.MetricKind.String()),
 			ValueType:  ts.ValueType.String(),
 		}
 		if ts.Metric != nil {
@@ -307,11 +325,11 @@ func QueryTimeSeries(ctx context.Context, client *monitoring.MetricClient, param
 			}
 			val, ok := extractValue(p.Value)
 			if !ok {
-				mts.UnsupportedCount++
+				warnings.UnsupportedPoints++
 				continue
 			}
 			if math.IsNaN(val) || math.IsInf(val, 0) {
-				mts.NonFiniteCount++
+				warnings.NonFinitePoints++
 				continue
 			}
 			mts.Points = append(mts.Points, metrics.Point{
@@ -321,26 +339,21 @@ func QueryTimeSeries(ctx context.Context, client *monitoring.MetricClient, param
 		}
 
 		result = append(result, mts)
-
-		if len(result) >= MaxTimeSeries {
-			// Append a zero-valued sentinel to signal that the result was
-			// truncated. Using a sentinel rather than marking the last real
-			// series avoids the ambiguity of Truncated meaning "this series'
-			// own data is incomplete" vs "the result set was cut off here".
-			// The sentinel has no Points, so mergePoints ignores its data.
-			result = append(result, MetricTimeSeries{Truncated: true})
-			break
-		}
 	}
-	return result, nil
+	return result, warnings, nil
 }
 
-// AggregationWarnings describes non-fatal issues encountered while running
-// a two-stage aggregation. Callers (snapshot/compare/related tool handlers)
-// forward these through mcpLog so operators can see registry typos and
-// sparse group coverage without trawling stderr. Zero value = no warnings.
-type AggregationWarnings struct {
-	// NonFinitePoints is the number of NaN/Inf upstream points discarded.
+// QueryWarnings describes non-fatal issues encountered while running a
+// time-series query: lossy decoding, truncation, and (for two-stage
+// aggregation) sparse group coverage. Tool handlers forward these to the
+// client so operators can see registry typos and partial data without
+// trawling stderr. Zero value = no warnings.
+type QueryWarnings struct {
+	// UnsupportedPoints is the number of upstream points whose value type
+	// this tool does not decode (e.g. BOOL, STRING, an empty distribution).
+	UnsupportedPoints int
+	// NonFinitePoints is the number of NaN/Inf points discarded, upstream or
+	// produced by the cross-group fold.
 	NonFinitePoints int
 	// SingleGroup is set when a two-stage query was requested but the
 	// upstream returned exactly one group. Legitimate when the window
@@ -370,9 +383,9 @@ type AggregationWarnings struct {
 	// log line can name a concrete number of suspect entities.
 	DepartedSeries int
 
-	// TotalBuckets is the total number of folded buckets that the
-	// CarryForward / DepartedGroup counters are measured against. Zero
-	// if the fold produced no buckets.
+	// TotalBuckets is the number of buckets the fold returned (non-finite
+	// results excluded); CarryForwardBuckets and DepartedGroupBuckets
+	// count a subset of them. Zero if the fold produced no buckets.
 	TotalBuckets int
 
 	// GroupCount is the number of per-group series the first stage
@@ -385,15 +398,21 @@ type AggregationWarnings struct {
 	TruncatedSeries bool
 }
 
-// HasAny returns true if any actionable warning field is set.
-// (TotalBuckets and GroupCount are context, not warnings.)
-func (w AggregationWarnings) HasAny() bool {
-	return w.NonFinitePoints > 0 || w.SingleGroup || w.CarryForwardBuckets > 0 || w.DepartedGroupBuckets > 0 || w.DepartedSeries > 0 || w.TruncatedSeries
-}
-
-// RaggedBuckets returns legacy combined counter (carry-forward + departed-group).
-func (w AggregationWarnings) RaggedBuckets() int {
-	return w.CarryForwardBuckets + w.DepartedGroupBuckets
+// Add folds the warnings of another query into w, for a result built from
+// several queries: counters add up, flags are set when either query set them,
+// and GroupCount is that of the single-group query, the one it describes.
+func (w *QueryWarnings) Add(o QueryWarnings) {
+	w.UnsupportedPoints += o.UnsupportedPoints
+	w.NonFinitePoints += o.NonFinitePoints
+	if o.SingleGroup {
+		w.SingleGroup = true
+		w.GroupCount = o.GroupCount
+	}
+	w.CarryForwardBuckets += o.CarryForwardBuckets
+	w.DepartedGroupBuckets += o.DepartedGroupBuckets
+	w.DepartedSeries += o.DepartedSeries
+	w.TotalBuckets += o.TotalBuckets
+	w.TruncatedSeries = w.TruncatedSeries || o.TruncatedSeries
 }
 
 // buildAggregatedParams translates AggregationSpec to QueryTimeSeriesParams.
@@ -419,29 +438,23 @@ func buildAggregatedParams(params QueryTimeSeriesParams, spec metrics.Aggregatio
 // QueryTimeSeriesAggregated runs a time-series query with AggregationSpec.
 // Single-stage: applies AcrossGroups directly. Two-stage: groups then folds
 // across groups in Go. Returns single synthetic series and non-fatal warnings.
-func QueryTimeSeriesAggregated(ctx context.Context, client *monitoring.MetricClient, params QueryTimeSeriesParams, spec metrics.AggregationSpec) ([]MetricTimeSeries, AggregationWarnings, error) {
-	var warnings AggregationWarnings
+func (q *MonitoringQuerier) QueryTimeSeriesAggregated(ctx context.Context, params QueryTimeSeriesParams, spec metrics.AggregationSpec) ([]MetricTimeSeries, QueryWarnings, error) {
 	if err := spec.Validate(); err != nil {
-		return nil, warnings, fmt.Errorf("%w: %w", metrics.ErrInvalidAggregationSpec, err)
+		return nil, QueryWarnings{}, fmt.Errorf("%w: %w", metrics.ErrInvalidAggregationSpec, err)
 	}
 
 	p := buildAggregatedParams(params, spec)
 
 	if !spec.IsTwoStage() {
 		// Single-stage: let Cloud Monitoring do the work.
-		series, err := QueryTimeSeries(ctx, client, p)
-		series, warnings.TruncatedSeries = stripTruncationSentinel(series)
-		warnings.NonFinitePoints = countNonFinitePoints(series)
-		return series, warnings, err
+		return q.QueryTimeSeries(ctx, p)
 	}
 
 	// Two-stage: query with first-stage reducer, then fold in Go.
-	groupSeries, err := QueryTimeSeries(ctx, client, p)
+	groupSeries, warnings, err := q.QueryTimeSeries(ctx, p)
 	if err != nil {
 		return nil, warnings, err
 	}
-	groupSeries, warnings.TruncatedSeries = stripTruncationSentinel(groupSeries)
-	warnings.NonFinitePoints = countNonFinitePoints(groupSeries)
 	warnings.GroupCount = len(groupSeries)
 
 	// Return a single synthetic series carrying the folded points. When
@@ -469,12 +482,7 @@ func QueryTimeSeriesAggregated(ctx context.Context, client *monitoring.MetricCli
 		warnings.SingleGroup = true
 	}
 
-	folded, stats := foldGroupSeries(groupSeries, spec.AcrossGroups)
-	warnings.CarryForwardBuckets = stats.CarryForwardBuckets
-	warnings.DepartedGroupBuckets = stats.DepartedGroupBuckets
-	warnings.DepartedSeries = stats.DepartedSeries
-	warnings.NonFinitePoints += stats.NonFinitePoints
-	warnings.TotalBuckets = len(folded)
+	folded := foldGroupSeries(groupSeries, spec.AcrossGroups, &warnings)
 	return []MetricTimeSeries{{
 		MetricKind: groupSeries[0].MetricKind,
 		ValueType:  groupSeries[0].ValueType,
@@ -482,44 +490,17 @@ func QueryTimeSeriesAggregated(ctx context.Context, client *monitoring.MetricCli
 	}}, warnings, nil
 }
 
-func countNonFinitePoints(series []MetricTimeSeries) int {
-	total := 0
-	for _, s := range series {
-		total += s.NonFiniteCount
-	}
-	return total
-}
-
-func stripTruncationSentinel(series []MetricTimeSeries) ([]MetricTimeSeries, bool) {
-	if len(series) == 0 {
-		return series, false
-	}
-	if !series[len(series)-1].Truncated {
-		return series, false
-	}
-	return series[:len(series)-1], true
-}
-
-// StripTruncationSentinel exposes the sentinel-removal helper to tool-layer
-// callers that use raw QueryTimeSeries rather than QueryTimeSeriesAggregated.
-func StripTruncationSentinel(series []MetricTimeSeries) ([]MetricTimeSeries, bool) {
-	return stripTruncationSentinel(series)
-}
-
 // maxCarryForwardBuckets bounds how many consecutive buckets a per-group
 // series may be carried forward after its last fresh point before it is
-// treated as genuinely gone. Three buckets ≈ 180s at the 60s alignment
-// period used by every current tool caller (snapshot/compare/related
-// hardcode StepSeconds=60). Wide enough to bridge a rolling-deploy
-// replica handoff, narrow enough that a truly departed group (leader-
-// lock lost, tenant deprovisioned, instance terminated) stops
-// contributing its last value within one metrics snapshot window.
-// Without this bound, a single fresh point at the start of the window
-// would inflate every bucket until the end of time and silently
-// misrepresent steady-state presence for departed groups. If a future
-// caller uses a smaller alignment period the absolute bound shrinks
-// proportionally — re-evaluate this constant if step ever drops below
-// 30s. See the foldGroupSeries docblock for rationale.
+// treated as genuinely gone. The bound is in buckets, so its duration scales
+// with the alignment period: 180s at metrics.DefaultStepSeconds (60s), and
+// 30s at the 10s minimum step metrics_snapshot accepts. Wide enough to bridge
+// a rolling-deploy replica handoff, narrow enough that a truly departed group
+// (leader lock lost, tenant deprovisioned, instance terminated) stops
+// contributing its last value within one metrics snapshot window. Without
+// this bound, a single fresh point at the start of the window would inflate
+// every later bucket and misrepresent steady-state presence for departed
+// groups. See the foldGroupSeries docblock for rationale.
 const maxCarryForwardBuckets = 3
 
 // foldGroupSeries combines multiple per-group series into a single series
@@ -531,7 +512,8 @@ const maxCarryForwardBuckets = 3
 // Output contract: the returned []metrics.Point is sorted ascending by
 // timestamp. This is load-bearing — downstream trend/spike detection in
 // metrics.Process walks the series in order and would fabricate deltas
-// from an unsorted input. TestFoldSortsOutput pins this invariant with
+// from an unsorted input. testFoldSortsOutput (a TestFoldGroupSeries
+// subtest) pins this invariant with
 // enough timestamps that Go's randomized map iteration reliably scrambles
 // the natural order.
 //
@@ -551,22 +533,14 @@ const maxCarryForwardBuckets = 3
 // within the bounded window, so a genuinely departed group stops
 // inflating the sum instead of fabricating steady-state presence forever.
 //
-// Ragged buckets — timestamps where at least one series contributed via
-// carry-forward instead of a fresh point, or where at least one series
-// had not yet produced its first point (and was therefore excluded from
-// that bucket entirely) — are counted and returned so callers can log
-// the coverage gap. Common causes: a series that starts mid-window, a
-// gap in one group, or a deploy cutting publishing from one replica.
-// foldStats reports per-fold sparse-coverage counters separately so the
-// caller can populate AggregationWarnings without re-walking the buckets.
-type foldStats struct {
-	CarryForwardBuckets  int
-	DepartedGroupBuckets int
-	DepartedSeries       int
-	NonFinitePoints      int
-}
-
-func foldGroupSeries(series []MetricTimeSeries, reducer metrics.Reducer) ([]metrics.Point, foldStats) {
+// Buckets where at least one series contributed via carry-forward, or where a
+// departed series was excluded, are counted into w.CarryForwardBuckets and
+// w.DepartedGroupBuckets (with w.DepartedSeries naming the distinct departed
+// series) so callers can log the coverage gap. Buckets whose reduced value is
+// non-finite are dropped and counted only in w.NonFinitePoints, so both
+// bucket counters stay within w.TotalBuckets, the number of returned points. Common causes: a series that starts mid-window,
+// a gap in one group, or a deploy cutting publishing from one replica.
+func foldGroupSeries(series []MetricTimeSeries, reducer metrics.Reducer, w *QueryWarnings) []metrics.Point {
 	// Collect every distinct timestamp across all input series.
 	tsSet := make(map[int64]struct{})
 	for _, s := range series {
@@ -575,14 +549,9 @@ func foldGroupSeries(series []MetricTimeSeries, reducer metrics.Reducer) ([]metr
 		}
 	}
 	if len(tsSet) == 0 {
-		return nil, foldStats{}
+		return nil
 	}
-
-	tsSorted := make([]int64, 0, len(tsSet))
-	for ts := range tsSet {
-		tsSorted = append(tsSorted, ts)
-	}
-	sort.Slice(tsSorted, func(i, j int) bool { return tsSorted[i] < tsSorted[j] })
+	tsSorted := slices.Sorted(maps.Keys(tsSet))
 
 	// Build a per-series timestamp→value map for O(1) lookups at each
 	// bucket. Cheaper than repeatedly binary-searching sorted points.
@@ -619,7 +588,6 @@ func foldGroupSeries(series []MetricTimeSeries, reducer metrics.Reducer) ([]metr
 	hasDepartedOnce := make([]bool, len(series))
 
 	points := make([]metrics.Point, 0, len(tsSorted))
-	var stats foldStats
 	for _, ts := range tsSorted {
 		values := make([]float64, 0, len(series))
 		fresh := 0
@@ -643,7 +611,7 @@ func foldGroupSeries(series []MetricTimeSeries, reducer metrics.Reducer) ([]metr
 				// fresh point would resurrect it on a later bucket.
 				if !hasDepartedOnce[i] {
 					hasDepartedOnce[i] = true
-					stats.DepartedSeries++
+					w.DepartedSeries++
 				}
 				departedCount++
 				continue
@@ -655,27 +623,28 @@ func foldGroupSeries(series []MetricTimeSeries, reducer metrics.Reducer) ([]metr
 		if len(values) == 0 {
 			continue
 		}
+		value := applyReducer(values, reducer)
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			w.NonFinitePoints++
+			continue
+		}
 		// Count the bucket against whichever signal is active. Departed
 		// buckets are the more serious symptom (the group permanently
 		// stopped contributing), so a bucket with both carries and
 		// departures is counted as departed — operators triage that
 		// first.
 		if departedCount > 0 {
-			stats.DepartedGroupBuckets++
+			w.DepartedGroupBuckets++
 		} else if carriedCount > 0 {
-			stats.CarryForwardBuckets++
-		}
-		value := applyReducer(values, reducer)
-		if math.IsNaN(value) || math.IsInf(value, 0) {
-			stats.NonFinitePoints++
-			continue
+			w.CarryForwardBuckets++
 		}
 		points = append(points, metrics.Point{
 			Timestamp: time.Unix(0, ts),
 			Value:     value,
 		})
 	}
-	return points, stats
+	w.TotalBuckets = len(points)
+	return points
 }
 
 // applyReducer folds a slice of values into a single scalar using the
@@ -693,7 +662,7 @@ func foldGroupSeries(series []MetricTimeSeries, reducer metrics.Reducer) ([]metr
 //
 // Values are finite by construction: QueryTimeSeries rejects NaN and Inf at
 // ingestion. A finite sum can still overflow; foldGroupSeries drops that
-// result and accounts for it in AggregationWarnings.
+// result and accounts for it in QueryWarnings.
 //
 // Local variable names avoid shadowing Go 1.21+ builtins min/max so
 // linters stay quiet and a future simplify-pass doesn't swap the loop
@@ -758,7 +727,7 @@ func ReducerToGCP(r metrics.Reducer) monitoringpb.Aggregation_Reducer {
 	panic(fmt.Sprintf("metrics.ReducerToGCP: unknown reducer %q (spec validation bypassed)", r))
 }
 
-func buildAggregation(metricKind, valueType string, stepSeconds int64, groupByFields []string, reducer monitoringpb.Aggregation_Reducer) *monitoringpb.Aggregation {
+func buildAggregation(metricKind MetricKind, valueType string, stepSeconds int64, groupByFields []string, reducer monitoringpb.Aggregation_Reducer) *monitoringpb.Aggregation {
 	agg := &monitoringpb.Aggregation{
 		AlignmentPeriod:  &durationpb.Duration{Seconds: stepSeconds},
 		PerSeriesAligner: selectAligner(metricKind, valueType),
@@ -806,17 +775,17 @@ func buildAggregation(metricKind, valueType string, stepSeconds int64, groupByFi
 // older callers keep working. This fallback is unsafe for distribution
 // metrics (the API rejects ALIGN_RATE on DELTA+DISTRIBUTION), so callers
 // SHOULD always supply a valueType discovered via GetMetricDescriptor.
-func selectAligner(metricKind, valueType string) monitoringpb.Aggregation_Aligner {
+func selectAligner(metricKind MetricKind, valueType string) monitoringpb.Aggregation_Aligner {
 	if valueType == "DISTRIBUTION" {
 		switch metricKind {
-		case "DELTA", "CUMULATIVE":
+		case MetricKindDelta, MetricKindCumulative:
 			return monitoringpb.Aggregation_ALIGN_DELTA
 		default:
 			return monitoringpb.Aggregation_ALIGN_MEAN
 		}
 	}
 	switch metricKind {
-	case "DELTA", "CUMULATIVE":
+	case MetricKindDelta, MetricKindCumulative:
 		return monitoringpb.Aggregation_ALIGN_RATE
 	default:
 		return monitoringpb.Aggregation_ALIGN_MEAN

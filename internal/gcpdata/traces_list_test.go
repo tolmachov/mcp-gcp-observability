@@ -78,13 +78,19 @@ func TestParseLatencyToMs(t *testing.T) {
 }
 
 func TestParseViewType(t *testing.T) {
-	assert.Equal(t, tracepb.ListTracesRequest_ROOTSPAN, parseViewType(""))
-	assert.Equal(t, tracepb.ListTracesRequest_ROOTSPAN, parseViewType("ROOTSPAN"))
-	assert.Equal(t, tracepb.ListTracesRequest_ROOTSPAN, parseViewType("rootspan"))
-	assert.Equal(t, tracepb.ListTracesRequest_MINIMAL, parseViewType("MINIMAL"))
-	assert.Equal(t, tracepb.ListTracesRequest_MINIMAL, parseViewType("minimal"))
-	assert.Equal(t, tracepb.ListTracesRequest_COMPLETE, parseViewType("COMPLETE"))
-	assert.Equal(t, tracepb.ListTracesRequest_ROOTSPAN, parseViewType("unknown"))
+	for view, want := range map[string]tracepb.ListTracesRequest_ViewType{
+		"MINIMAL":  tracepb.ListTracesRequest_MINIMAL,
+		"ROOTSPAN": tracepb.ListTracesRequest_ROOTSPAN,
+		"COMPLETE": tracepb.ListTracesRequest_COMPLETE,
+	} {
+		got, err := parseViewType(view)
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+	}
+	for _, view := range []string{"", "rootspan", "unknown"} {
+		_, err := parseViewType(view)
+		assert.ErrorContains(t, err, "invalid view", view)
+	}
 }
 
 func TestTraceToSummary(t *testing.T) {

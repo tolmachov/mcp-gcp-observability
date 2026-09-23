@@ -49,10 +49,12 @@ golangci-lint v2.12.2. A change is done only when all of them pass with zero lin
 ## Conventions
 
 - Wrap errors with context: `fmt.Errorf("...: %w", err)`. Linters include errorlint, wrapcheck, gosec, unparam.
-- Adding a tool: new file in `internal/tools` with a `Register*` function, register it in
-  `registerAllTools` (`internal/server/variants.go`) and, if it belongs to the monitoring
-  variant, in `tools.RegisterCore`. Update `allToolsCount` / `CoreToolsCount` (pinned by
-  tests) and the tool tables in `README.md`.
+- Adding a tool: new file in `internal/tools` with a `Register*` function, then one entry in
+  `toolSpecs` (`internal/server/variants.go`): name, register function, `core` for the
+  monitoring variant, `profileScan` for Cloud Profiler scans. Variant membership, tool counts
+  and the profiler limits derive from that table; update the membership lists pinned in
+  `TestToolTableMembership` and the tool tables in `README.md`. Handlers report failed GCP
+  calls through `gcpErrorResult`, which adds per-gRPC-code guidance.
 - Never commit `.env` or `deploy/cloudrun.env`.
 
 ## Deployment

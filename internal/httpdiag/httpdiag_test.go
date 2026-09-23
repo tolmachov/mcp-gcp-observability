@@ -40,7 +40,7 @@ func TestSDKRejectionsAreDiagnosableWithoutSecrets(t *testing.T) {
 			var logs bytes.Buffer
 			srv := mcp.NewServer(&mcp.Implementation{Name: "diagnostics", Version: "1"}, nil)
 			sdk := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, &mcp.StreamableHTTPOptions{Stateless: true})
-			h := Handler(slog.New(slog.NewJSONHandler(&logs, nil)), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { ObserveBody(r, []byte(tt.body)); sdk.ServeHTTP(w, r) }))
+			h := Handler(slog.New(slog.NewJSONHandler(&logs, nil)), []string{"/"}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { ObserveBody(r, []byte(tt.body)); sdk.ServeHTTP(w, r) }))
 			request := func() *http.Request {
 				r := httptest.NewRequest(http.MethodPost, "http://example.com/?token="+secret, strings.NewReader(tt.body))
 				r.Header.Set("Accept", "application/json, text/event-stream")
@@ -66,6 +66,7 @@ func TestSDKRejectionsAreDiagnosableWithoutSecrets(t *testing.T) {
 			require.NoError(t, json.Unmarshal(logs.Bytes(), &event))
 			assert.Equal(t, "http_request_rejected", event["msg"])
 			assert.Equal(t, tt.reason, event["reason"])
+			assert.Equal(t, "/", event["route"])
 			assert.Equal(t, "claude", event["client"])
 			assert.Equal(t, "0123456789abcdef0123456789abcdef", event["trace_id"])
 			assert.Equal(t, got.Header().Get("X-Request-ID"), event["request_id"])
@@ -78,7 +79,7 @@ func TestSDKRejectionsAreDiagnosableWithoutSecrets(t *testing.T) {
 
 func TestErrorCaptureIsBoundedAndUnknownBodiesStayPrivate(t *testing.T) {
 	var logs bytes.Buffer
-	h := Handler(slog.New(slog.NewJSONHandler(&logs, nil)), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	h := Handler(slog.New(slog.NewJSONHandler(&logs, nil)), nil, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(400)
 		for range 10 {
 			_, _ = w.Write([]byte(strings.Repeat("sensitive", 1000)))
@@ -93,6 +94,7 @@ func TestErrorCaptureIsBoundedAndUnknownBodiesStayPrivate(t *testing.T) {
 	r.Header.Set("X-Cloud-Trace-Context", "private-secret")
 	h.ServeHTTP(httptest.NewRecorder(), r)
 	assert.Contains(t, logs.String(), "unclassified_http_error")
+	assert.Contains(t, logs.String(), `"route":"other"`)
 	assert.NotContains(t, logs.String(), "sensitive")
 	assert.NotContains(t, logs.String(), "private-secret")
 }
@@ -100,7 +102,7 @@ func TestErrorCaptureIsBoundedAndUnknownBodiesStayPrivate(t *testing.T) {
 func TestSuccessfulStreamFlushesBeforeHandlerCompletes(t *testing.T) {
 	var logs bytes.Buffer
 	finish := make(chan struct{})
-	h := Handler(slog.New(slog.NewJSONHandler(&logs, nil)), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := Handler(slog.New(slog.NewJSONHandler(&logs, nil)), nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, "data: first\n\n")
 		require.NoError(t, http.NewResponseController(w).Flush())

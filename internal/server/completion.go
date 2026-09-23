@@ -29,16 +29,61 @@ const serviceCompletionTimeout = 5 * time.Second
 // prompt arguments (ref/prompt) and resource-template arguments (ref/resource)
 // — never for tool arguments.
 type promptCompleter struct {
-	registry *metrics.Registry
+	// metricTypes completes metric_type; wireCompleter builds it once per
+	// completer from the registry via metricTypeCandidates.
+	metricTypes completionCandidates
 	// loadServices lazily discovers service names (by scanning recent logs) and
 	// caches them for the lifetime of the local or per-user GCP client set.
-	// nil until a GCP client is wired in Run.
+	// wireCompleter sets it per completer; it stays nil on unpinned servers,
+	// where there is no project to scan.
 	loadServices func(ctx context.Context) []string
 	project      tools.ProjectPolicy
 }
 
+// completionCandidates is a completion source with lower-cased copies of its
+// values precomputed for the case-insensitive substring filter.
+type completionCandidates struct {
+	values, lower []string
+}
+
+func newCompletionCandidates(values []string) completionCandidates {
+	lower := make([]string, len(values))
+	for i, v := range values {
+		lower[i] = strings.ToLower(v)
+	}
+	return completionCandidates{values: values, lower: lower}
+}
+
+// matching returns the values containing arg, case-insensitively; an empty
+// arg matches everything.
+func (c completionCandidates) matching(arg string) []string {
+	if arg == "" {
+		return c.values
+	}
+	arg = strings.ToLower(arg)
+	var out []string
+	for i, l := range c.lower {
+		if strings.Contains(l, arg) {
+			out = append(out, c.values[i])
+		}
+	}
+	return out
+}
+
+// profileTypeCandidates completes profile_type.
+var profileTypeCandidates = newCompletionCandidates(gcpdata.ProfileTypes)
+
+// metricTypeCandidates returns the registry's metric types, or common GCP
+// metric types when the registry is empty.
+func metricTypeCandidates(reg *metrics.Registry) completionCandidates {
+	if reg.Count() == 0 {
+		return defaultMetricCandidates
+	}
+	return newCompletionCandidates(reg.Names())
+}
+
 // defaultMetricCandidates are common GCP metric types shown when the registry is empty.
-var defaultMetricCandidates = []string{
+var defaultMetricCandidates = newCompletionCandidates([]string{
 	"compute.googleapis.com/instance/cpu/utilization",
 	"compute.googleapis.com/instance/disk/read_bytes_count",
 	"compute.googleapis.com/instance/network/received_bytes_count",
@@ -51,24 +96,13 @@ var defaultMetricCandidates = []string{
 	"storage.googleapis.com/api/request_count",
 	"pubsub.googleapis.com/topic/send_request_count",
 	"appengine.googleapis.com/http/server/response_latencies",
-}
-
-// profileTypeCandidates are the Cloud Profiler profile types accepted by the
-// profile_type argument of the investigate-profile prompt.
-var profileTypeCandidates = []string{
-	"CPU", "HEAP", "HEAP_ALLOC", "WALL", "CONTENTION", "THREADS", "PEAK_HEAP",
-}
+})
 
 func (p *promptCompleter) Handle(ctx context.Context, req *mcp.CompleteRequest) (*mcp.CompleteResult, error) {
 	var values []string
 	if req.Params.Ref != nil {
-		candidates := p.candidatesFor(ctx, req.Params.Ref.Type, req.Params.Ref.Name, req.Params.Argument.Name)
-		prefix := strings.ToLower(req.Params.Argument.Value)
-		for _, c := range candidates {
-			if prefix == "" || strings.Contains(strings.ToLower(c), prefix) {
-				values = append(values, c)
-			}
-		}
+		values = p.candidatesFor(ctx, req.Params.Ref.Type, req.Params.Ref.Name, req.Params.Argument.Name).
+			matching(req.Params.Argument.Value)
 	}
 
 	total := len(values)
@@ -83,39 +117,37 @@ func (p *promptCompleter) Handle(ctx context.Context, req *mcp.CompleteRequest) 
 	}, nil
 }
 
-// candidatesFor returns the unfiltered candidate list for a completion ref, or
-// nil when the argument has no completion source. Completion is scoped to the
+// candidatesFor returns the unfiltered candidates for a completion ref, or
+// none when the argument has no completion source. Completion is scoped to the
 // arguments each prompt actually declares (so an unknown prompt or undeclared
-// argument yields nothing), while resource templates share the {project} source.
-func (p *promptCompleter) candidatesFor(ctx context.Context, refType, refName, argName string) []string {
+// argument yields nothing). A resource template's {project} completes only on
+// pinned servers, to the pinned project.
+func (p *promptCompleter) candidatesFor(ctx context.Context, refType, refName, argName string) completionCandidates {
 	switch refType {
 	case "ref/prompt":
 		return p.promptArgCandidates(ctx, refName, argName)
 	case "ref/resource":
 		if argName == "project" && p.project.Pinned() {
-			return []string{p.project.Project()}
+			return newCompletionCandidates([]string{p.project.Project()})
 		}
 	}
-	return nil
+	return completionCandidates{}
 }
 
-// promptArgCandidates maps a (prompt, argument) pair to its completion source.
-// The pairs mirror the arguments declared in registerPrompts: metric_type on
-// investigate-metrics, profile_type on investigate-profile, and service on the
-// three prompts that accept a service filter.
-func (p *promptCompleter) promptArgCandidates(ctx context.Context, prompt, arg string) []string {
-	switch {
-	case prompt == "investigate-metrics" && arg == "metric_type":
-		return p.metricCandidates()
-	case arg == "service" && (prompt == "investigate-errors" || prompt == "investigate-metrics" || prompt == "investigate-profile"):
-		if p.loadServices == nil {
-			return nil
-		}
-		return p.loadServices(ctx)
-	case prompt == "investigate-profile" && arg == "profile_type":
-		return profileTypeCandidates
+// promptArgCandidates returns the completion source promptSpecs declares for
+// the prompt's argument, or none for unknown prompts, undeclared arguments and
+// arguments without a source.
+func (p *promptCompleter) promptArgCandidates(ctx context.Context, prompt, arg string) completionCandidates {
+	spec, ok := findPromptSpec(prompt)
+	if !ok {
+		return completionCandidates{}
 	}
-	return nil
+	for _, a := range spec.args {
+		if a.name == arg && a.complete != nil {
+			return a.complete(ctx, p)
+		}
+	}
+	return completionCandidates{}
 }
 
 // serviceCompletionRetryCooldown is how long a failed service-discovery fetch
@@ -166,16 +198,4 @@ func newCachedServiceLister(fetch func(ctx context.Context) (*gcpdata.ServiceLis
 		loaded = true
 		return cached
 	}
-}
-
-func (p *promptCompleter) metricCandidates() []string {
-	if p.registry != nil && p.registry.Count() > 0 {
-		entries := p.registry.List("", metrics.MetricKind(""))
-		candidates := make([]string, 0, len(entries))
-		for _, e := range entries {
-			candidates = append(candidates, e.MetricType)
-		}
-		return candidates
-	}
-	return defaultMetricCandidates
 }
