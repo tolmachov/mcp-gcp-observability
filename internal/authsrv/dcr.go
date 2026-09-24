@@ -6,6 +6,8 @@ import (
 	"net/http"
 
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
+
+	"github.com/tolmachov/mcp-gcp-observability/internal/httpdiag"
 )
 
 // maxRegistrationBody bounds the /register request body.
@@ -18,29 +20,29 @@ const maxRegistrationBody = 64 << 10
 func (a *AuthServer) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var meta oauthex.ClientRegistrationMetadata
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRegistrationBody)).Decode(&meta); err != nil {
-		a.registrationError(w, "invalid_client_metadata", "request body is not valid JSON")
+		a.registrationError(w, "invalid_client_metadata", "request body is not valid client metadata JSON", err.Error())
 		return
 	}
 	if len(meta.RedirectURIs) == 0 {
-		a.registrationError(w, "invalid_redirect_uri", "at least one redirect_uri is required")
+		a.registrationError(w, "invalid_redirect_uri", "at least one redirect_uri is required", "")
 		return
 	}
 	for _, u := range meta.RedirectURIs {
 		if !a.policy.allowed(u) {
 			a.registrationError(w, "invalid_redirect_uri",
-				fmt.Sprintf("redirect_uri %q is not allowed: use a loopback http URI or ask the server operator to allowlist it", u))
+				"redirect_uri is not allowed: use a loopback http URI or ask the server operator to allowlist it", u)
 			return
 		}
 	}
 	for _, gt := range meta.GrantTypes {
 		if gt != "authorization_code" && gt != "refresh_token" {
-			a.registrationError(w, "invalid_client_metadata", fmt.Sprintf("unsupported grant_type %q", gt))
+			a.registrationError(w, "invalid_client_metadata", "unsupported grant_type", gt)
 			return
 		}
 	}
 	for _, rt := range meta.ResponseTypes {
 		if rt != "code" {
-			a.registrationError(w, "invalid_client_metadata", fmt.Sprintf("unsupported response_type %q", rt))
+			a.registrationError(w, "invalid_client_metadata", "unsupported response_type", rt)
 			return
 		}
 	}
@@ -83,8 +85,17 @@ func (a *AuthServer) parseClientID(clientID string) (*clientIDClaims, error) {
 	return &claims, nil
 }
 
-// registrationError writes an RFC 7591 §3.2.2 error response.
-func (a *AuthServer) registrationError(w http.ResponseWriter, code, description string) {
+// registrationError writes an RFC 7591 §3.2.2 error response. reason is an
+// application-owned constant and goes to the HTTP rejection diagnostic; value
+// is the offending client metadata (public, never a credential), logged
+// separately so an operator can see what a client actually sent.
+func (a *AuthServer) registrationError(w http.ResponseWriter, code, reason, value string) {
+	httpdiag.Reject(w, code, reason)
+	description := reason
+	if value != "" {
+		a.logger.Warn("client registration rejected", "oauth_error", code, "reason", reason, "value", value)
+		description = fmt.Sprintf("%s: %q", reason, value)
+	}
 	a.writeJSON(w, http.StatusBadRequest, &oauthex.ClientRegistrationError{
 		ErrorCode:        code,
 		ErrorDescription: description,

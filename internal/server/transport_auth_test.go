@@ -114,6 +114,21 @@ func TestOAuthRejectionDiagnostics(t *testing.T) {
 	assert.NotContains(t, logs.String(), "hidden")
 }
 
+func TestRegisterRejectionDiagnostics(t *testing.T) {
+	var logs bytes.Buffer
+	ts, _ := newWiringServerWithLogger(t, slog.New(slog.NewJSONHandler(&logs, nil)))
+	resp, err := http.Post(ts.URL+"/register", "application/json",
+		strings.NewReader(`{"redirect_uris":["https://portal.example/servers-callback"]}`))
+	require.NoError(t, err)
+	defer resp.Body.Close() //nolint:errcheck // test cleanup
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	var event map[string]any
+	require.NoError(t, json.Unmarshal(logs.Bytes(), &event))
+	assert.Equal(t, "invalid_redirect_uri", event["oauth_error"])
+	assert.Equal(t, "redirect_uri is not allowed: use a loopback http URI or ask the server operator to allowlist it", event["reason"])
+	assert.Equal(t, "/register", event["route"])
+}
+
 // TestRejectionDiagnosticsNameEveryServedRoute pins that rejections on any
 // mounted OAuth path are logged with that path, not as "other".
 func TestRejectionDiagnosticsNameEveryServedRoute(t *testing.T) {
