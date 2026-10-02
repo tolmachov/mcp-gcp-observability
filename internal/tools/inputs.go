@@ -18,7 +18,7 @@ type LogsQueryInput struct {
 	Filter    string `json:"filter"              jsonschema:"Cloud Logging filter expression (e.g. 'severity>=ERROR', 'resource.type=\"k8s_container\"')"`
 	Limit     int    `json:"limit,omitempty"     jsonschema:"Maximum number of log entries to return (default 100, server max applies)"`
 	Order     string `json:"order,omitempty"     jsonschema:"Sort order by timestamp"`
-	PageToken string `json:"page_token,omitempty" jsonschema:"Page token for pagination"`
+	PageToken string `json:"page_token,omitempty" jsonschema:"Page token from the previous response's next_page_token. When that response had scan_incomplete=true, it resumes the scan where the time budget ran out."`
 }
 
 // LogsByTraceInput is the input for logs_by_trace.
@@ -27,7 +27,7 @@ type LogsByTraceInput struct {
 	TimeFilterInput
 	TraceID   string `json:"trace_id"             jsonschema:"The trace ID (32-character hex string, not the full resource path)"`
 	Limit     int    `json:"limit,omitempty"      jsonschema:"Maximum number of log entries to return (default 100, server max applies)"`
-	PageToken string `json:"page_token,omitempty" jsonschema:"Page token for pagination (from previous response's next_page_token)"`
+	PageToken string `json:"page_token,omitempty" jsonschema:"Page token from the previous response's next_page_token. When that response had scan_incomplete=true, it resumes the scan where the time budget ran out."`
 }
 
 // LogsByRequestIDInput is the input for logs_by_request_id.
@@ -36,7 +36,7 @@ type LogsByRequestIDInput struct {
 	TimeFilterInput
 	RequestID string `json:"request_id"           jsonschema:"The request ID to search for"`
 	Limit     int    `json:"limit,omitempty"      jsonschema:"Maximum number of log entries to return (default 100, server max applies)"`
-	PageToken string `json:"page_token,omitempty" jsonschema:"Page token for pagination (from previous response's next_page_token)"`
+	PageToken string `json:"page_token,omitempty" jsonschema:"Page token from the previous response's next_page_token. When that response had scan_incomplete=true, it resumes the scan where the time budget ran out."`
 }
 
 // LogsFindRequestsInput is the input for logs_find_requests.
@@ -70,7 +70,7 @@ type LogsK8sInput struct {
 	TextSearch    string `json:"text_search,omitempty"    jsonschema:"Text to search for in log payloads"`
 	Limit         int    `json:"limit,omitempty"          jsonschema:"Maximum number of log entries to return (default 100, server max applies)"`
 	Order         string `json:"order,omitempty"          jsonschema:"Sort order by timestamp"`
-	PageToken     string `json:"page_token,omitempty"     jsonschema:"Page token for pagination (from previous response's next_page_token)"`
+	PageToken     string `json:"page_token,omitempty"     jsonschema:"Page token from the previous response's next_page_token. When that response had scan_incomplete=true, it resumes the scan where the time budget ran out."`
 }
 
 // LogsServicesInput is the input for logs_services.

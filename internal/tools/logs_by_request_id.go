@@ -14,7 +14,7 @@ func RegisterLogsByRequestID(s *mcp.Server, d Deps) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "logs_by_request_id",
 		Description: applyMode(d.Mode, "Find all log entries associated with a specific request ID. "+
-			"Matches common structured-log fields such as jsonPayload.request_id, jsonPayload.requestId, labels.request_id, and labels.requestId. "+
+			"Matches the LogEntry operation.id, where services log their request ID (structured-log key logging.googleapis.com/operation). "+
 			"Returns logs sorted by timestamp ascending to show the full request lifecycle. "+
 			"Get request IDs from logs_find_requests results. "+
 			"If you have a trace ID instead, use logs_by_trace or trace_get."),

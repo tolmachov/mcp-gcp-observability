@@ -163,7 +163,7 @@ See [deploy/RUNBOOK.md](deploy/RUNBOOK.md) for setup, smoke, rollback, and key-r
 HTTP rejections emit `http_request_rejected` with the status, classified reason,
 MCP method, protocol version, client family, and presence of session/MCP headers.
 OAuth token errors also include `oauth_error` and the server-owned explanation.
-`X-Request-ID` in the response matches `request_id` in the event; `trace_id` links
+`X-Request-ID` in the response matches the event's `operation.id`; `trace_id` links
 the event to the Cloud Run request trace. No bearer/refresh tokens, session IDs,
 RPC arguments, raw error bodies, or URL query parameters are logged by this
 diagnostic. Unrecognized errors are marked `unclassified_http_error` rather than

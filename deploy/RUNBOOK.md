@@ -100,10 +100,10 @@ For client `400`/`401` responses, inspect the matching application rejection:
 gcloud logging read \
   'resource.type="cloud_run_revision" AND resource.labels.service_name="mcp-gcp-observability" AND jsonPayload.msg="http_request_rejected"' \
   --project "$GCP_PROJECT" --freshness=30m --limit=50 \
-  --format='table(timestamp,jsonPayload.client,jsonPayload.route,jsonPayload.status,jsonPayload.rpc_method,jsonPayload.reason,jsonPayload.protocol_version,jsonPayload.request_id)'
+  --format='table(timestamp,jsonPayload.client,jsonPayload.route,jsonPayload.status,jsonPayload.rpc_method,jsonPayload.reason,jsonPayload.protocol_version,operation.id)'
 ```
 
-Use the client's response `X-Request-ID` or the event's `trace_id` to correlate
+Use the client's response `X-Request-ID` (`operation.id="<id>"`) or the event's `trace_id` to correlate
 requests. `accept_requires_json_and_sse`, `request_missing_id`, and
 `unsupported_protocol_version` identify transport failures before tool dispatch.
 On `/token`, `oauth_error=invalid_grant` plus `reason` distinguishes malformed or

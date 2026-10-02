@@ -110,7 +110,7 @@ func TestOAuthRejectionDiagnostics(t *testing.T) {
 	assert.Equal(t, "invalid_grant", event["oauth_error"])
 	assert.Equal(t, "invalid refresh token", event["reason"])
 	assert.Equal(t, "/token", event["route"])
-	assert.Equal(t, resp.Header.Get("X-Request-ID"), event["request_id"])
+	assert.Equal(t, map[string]any{"id": resp.Header.Get("X-Request-ID")}, event["logging.googleapis.com/operation"])
 	assert.NotContains(t, logs.String(), "hidden")
 }
 

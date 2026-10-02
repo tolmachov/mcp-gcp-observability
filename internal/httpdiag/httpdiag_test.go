@@ -69,8 +69,9 @@ func TestSDKRejectionsAreDiagnosableWithoutSecrets(t *testing.T) {
 			assert.Equal(t, "/", event["route"])
 			assert.Equal(t, "claude", event["client"])
 			assert.Equal(t, "0123456789abcdef0123456789abcdef", event["trace_id"])
-			assert.Equal(t, got.Header().Get("X-Request-ID"), event["request_id"])
-			assert.NotEmpty(t, event["request_id"])
+			assert.NotEmpty(t, got.Header().Get("X-Request-ID"))
+			assert.Equal(t, map[string]any{"id": got.Header().Get("X-Request-ID")}, event["logging.googleapis.com/operation"],
+				"the request id is the indexed LogEntry operation id")
 			assert.NotContains(t, logs.String(), secret)
 			assert.NotContains(t, logs.String(), "private-tool")
 		})
