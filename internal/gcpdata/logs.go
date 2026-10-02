@@ -23,18 +23,15 @@ const LogsHardLimit = 200
 
 const logQueryTimeout = 30 * time.Second
 
-const maxNormalizedLogEntryBytes = 8 << 10
+// errLogScanBudget is the cause of the deadline QueryLogs puts on a scan, so
+// fetchLogEntries can tell its own budget from a canceled caller.
+var errLogScanBudget = fmt.Errorf("log scan used up its %s time budget: %w", logQueryTimeout, context.DeadlineExceeded)
 
-var requestIDFieldPaths = []string{
-	"jsonPayload.request_id",
-	"jsonPayload.requestId",
-	"labels.request_id",
-	"labels.requestId",
-}
+const maxNormalizedLogEntryBytes = 8 << 10
 
 // QueryLogs executes an arbitrary Cloud Logging query.
 func (q *LoggingQuerier) QueryLogs(ctx context.Context, project, filter string, limit int, order, pageToken string) (*LogQueryResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, logQueryTimeout)
+	ctx, cancel := context.WithTimeoutCause(ctx, logQueryTimeout, errLogScanBudget)
 	defer cancel()
 
 	var orderBy string
@@ -64,6 +61,8 @@ func (q *LoggingQuerier) QueryLogsByTrace(ctx context.Context, project, traceID,
 }
 
 // QueryLogsByRequestID retrieves all logs for a given request ID, oldest first.
+// Services log the request id as the LogEntry operation id, which Cloud Logging
+// indexes, so the lookup does not scan the log.
 func (q *LoggingQuerier) QueryLogsByRequestID(ctx context.Context, project, requestID, timeFilter string, limit int, pageToken string) (*LogQueryResult, error) {
 	return q.QueryLogs(ctx, project, AppendFilter(requestIDFilter(requestID), timeFilter), limit, "asc", pageToken)
 }
@@ -149,7 +148,7 @@ func (q *LoggingQuerier) FindRequests(ctx context.Context, params FindRequestsPa
 			ri.TraceID = extractTraceID(entry.Trace)
 		}
 
-		ri.RequestID = extractRequestID(entry)
+		ri.RequestID = entry.GetOperation().GetId()
 
 		// Extract service name from resource labels
 		ri.Service = extractServiceName(entry)
@@ -175,35 +174,7 @@ func (q *LoggingQuerier) FindRequests(ctx context.Context, params FindRequestsPa
 }
 
 func requestIDFilter(requestID string) string {
-	escaped := EscapeFilterValue(requestID)
-	parts := make([]string, 0, len(requestIDFieldPaths))
-	for _, path := range requestIDFieldPaths {
-		parts = append(parts, fmt.Sprintf(`%s="%s"`, path, escaped))
-	}
-	return "(" + strings.Join(parts, " OR ") + ")"
-}
-
-func extractRequestID(entry *loggingpb.LogEntry) string {
-	if entry == nil {
-		return ""
-	}
-	if jp := entry.GetJsonPayload(); jp != nil {
-		for _, key := range []string{"request_id", "requestId"} {
-			if v, ok := jp.Fields[key]; ok {
-				if s := v.GetStringValue(); s != "" {
-					return s
-				}
-			}
-		}
-	}
-	for _, key := range []string{"request_id", "requestId"} {
-		if entry.Labels != nil {
-			if s := entry.Labels[key]; s != "" {
-				return s
-			}
-		}
-	}
-	return ""
+	return fmt.Sprintf(`operation.id="%s"`, EscapeFilterValue(requestID))
 }
 
 // fetchLogEntries reads up to limit (capped at LogsHardLimit) entries for req
@@ -211,29 +182,42 @@ func extractRequestID(entry *loggingpb.LogEntry) string {
 func (q *LoggingQuerier) fetchLogEntries(ctx context.Context, req *loggingpb.ListLogEntriesRequest, limit int) (*LogQueryResult, error) {
 	limit = min(limit, LogsHardLimit)
 	req.PageSize = safeInt32(limit)
-	it := q.client.ListLogEntries(ctx, req)
+	return collectLogEntries(ctx, q.client.ListLogEntries(ctx, req), req.PageToken, limit)
+}
 
-	var entries []LogEntry
-	for i := 0; i < limit; i++ {
+// logEntryIterator is the part of *logging.LogEntryIterator collectLogEntries uses.
+type logEntryIterator interface {
+	Next() (*loggingpb.LogEntry, error)
+	PageInfo() *iterator.PageInfo
+}
+
+// collectLogEntries reads up to limit entries. Cloud Logging answers a filter
+// on unindexed fields with pages that are empty but carry a token, so a wide
+// scan can use up the time budget before it finds anything. When the budget
+// (errLogScanBudget) expires after the scan moved past startToken, the entries
+// read so far are returned with the token of the page that was not fetched, so
+// the caller resumes the scan instead of repeating it. A failed fetch leaves the
+// iterator's buffer empty and its token on the failed page, so no entry is lost.
+func collectLogEntries(ctx context.Context, it logEntryIterator, startToken string, limit int) (*LogQueryResult, error) {
+	result := &LogQueryResult{}
+	for len(result.Entries) < limit {
 		entry, err := it.Next()
 		if errors.Is(err, iterator.Done) {
 			break
 		}
 		if err != nil {
+			tok := it.PageInfo().Token
+			moved := len(result.Entries) > 0 || tok != startToken
+			if moved && tok != "" && errors.Is(context.Cause(ctx), errLogScanBudget) {
+				result.ScanIncomplete = true
+				break
+			}
 			return nil, fmt.Errorf("iterating log entries: %w", err)
 		}
-		entries = append(entries, boundLogEntry(convertLogEntry(entry)))
+		result.Entries = append(result.Entries, boundLogEntry(convertLogEntry(entry)))
 	}
-
-	result := &LogQueryResult{
-		Count:   len(entries),
-		Entries: entries,
-	}
-
-	if tok := it.PageInfo().Token; tok != "" {
-		result.NextPageToken = tok
-	}
-
+	result.Count = len(result.Entries)
+	result.NextPageToken = it.PageInfo().Token
 	return result, nil
 }
 

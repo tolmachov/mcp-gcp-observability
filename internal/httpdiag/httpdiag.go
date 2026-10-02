@@ -93,7 +93,7 @@ func Handler(logger *slog.Logger, routes []string, next http.Handler) http.Handl
 				reason = classifyError(string(rw.body))
 			}
 			attrs := []any{
-				"request_id", id, "http_method", safeHTTPMethod(r.Method),
+				slog.Group("logging.googleapis.com/operation", "id", id), "http_method", safeHTTPMethod(r.Method),
 				"route", safeRoute(known, r.URL.Path), "status", rw.status,
 				"reason", reason, "duration_ms", time.Since(started).Milliseconds(),
 				"client", clientClass(r.UserAgent()), "rpc_method", info.method,

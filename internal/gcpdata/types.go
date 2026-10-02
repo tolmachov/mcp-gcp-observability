@@ -47,11 +47,14 @@ type OperationInfo struct {
 }
 
 // LogQueryResult is the response for log queries.
-// Count always equals len(Entries).
+// Count always equals len(Entries). ScanIncomplete means the query ran out of
+// its time budget before reaching limit or the end of the range; NextPageToken
+// then resumes the scan where it stopped.
 type LogQueryResult struct {
-	Count         int        `json:"count"`
-	Entries       []LogEntry `json:"entries"`
-	NextPageToken string     `json:"next_page_token,omitempty"`
+	Count          int        `json:"count"`
+	Entries        []LogEntry `json:"entries"`
+	NextPageToken  string     `json:"next_page_token,omitempty"`
+	ScanIncomplete bool       `json:"scan_incomplete,omitempty"`
 }
 
 // RequestInfo represents an HTTP request found in logs.
