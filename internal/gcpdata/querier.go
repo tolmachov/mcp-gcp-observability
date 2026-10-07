@@ -22,7 +22,7 @@ type MetricsQuerier interface {
 	GetMetricDescriptor(ctx context.Context, project, metricType string) (MetricDescriptorBasic, error)
 	ListMetricDescriptors(ctx context.Context, project, filter string, limit int) ([]MetricDescriptorInfo, error)
 	// QueryTimeSeries runs a raw query. The warnings carry truncation and
-	// dropped-point counts that callers should forward to the client.
+	// dropped-point counts that callers report in the tool result note.
 	QueryTimeSeries(ctx context.Context, params QueryTimeSeriesParams) ([]MetricTimeSeries, QueryWarnings, error)
 	// QueryTimeSeriesAggregated runs a query with a high-level
 	// AggregationSpec. See QueryTimeSeriesAggregated in metrics.go for the

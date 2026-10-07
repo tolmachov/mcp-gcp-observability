@@ -67,7 +67,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 		if errRes != nil {
 			return errRes, nil, nil
 		}
-		availableLabels, labelsNote := availableLabelsFromDescriptor(ctx, d.Querier, project, in.MetricType, descriptor)
+		availableLabels := availableLabelsFromDescriptor(ctx, d.Querier, project, in.MetricType, descriptor)
 
 		aggSpec, errRes := resolveValidAggSpec(in.MetricType, meta)
 		if errRes != nil {
@@ -109,7 +109,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 				Dimension:       in.Dimension,
 				Contributors:    []Contributor{},
 				NoData:          true,
-				Note:            joinNote(msg, currentWarningsNote, labelsNote),
+				Note:            joinNote(msg, currentWarningsNote),
 				AvailableLabels: availableLabels,
 				NonFinitePoints: current.warnings.NonFinitePoints,
 			}
@@ -241,7 +241,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 			twoStageNote = fmt.Sprintf("This metric uses two-stage aggregation in the registry (group_by=%v, within_group=%s, across_groups=%s). `metrics_top_contributors` applies only %s across the requested dimension %q and does not run the within_group dedup stage, so contributor totals may differ from `metrics_snapshot` and `metrics_compare`.",
 				aggSpec.GroupBy, aggSpec.WithinGroup, aggSpec.AcrossGroups, aggSpec.AcrossGroups, in.Dimension)
 		}
-		note := joinNote(baselineErrNote, baselineNote, noBaselineDataNote, partialCoverageNote, twoStageNote, currentWarningsNote, labelsNote)
+		note := joinNote(baselineErrNote, baselineNote, noBaselineDataNote, partialCoverageNote, twoStageNote, currentWarningsNote)
 
 		return nil, &TopContributorsResult{
 			Dimension:       in.Dimension,

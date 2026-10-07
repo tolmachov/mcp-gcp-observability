@@ -256,6 +256,13 @@ func TestCollectBaseline(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "Baseline partial failure (same_weekday_hour): 1 of 4 baseline windows could not be fetched (baseline (same_weekday_hour week -2): boom); baseline computed from 3 windows. Results may be less reliable.", note)
 	})
+	t.Run("several failures beside data share one note line", func(t *testing.T) {
+		note, err := collect(baselineSameWeekdayHour, weekly, data, failed, failed, data)
+		require.NoError(t, err)
+		assert.Equal(t, "Baseline partial failure (same_weekday_hour): 2 of 4 baseline windows could not be fetched "+
+			"(baseline (same_weekday_hour week -2): boom; baseline (same_weekday_hour week -3): boom); "+
+			"baseline computed from 2 windows. Results may be less reliable.", note)
+	})
 	t.Run("a partial note carries the guidance of the failures", func(t *testing.T) {
 		note, err := collect(baselineSameWeekdayHour, weekly, data, panicked, data, data)
 		require.NoError(t, err)

@@ -85,7 +85,7 @@ func New(cfg *gcpclient.Config, version string, stdin io.Reader, stdout, errOut 
 		Level: slog.LevelInfo,
 	}))
 
-	tools.SetNotifyLogger(logger)
+	tools.SetHandlerLogger(logger)
 
 	s := &Server{
 		completer: completer,

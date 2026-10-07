@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -26,11 +27,15 @@ func TestSDKRejectionsAreDiagnosableWithoutSecrets(t *testing.T) {
 		{name: "accept", body: `{"jsonrpc":"2.0","id":1,"method":"ping"}`, headers: map[string]string{"Accept": "application/json"}, reason: "accept_requires_json_and_sse"},
 		{name: "content type", body: `{}`, headers: map[string]string{"Content-Type": "text/plain"}, reason: "unsupported_content_type"},
 		{name: "version", body: `{"jsonrpc":"2.0","id":1,"method":"ping"}`, headers: map[string]string{"Mcp-Protocol-Version": "2024-01-01"}, reason: "unsupported_protocol_version"},
-		{name: "future version", body: newProtocolRequest("tools/list", "2099-01-01"), headers: map[string]string{"Mcp-Protocol-Version": "2099-01-01", "Mcp-Method": "tools/list"}, reason: "unsupported_protocol_version"},
+		{name: "future version", body: newProtocolRequest("tools/list", "2099-01-01", nil), headers: map[string]string{"Mcp-Protocol-Version": "2099-01-01", "Mcp-Method": "tools/list"}, reason: "unsupported_protocol_version"},
 		{name: "missing request meta", body: `{"jsonrpc":"2.0","id":1,"method":"ping"}`, headers: map[string]string{"Mcp-Protocol-Version": "2026-07-28"}, reason: "invalid_request_meta"},
-		{name: "missing version header", body: newProtocolRequest("tools/list", "2026-07-28"), headers: map[string]string{"Mcp-Protocol-Version": "", "Mcp-Method": "tools/list"}, reason: "missing_protocol_version_header"},
-		{name: "version header mismatch", body: newProtocolRequest("tools/list", "2026-07-28"), headers: map[string]string{"Mcp-Method": "tools/list"}, reason: "protocol_version_header_mismatch"},
-		{name: "method removed in new protocol", body: newProtocolRequest("ping", "2026-07-28"), headers: map[string]string{"Mcp-Protocol-Version": "2026-07-28", "Mcp-Method": "ping"}, reason: "unsupported_rpc_method"},
+		{name: "missing method header", body: newProtocolRequest("tools/list", "2026-07-28", nil), headers: map[string]string{"Mcp-Protocol-Version": "2026-07-28"}, reason: "missing_mcp_method_header"},
+		{name: "method header mismatch", body: newProtocolRequest("tools/list", "2026-07-28", nil), headers: map[string]string{"Mcp-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call"}, reason: "mcp_method_header_mismatch"},
+		{name: "missing name header", body: newProtocolRequest("tools/call", "2026-07-28", map[string]any{"name": "a"}), headers: map[string]string{"Mcp-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call"}, reason: "missing_mcp_name_header"},
+		{name: "name header mismatch", body: newProtocolRequest("tools/call", "2026-07-28", map[string]any{"name": "a"}), headers: map[string]string{"Mcp-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call", "Mcp-Name": "b"}, reason: "mcp_name_header_mismatch"},
+		{name: "missing version header", body: newProtocolRequest("tools/list", "2026-07-28", nil), headers: map[string]string{"Mcp-Protocol-Version": "", "Mcp-Method": "tools/list"}, reason: "missing_protocol_version_header"},
+		{name: "version header mismatch", body: newProtocolRequest("tools/list", "2026-07-28", nil), headers: map[string]string{"Mcp-Method": "tools/list"}, reason: "protocol_version_header_mismatch"},
+		{name: "method removed in new protocol", body: newProtocolRequest("ping", "2026-07-28", nil), headers: map[string]string{"Mcp-Protocol-Version": "2026-07-28", "Mcp-Method": "ping"}, reason: "unsupported_rpc_method"},
 		{name: "notification with id", body: `{"jsonrpc":"2.0","id":1,"method":"notifications/initialized"}`, reason: "notification_has_id"},
 		{name: "missing id", body: `{"jsonrpc":"2.0","method":"ping"}`, reason: "request_missing_id"},
 		{name: "missing params", body: `{"jsonrpc":"2.0","id":1,"method":"tools/call"}`, reason: "request_missing_params"},
@@ -137,9 +142,43 @@ func TestSuccessfulStreamFlushesBeforeHandlerCompletes(t *testing.T) {
 
 // newProtocolRequest is a sessionless (protocol 2026-07-28+) request: the
 // protocol version and client identity travel in _meta on every request.
-func newProtocolRequest(method, version string) string {
-	return `{"jsonrpc":"2.0","id":1,"method":"` + method + `","params":{"_meta":{` +
-		`"io.modelcontextprotocol/protocolVersion":"` + version + `",` +
-		`"io.modelcontextprotocol/clientInfo":{"name":"c","version":"1"},` +
-		`"io.modelcontextprotocol/clientCapabilities":{}}}}`
+func newProtocolRequest(method, version string, params map[string]any) string {
+	if params == nil {
+		params = map[string]any{}
+	}
+	params["_meta"] = map[string]any{
+		mcp.MetaKeyProtocolVersion:    version,
+		mcp.MetaKeyClientInfo:         mcp.Implementation{Name: "c", Version: "1"},
+		mcp.MetaKeyClientCapabilities: mcp.ClientCapabilities{},
+	}
+	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+	if err != nil {
+		panic(err)
+	}
+	return string(body)
+}
+
+// TestClassifyErrorByCode pins JSON-RPC rejections the stateless test server
+// cannot provoke: the code decides, and unknown codes never leak the message.
+func TestClassifyErrorByCode(t *testing.T) {
+	rpcError := func(code int64, msg string) string {
+		body, err := jsonrpc.EncodeMessage(&jsonrpc.Response{Error: &jsonrpc.Error{Code: code, Message: msg}})
+		require.NoError(t, err)
+		return string(body)
+	}
+	assert.Equal(t, "missing_client_capabilities", classifyError(rpcError(mcp.CodeMissingRequiredClientCapabilities, "x")))
+	assert.Equal(t, "mcp_param_header_mismatch", classifyError(rpcError(mcp.CodeHeaderMismatch, `header mismatch: missing Mcp-Param-Region header for parameter "region"`)))
+	assert.Equal(t, "invalid_mcp_name_parameters", classifyError(rpcError(mcp.CodeHeaderMismatch, `failed to extract name from parameters for method "tools/call"`)))
+	assert.Equal(t, "duplicate_request_id", classifyError(rpcError(jsonrpc.CodeInvalidRequest, "duplicate in-flight request ID 1")))
+	assert.Equal(t, "invalid_request", classifyError(rpcError(jsonrpc.CodeInvalidRequest, "x")))
+	assert.Equal(t, "invalid_params", classifyError(rpcError(jsonrpc.CodeInvalidParams, `unknown tool "x"`)))
+	assert.Equal(t, "unsupported_rpc_method", classifyError(rpcError(jsonrpc.CodeMethodNotFound, `"ping" is not supported in the new protocol`)))
+	assert.Equal(t, "unclassified_http_error", classifyError(rpcError(jsonrpc.CodeInternalError, "Accept must contain both")),
+		"a plain-text prefix must not match a JSON-RPC error")
+}
+
+func TestSafeMethodKeepsNewProtocolMethods(t *testing.T) {
+	for _, m := range []string{"server/discover", "subscriptions/listen"} {
+		assert.Equal(t, m, safeMethod(m))
+	}
 }

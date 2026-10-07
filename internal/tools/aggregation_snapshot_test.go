@@ -242,10 +242,18 @@ func TestSnapshotAggregationWarningsReachNote(t *testing.T) {
 	snap := runAggregationSnapshot(t, fq, registry, metricType)
 	assert.False(t, snap.NoData, "expected valid snapshot, got no_data=true")
 	assert.NotEmpty(t, snap.Classification, "classification must not be empty")
-	msgs := queryWarningMessages(metricType, "current", fq.warnings)
-	require.Len(t, msgs, 3)
-	for _, msg := range msgs {
-		assert.Contains(t, snap.Note, msg)
+	for _, want := range []string{
+		// SingleGroup
+		"two-stage aggregation returned 1 group(s)",
+		"verify the configured group_by label actually exists",
+		// DepartedGroupBuckets
+		"2 of 60 folded buckets dropped at least one departed group",
+		"1 distinct group series departed during the window",
+		// CarryForwardBuckets
+		"3 of 60 folded buckets used carry-forward for at least one group",
+		"trend/spike detection may be noisy",
+	} {
+		assert.Contains(t, snap.Note, want)
 	}
 }
 

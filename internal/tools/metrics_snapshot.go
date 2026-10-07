@@ -8,6 +8,7 @@ import (
 	"math"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -147,13 +148,12 @@ func queryWithBaseline(ctx context.Context, tool string, current gcpdata.QueryTi
 	return cur, runQueries(ctx, tool, params, query)
 }
 
-// collectBaseline reports the warnings of the baseline windows and applies
-// the baseline failure policy: the baseline fails only when no window produced
-// data and at least one query failed; failed windows alongside usable ones
-// yield a partial-failure note. The warnings of a multi-window mode are summed
-// into one note so a warning repeated in every window is reported once. The
-// returned note carries the partial-failure note, with the guidance for the
-// failed queries, and the warning note.
+// collectBaseline folds the warnings of the baseline windows into a note and
+// applies the baseline failure policy: the baseline fails only when no window
+// produced data and at least one query failed. Failed windows alongside usable
+// ones yield a partial-failure note naming each failed window's error. The
+// warnings of a multi-window mode are summed so a warning repeated in every
+// window is reported once.
 func collectBaseline(metricType string, mode baselineMode, windows []baselineWindow, results []windowResult) (string, error) {
 	var warnings gcpdata.QueryWarnings
 	var errs []error
@@ -175,15 +175,19 @@ func collectBaseline(metricType string, mode baselineMode, windows []baselineWin
 	if len(errs) == 0 {
 		return warningsNote, nil
 	}
-	joined := errors.Join(errs...)
 	if withData == 0 {
+		joined := errors.Join(errs...)
 		if len(errs) == len(windows) {
 			return "", fmt.Errorf("all %d baseline queries failed: %w", len(windows), joined)
 		}
 		return "", fmt.Errorf("%d of %d baseline queries failed and the rest returned no data: %w", len(errs), len(windows), joined)
 	}
-	partial := fmt.Sprintf("Baseline partial failure (%s): %d of %d baseline windows could not be fetched (%v); baseline computed from %d windows. Results may be less reliable.",
-		mode, len(errs), len(windows), joined, withData)
+	failures := make([]string, len(errs))
+	for i, err := range errs {
+		failures[i] = err.Error()
+	}
+	partial := fmt.Sprintf("Baseline partial failure (%s): %d of %d baseline windows could not be fetched (%s); baseline computed from %d windows. Results may be less reliable.",
+		mode, len(errs), len(windows), strings.Join(failures, "; "), withData)
 	return joinNote(partial, baselineFailureAdvice(results), warningsNote), nil
 }
 
@@ -328,7 +332,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 				fmt.Sprintf("Failed to query metric: %v", err), err), nil, nil
 		}
 
-		availableLabels, labelsNote := availableLabelsFromDescriptor(ctx, d.Querier, project, in.MetricType, descriptor)
+		availableLabels := availableLabelsFromDescriptor(ctx, d.Querier, project, in.MetricType, descriptor)
 
 		currentPoints := mergePoints(current.series)
 		if len(currentPoints) == 0 {
@@ -339,7 +343,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 				Unit:                     meta.Unit,
 				AutoDetected:             meta.AutoDetected,
 				NoData:                   true,
-				Note:                     joinNote(emptyWindowMessage(in.MetricType, windowStr, descriptor.Kind, in.Filter), currentWarningsNote, labelsNote),
+				Note:                     joinNote(emptyWindowMessage(in.MetricType, windowStr, descriptor.Kind, in.Filter), currentWarningsNote),
 				BaselineMode:             string(baseline.mode),
 				Trend:                    "unchanged",
 				Classification:           string(metrics.ClassInsufficientData),
@@ -416,7 +420,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 				From: start.Format(time.RFC3339),
 				To:   now.Format(time.RFC3339),
 			},
-			Note:            joinNote(baselineErrNote, currentWarningsNote, baselineNote, labelsNote),
+			Note:            joinNote(baselineErrNote, currentWarningsNote, baselineNote),
 			AvailableLabels: availableLabels,
 		}
 		result.DataQuality.NonFinitePoints = current.warnings.NonFinitePoints

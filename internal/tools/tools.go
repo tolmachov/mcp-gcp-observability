@@ -101,20 +101,20 @@ var readOnlyAnnotations = &mcp.ToolAnnotations{
 	IdempotentHint: true,
 }
 
-// notifyErrLog receives the server-side diagnostics of tool handlers: dropped
+// handlerLog receives the server-side diagnostics of tool handlers: dropped
 // progress notifications and panics recovered in parallel tasks. Defaults to
-// slog.Default(); call SetNotifyLogger at server startup to route to the
-// configured errOut writer instead. atomic.Pointer ensures SetNotifyLogger
+// slog.Default(); call SetHandlerLogger at server startup to route to the
+// configured errOut writer instead. atomic.Pointer ensures SetHandlerLogger
 // is safe to call concurrently with in-flight tool handlers.
-var notifyErrLog atomic.Pointer[slog.Logger]
+var handlerLog atomic.Pointer[slog.Logger]
 
 func init() {
-	notifyErrLog.Store(slog.Default())
+	handlerLog.Store(slog.Default())
 }
 
-// SetNotifyLogger configures where tool handler diagnostics are written.
+// SetHandlerLogger configures where tool handler diagnostics are written.
 // Safe to call concurrently with tool handlers.
-func SetNotifyLogger(l *slog.Logger) { notifyErrLog.Store(l) }
+func SetHandlerLogger(l *slog.Logger) { handlerLog.Store(l) }
 
 // sendProgress sends a progress notification if the request includes a progress token.
 func sendProgress(ctx context.Context, req *mcp.CallToolRequest, progress, total float64, message string) {
@@ -131,7 +131,7 @@ func sendProgress(ctx context.Context, req *mcp.CallToolRequest, progress, total
 		Total:         total,
 		Message:       message,
 	}); err != nil {
-		notifyErrLog.Load().Warn("progress notification dropped", "err", err)
+		handlerLog.Load().Warn("progress notification dropped", "err", err)
 	}
 }
 
@@ -182,7 +182,6 @@ func queryWarningsNote(metricType, windowLabel string, warnings gcpdata.QueryWar
 }
 
 // queryWarningMessages returns one message per warning in warnings.
-// Pure function; testable without an MCP server context.
 func queryWarningMessages(metricType, windowLabel string, warnings gcpdata.QueryWarnings) []string {
 	var msgs []string
 	if warnings.UnsupportedPoints > 0 {
@@ -270,10 +269,11 @@ func lookupMetricDescriptor(ctx context.Context, q gcpdata.MetricsQuerier, proje
 }
 
 // resolveValidAggSpec resolves meta's aggregation strategy and validates it,
-// returning a ready-to-send ErrorResult on registry misconfiguration. Shared by the snapshot/top/compare handlers; on success the
-// returned *mcp.CallToolResult is nil. metrics_related is intentionally not a
-// caller — it skips a misconfigured related metric rather than failing the
-// whole request.
+// returning a ready-to-send ErrorResult on registry misconfiguration. Shared
+// by the snapshot/top/compare handlers; on success the returned
+// *mcp.CallToolResult is nil. metrics_related is intentionally not a caller —
+// it skips a misconfigured related metric rather than failing the whole
+// request.
 func resolveValidAggSpec(metricType string, meta metrics.MetricMeta) (metrics.AggregationSpec, *mcp.CallToolResult) {
 	aggSpec := meta.ResolveAggregation()
 	if err := aggSpec.Validate(); err != nil {
@@ -446,7 +446,7 @@ func isPanic(err error) bool {
 // is not started once ctx is done — its slot gets a "not started" error
 // wrapping ctx.Err() — but a running task must observe cancellation itself. A
 // panic is recovered, logged with its stack (labeled with tool) to the
-// server-side notifyErrLog, and recorded as a *panicError (detectable via
+// server-side handlerLog, and recorded as a *panicError (detectable via
 // isPanic) rather than crashing the server.
 func runParallel(ctx context.Context, tool string, n, limit int, task func(i int) error) []error {
 	if limit <= 0 {
@@ -461,7 +461,7 @@ func runParallel(ctx context.Context, tool string, n, limit int, task func(i int
 			defer func() { <-sem }()
 			defer func() {
 				if r := recover(); r != nil {
-					notifyErrLog.Load().Error(tool+": panic in parallel task", "index", i, "panic", r, "stack", string(debug.Stack()))
+					handlerLog.Load().Error(tool+": panic in parallel task", "index", i, "panic", r, "stack", string(debug.Stack()))
 					errs[i] = &panicError{value: r}
 				}
 			}()

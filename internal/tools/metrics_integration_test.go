@@ -2401,7 +2401,7 @@ func TestSnapshotIntegration_AutoDetectedMetric(t *testing.T) {
 	}
 }
 
-// --- registry misconfiguration escalation tests ---
+// --- registry misconfiguration error tests ---
 
 func TestSnapshotRegistryMisconfigError(t *testing.T) {
 	// Use NewRegistryFromMetaMap to inject an invalid AggregationSpec that
@@ -2513,9 +2513,10 @@ func TestCompareRegistryMisconfigError(t *testing.T) {
 func TestRelatedRegistryMisconfigError(t *testing.T) {
 	// metrics_related catches an invalid AggregationSpec in the pre-flight
 	// Validate() guard inside each per-signal goroutine. The signal is skipped
-	// (logged at Error level) rather than causing a direct tool error. When
-	// ALL signals are skipped via pre-flight misconfig, the all-failed branch
-	// fires and includes "Registry misconfiguration" in the error text.
+	// (recorded as a misconfiguration skip) rather than causing a direct tool
+	// error. When ALL signals are skipped via pre-flight misconfig, the
+	// all-failed branch fires and includes "Registry misconfiguration" in the
+	// error text.
 	primaryMetric := "compute.googleapis.com/instance/cpu/utilization"
 	relatedMetric := "compute.googleapis.com/instance/memory/utilization"
 

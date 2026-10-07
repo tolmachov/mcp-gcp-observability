@@ -47,9 +47,9 @@ func TestFetchAvailableLabels_PubsubSub(t *testing.T) {
 	fq.descriptors = []gcpdata.MetricDescriptorInfo{pubsubSubDescriptor()}
 	fq.resourceLabels = pubsubSubResourceLabels()
 
-	labels, note := fetchAvailableLabels(context.Background(), fq, "my-project", "pubsub.googleapis.com/subscription/sent_message_count")
+	labels, err := fetchAvailableLabels(context.Background(), fq, "my-project", "pubsub.googleapis.com/subscription/sent_message_count")
+	require.NoError(t, err)
 	require.NotNil(t, labels)
-	assert.Empty(t, note)
 	assert.True(t, equalSortedStrings(labels.Metric, []string{"delivery_type", "topic_id"}))
 	got, ok := labels.Resource["pubsub_subscription"]
 	require.True(t, ok)
@@ -59,9 +59,19 @@ func TestFetchAvailableLabels_PubsubSub(t *testing.T) {
 func TestFetchAvailableLabels_DescriptorMissing(t *testing.T) {
 	fq := newFakeQuerier()
 	// No descriptors registered → ListMetricDescriptors returns empty → fetch must return nil.
-	labels, note := fetchAvailableLabels(context.Background(), fq, "p", "x.googleapis.com/unknown")
+	labels, err := fetchAvailableLabels(context.Background(), fq, "p", "x.googleapis.com/unknown")
+	assert.NoError(t, err)
 	assert.Nil(t, labels)
-	assert.Empty(t, note)
+}
+
+func TestFetchAvailableLabels_DescriptorListingFails(t *testing.T) {
+	fq := newFakeQuerier()
+	fq.listMetricDescriptorsErr = errors.New("upstream is down")
+	labels, err := fetchAvailableLabels(context.Background(), fq, "p", "x.googleapis.com/foo")
+	assert.Nil(t, labels)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, fq.listMetricDescriptorsErr)
+	assert.Equal(t, `listing the descriptor of metric "x.googleapis.com/foo": upstream is down`, err.Error())
 }
 
 func TestFetchAvailableLabels_UnknownResourceType(t *testing.T) {
@@ -75,9 +85,10 @@ func TestFetchAvailableLabels_UnknownResourceType(t *testing.T) {
 			MonitoredResourceTypes: []string{"unknown_type"},
 		},
 	}
-	labels, note := fetchAvailableLabels(context.Background(), fq, "p", "x.googleapis.com/foo")
+	labels, err := fetchAvailableLabels(context.Background(), fq, "p", "x.googleapis.com/foo")
+	require.NoError(t, err)
 	require.NotNil(t, labels)
-	assert.Empty(t, note)
+	assert.Empty(t, labels.IncompleteReason)
 	assert.Equal(t, 1, len(labels.Metric))
 	assert.Equal(t, "kind", labels.Metric[0])
 	assert.Nil(t, labels.Resource)
@@ -178,9 +189,8 @@ func TestEnrichInvalidFilterError_DescriptorUnavailableFallback(t *testing.T) {
 
 	msg := enrichInvalidFilterError(context.Background(), fq, "p", "x.googleapis.com/foo", "resource.labels.bogus=1", origErr)
 	assert.Contains(t, msg, "the supplied filter does not specify a valid combination")
-	assert.Contains(t, msg, "Could not fetch label descriptors")
-	// The enrichment failure itself is named, not just its consequence.
-	assert.Contains(t, msg, "upstream is down")
+	// The enrichment failure itself is named once, not just its consequence.
+	assert.Contains(t, msg, `(Could not fetch label descriptors for "x.googleapis.com/foo" to suggest a fix: listing the descriptor of metric "x.googleapis.com/foo": upstream is down)`)
 }
 
 func TestMetricsSnapshot_AttachesAvailableLabels(t *testing.T) {
@@ -222,60 +232,94 @@ func TestMetricsSnapshot_AttachesAvailableLabels(t *testing.T) {
 	assert.True(t, equalSortedStrings(got, []string{"project_id", "subscription_id"}))
 }
 
-// TestMetricsSnapshot_LabelEnrichmentSoftDegradation verifies the documented
-// contract that a failure inside availableLabelsFromDescriptor is a soft
-// degradation: the main snapshot must still return successfully, with
-// metric-level labels present (from the already-fetched descriptor) and the
-// resource-label section absent because the enrichment RPC failed. A future
-// refactor that bubbled enrichment errors up to the handler would regress
-// this contract without any test catching it.
-func TestMetricsSnapshot_LabelEnrichmentSoftDegradation(t *testing.T) {
-	fq := newFakeQuerier()
-	fq.descriptors = []gcpdata.MetricDescriptorInfo{pubsubSubDescriptor()}
-	// Resource-labels RPC fails for every type — the only remaining failure
-	// surface after threading the descriptor through. Metric labels come
-	// from the descriptor so they should still appear.
-	fq.getResourceLabelsErr = errors.New("permission denied on ListMonitoredResourceDescriptors")
-	fq.metricKinds["pubsub.googleapis.com/subscription/sent_message_count"] = "DELTA"
-	fq.valueTypes["pubsub.googleapis.com/subscription/sent_message_count"] = "INT64"
-	baseTime := time.Now().UTC().Add(-2 * time.Hour)
-	fq.series["pubsub.googleapis.com/subscription/sent_message_count"] = []gcpdata.MetricTimeSeries{
-		makeTimeSeries(baseTime, []float64{10, 11, 12, 13, 14, 15, 16, 17, 18, 19}),
-	}
-
+// TestLabelEnrichmentSoftDegradation pins that a failed resource-label
+// listing is a soft degradation on every result path of metrics_snapshot and
+// metrics_top_contributors: the tool still succeeds, metric labels come from
+// the already-fetched descriptor, and available_labels names the incomplete
+// resource types and the reason. IncompleteTypes distinguishes "RPC failed"
+// from "metric has no resource labels".
+func TestLabelEnrichmentSoftDegradation(t *testing.T) {
+	const metricType = "pubsub.googleapis.com/subscription/sent_message_count"
+	const wantReason = `Resource label keys of metric "` + metricType + `" could not be fetched ` +
+		`(permission denied on ListMonitoredResourceDescriptors); available_labels.resource is incomplete for pubsub_subscription.`
 	reg := loadTestRegistry(t, `metrics:
   "pubsub.googleapis.com/subscription/sent_message_count":
     kind: throughput
     unit: count
     better_direction: none
 `)
-	ctx := context.Background()
-	ts := newTestToolServer(t)
-	ts.registerMetricsSnapshot(fq, reg, "my-project")
-	ts.connect(ctx)
-	defer ts.close()
 
-	result, err := ts.callTool(ctx, "metrics_snapshot", map[string]any{
-		"metric_type": "pubsub.googleapis.com/subscription/sent_message_count",
-		"window":      "1h",
-	})
-	require.NoError(t, err)
-	require.False(t, result.IsError)
+	runSnapshot := func(t *testing.T, fq *fakeQuerier) (bool, *AvailableLabels) {
+		t.Helper()
+		snap := runAggregationSnapshot(t, fq, reg, metricType)
+		return snap.NoData, snap.AvailableLabels
+	}
+	runTop := func(t *testing.T, fq *fakeQuerier) (bool, *AvailableLabels) {
+		t.Helper()
+		ctx := context.Background()
+		ts := newTestToolServer(t)
+		ts.registerMetricsTop(fq, reg, "test-project")
+		ts.connect(ctx)
+		defer ts.close()
+		result, err := ts.callTool(ctx, "metrics_top_contributors", map[string]any{
+			"metric_type": metricType,
+			"dimension":   "metric.labels.topic_id",
+			"window":      "15m",
+		})
+		require.NoError(t, err)
+		var top TopContributorsResult
+		parseResult(t, result, &top)
+		return top.NoData, top.AvailableLabels
+	}
 
-	var snap MetricSnapshotResult
-	unmarshalResult(t, result, &snap)
+	cases := []struct {
+		name     string
+		run      func(*testing.T, *fakeQuerier) (bool, *AvailableLabels)
+		withData bool
+	}{
+		{"snapshot with data", runSnapshot, true},
+		{"snapshot without data", runSnapshot, false},
+		{"top contributors with data", runTop, true},
+		{"top contributors without data", runTop, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fq := newFakeQuerier()
+			fq.descriptors = []gcpdata.MetricDescriptorInfo{pubsubSubDescriptor()}
+			fq.getResourceLabelsErr = errors.New("permission denied on ListMonitoredResourceDescriptors")
+			fq.metricKinds[metricType] = "DELTA"
+			fq.valueTypes[metricType] = "INT64"
+			if tc.withData {
+				fq.series[metricType] = []gcpdata.MetricTimeSeries{
+					makeTimeSeriesWithLabels(time.Now().UTC().Add(-10*time.Minute), []float64{10, 11, 12, 13, 14, 15, 16, 17, 18, 19},
+						map[string]string{"topic_id": "ad-events"}),
+				}
+			}
 
-	require.NotNil(t, snap.AvailableLabels)
-	assert.True(t, equalSortedStrings(snap.AvailableLabels.Metric, []string{"delivery_type", "topic_id"}))
-	assert.Nil(t, snap.AvailableLabels.Resource)
-	// IncompleteTypes must be populated when GetResourceLabels fails — it
-	// distinguishes "RPC failed" from "metric has no resource labels". The
-	// pubsub descriptor declares one resource type (pubsub_subscription), so
-	// the failed RPC should surface exactly that type.
-	require.Greater(t, len(snap.AvailableLabels.IncompleteTypes), 0)
-	assert.Equal(t, "pubsub_subscription", snap.AvailableLabels.IncompleteTypes[0])
-	// The note names the failure behind the incomplete resource labels.
-	assert.Contains(t, snap.Note, "permission denied on ListMonitoredResourceDescriptors")
+			noData, labels := tc.run(t, fq)
+
+			assert.Equal(t, !tc.withData, noData)
+			require.NotNil(t, labels)
+			assert.Equal(t, []string{"delivery_type", "topic_id"}, labels.Metric)
+			assert.Nil(t, labels.Resource)
+			assert.Equal(t, []string{"pubsub_subscription"}, labels.IncompleteTypes)
+			assert.Equal(t, wantReason, labels.IncompleteReason)
+		})
+	}
+}
+
+func TestEnrichInvalidFilterError_ResourceLabelsFailureNote(t *testing.T) {
+	fq := newFakeQuerier()
+	fq.descriptors = []gcpdata.MetricDescriptorInfo{pubsubSubDescriptor()}
+	fq.getResourceLabelsErr = errors.New("permission denied on ListMonitoredResourceDescriptors")
+	origErr := errors.New("the supplied filter does not specify a valid combination")
+
+	msg := enrichInvalidFilterError(context.Background(), fq, "p",
+		"pubsub.googleapis.com/subscription/sent_message_count", `resource.labels.topic_id = "ad-events"`, origErr)
+
+	assert.Contains(t, msg, "Filter invalid for pubsub.googleapis.com/subscription/sent_message_count.")
+	assert.Contains(t, msg, "\nNote: Resource label keys of metric")
+	assert.Contains(t, msg, "permission denied on ListMonitoredResourceDescriptors")
 }
 
 func TestMetricsSnapshot_EnrichedErrorOnInvalidFilter(t *testing.T) {
@@ -369,10 +413,10 @@ func TestAvailableLabelsStopsAfterResourceLabelsFailure(t *testing.T) {
 	q := &countingLabelsQuerier{fakeQuerier: fq}
 	desc := gcpdata.MetricDescriptorBasic{MonitoredResourceTypes: []string{"a", "b", "c"}}
 
-	labels, note := availableLabelsFromDescriptor(context.Background(), q, "p", "m", desc)
+	labels := availableLabelsFromDescriptor(context.Background(), q, "p", "m", desc)
 
 	assert.Equal(t, 1, q.calls)
 	assert.Equal(t, []string{"a", "b", "c"}, labels.IncompleteTypes)
 	assert.Nil(t, labels.Resource)
-	assert.Equal(t, `Resource label keys of metric "m" could not be fetched (listing failed); available_labels.resource is incomplete for a, b, c.`, note)
+	assert.Equal(t, `Resource label keys of metric "m" could not be fetched (listing failed); available_labels.resource is incomplete for a, b, c.`, labels.IncompleteReason)
 }
