@@ -95,6 +95,34 @@ func newWiringServerWithLogger(t *testing.T, logger *slog.Logger) (*httptest.Ser
 	return ts, b
 }
 
+// TestMetadataCORSPreflight pins that a browser's CORS preflight for every
+// public OAuth metadata document is answered by the metadata handler itself,
+// not by the bearer-protected MCP catch-all.
+func TestMetadataCORSPreflight(t *testing.T) {
+	var logs bytes.Buffer
+	ts, _ := newWiringServerWithLogger(t, slog.New(slog.NewJSONHandler(&logs, nil)))
+	for _, path := range []string{
+		authsrv.ProtectedResourceMetadataPath, authsrv.AuthServerMetadataPath,
+		authsrv.OpenIDConfigurationPath, authsrv.JWKSPath,
+	} {
+		t.Run(path, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodOptions, ts.URL+path, nil)
+			require.NoError(t, err)
+			req.Header.Set("Origin", "https://inspector.example")
+			req.Header.Set("Access-Control-Request-Method", "GET")
+			req.Header.Set("Access-Control-Request-Headers", "mcp-protocol-version")
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			_ = resp.Body.Close()
+			assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+			assert.Equal(t, "*", resp.Header.Get("Access-Control-Allow-Origin"))
+			assert.Contains(t, resp.Header.Get("Access-Control-Allow-Methods"), "GET")
+			assert.Contains(t, strings.ToLower(resp.Header.Get("Access-Control-Allow-Headers")), "mcp-protocol-version")
+		})
+	}
+	assert.Empty(t, logs.String(), "a preflight is not a rejection")
+}
+
 func TestOAuthRejectionDiagnostics(t *testing.T) {
 	var logs bytes.Buffer
 	ts, _ := newWiringServerWithLogger(t, slog.New(slog.NewJSONHandler(&logs, nil)))

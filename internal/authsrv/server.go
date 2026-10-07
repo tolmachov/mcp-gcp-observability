@@ -156,10 +156,13 @@ func (a *AuthServer) oauth2Config() *oauth2.Config {
 // Routes mounts every auth endpoint on mux. The MCP handler itself is mounted
 // by the caller (wrapped in this server's RequireBearerToken).
 func (a *AuthServer) Routes(mux *http.ServeMux) {
-	mux.Handle("GET "+ProtectedResourceMetadataPath, a.protectedResourceHandler())
-	mux.Handle("GET "+AuthServerMetadataPath, jsonMetadataHandler(a.authServerMetadata()))
-	mux.Handle("GET "+OpenIDConfigurationPath, jsonMetadataHandler(a.authServerMetadata()))
-	mux.Handle("GET "+JWKSPath, jsonMetadataHandler(emptyJWKS{}))
+	for path, doc := range a.metadataDocuments() {
+		h := jsonMetadataHandler(doc)
+		mux.Handle("GET "+path, h)
+		// Without an OPTIONS route the preflight would fall through to the
+		// caller's catch-all MCP handler and be rejected as unauthenticated.
+		mux.Handle("OPTIONS "+path, h)
+	}
 	mux.HandleFunc("POST "+RegisterPath, a.handleRegister)
 	mux.HandleFunc("GET "+AuthorizePath, a.handleAuthorize)
 	mux.HandleFunc("POST "+AuthorizeConfirmPath, a.handleAuthorizeConfirm)

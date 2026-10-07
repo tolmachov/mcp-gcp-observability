@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 )
 
@@ -32,15 +31,26 @@ var RoutePaths = []string{
 	RegisterPath, AuthorizePath, AuthorizeConfirmPath, CallbackPath, TokenPath, RevokePath,
 }
 
-// protectedResourceHandler serves the RFC 9728 protected resource metadata.
-func (a *AuthServer) protectedResourceHandler() http.Handler {
-	return auth.ProtectedResourceMetadataHandler(&oauthex.ProtectedResourceMetadata{
+// protectedResourceMetadata is the RFC 9728 protected resource metadata
+// document.
+func (a *AuthServer) protectedResourceMetadata() *oauthex.ProtectedResourceMetadata {
+	return &oauthex.ProtectedResourceMetadata{
 		Resource:               a.cfg.IssuerURL,
 		AuthorizationServers:   []string{a.cfg.IssuerURL},
 		ScopesSupported:        a.cfg.scopes(),
 		BearerMethodsSupported: []string{"header"},
 		ResourceName:           "GCP Observability MCP",
-	})
+	}
+}
+
+// metadataDocuments maps each public metadata path to the document it serves.
+func (a *AuthServer) metadataDocuments() map[string]any {
+	return map[string]any{
+		ProtectedResourceMetadataPath: a.protectedResourceMetadata(),
+		AuthServerMetadataPath:        a.authServerMetadata(),
+		OpenIDConfigurationPath:       a.authServerMetadata(),
+		JWKSPath:                      emptyJWKS{},
+	}
 }
 
 // authServerMetadata is the RFC 8414 authorization server metadata document.
@@ -69,14 +79,16 @@ type emptyJWKS struct{}
 
 func (emptyJWKS) MarshalJSON() ([]byte, error) { return []byte(`{"keys":[]}`), nil }
 
-// jsonMetadataHandler serves a static JSON document with the same permissive
-// CORS headers as auth.ProtectedResourceMetadataHandler: OAuth metadata is
-// public, and browser-based MCP clients fetch it cross-origin.
+// jsonMetadataHandler serves a static JSON document with permissive CORS:
+// OAuth metadata is public, and browser-based MCP clients fetch it
+// cross-origin. Routes mounts it for OPTIONS too, so it answers the CORS
+// preflight itself; MCP clients send MCP-Protocol-Version on discovery, which
+// makes the browser preflight the GET.
 func jsonMetadataHandler(v any) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, MCP-Protocol-Version")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
