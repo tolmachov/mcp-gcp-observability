@@ -11,8 +11,8 @@ import (
 
 // ErrInvalidAggregationSpec is returned (wrapped) when a caller hands an
 // AggregationSpec that fails Validate to the query layer. Tool handlers use
-// errors.Is to distinguish registry misconfiguration from transient GCP
-// errors and escalate the log level accordingly.
+// errors.Is to report registry misconfiguration as a fix-the-YAML error
+// instead of giving guidance for transient GCP failures.
 var ErrInvalidAggregationSpec = errors.New("invalid aggregation spec")
 
 type MetricKind string
@@ -190,7 +190,8 @@ func (a AggregationSpec) Validate() error {
 	// Accumulate every issue with errors.Join so an operator fixing a
 	// broken registry sees them all in one load pass instead of one per
 	// re-run. errors.Is(err, ErrInvalidAggregationSpec) still works
-	// through joined errors, so escalation in tool callers is unaffected.
+	// through joined errors, so tool callers still detect registry
+	// misconfiguration.
 	var errs []error
 	if !a.AcrossGroups.IsValid() {
 		errs = append(errs, fmt.Errorf("across_groups must be one of mean|sum|max|min, got %q", a.AcrossGroups))

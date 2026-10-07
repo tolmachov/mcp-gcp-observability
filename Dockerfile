@@ -1,4 +1,4 @@
-FROM golang:1.26.8-alpine AS builder
+FROM golang:1.27.1-alpine AS builder
 
 WORKDIR /app
 
@@ -14,7 +14,7 @@ RUN CGO_ENABLED=0 go build \
     -ldflags="-s -w -X github.com/tolmachov/mcp-gcp-observability/internal.Version=${VERSION}" \
     -o mcp-gcp-observability .
 
-FROM alpine:3.21
+FROM alpine:3.24
 
 # TLS roots for talking to the GCP APIs, plus a non-root user to run as.
 RUN apk add --no-cache ca-certificates \

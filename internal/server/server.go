@@ -85,7 +85,7 @@ func New(cfg *gcpclient.Config, version string, stdin io.Reader, stdout, errOut 
 		Level: slog.LevelInfo,
 	}))
 
-	tools.SetNotifyLogger(logger)
+	tools.SetHandlerLogger(logger)
 
 	s := &Server{
 		completer: completer,
@@ -132,6 +132,9 @@ func (s *Server) newMCPInstance(completer *promptCompleter) *mcp.Server {
 			Instructions:      serverInstructions,
 			Logger:            s.logger,
 			CompletionHandler: completer.Handle,
+			// Non-nil so the SDK's default {"logging":{}} capability is not
+			// advertised: tools report everything in their results.
+			Capabilities: &mcp.ServerCapabilities{},
 		},
 	)
 	srv.AddReceivingMiddleware(panicRecoveryMiddleware(s.logger))

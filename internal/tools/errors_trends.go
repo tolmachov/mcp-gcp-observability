@@ -37,7 +37,6 @@ func RegisterErrorsTrends(s *mcp.Server, d Deps) {
 
 		result, err := d.Errors.AnalyzeErrorTrends(ctx, project, window, limit, in.ServiceFilter, in.VersionFilter)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "errors_trends", fmt.Sprintf("analyze error trends failed for project %s: %v", project, err))
 			return gcpErrorResult(fmt.Sprintf("Failed to analyze error trends: %v", err), err, "Verify the project_id and that Error Reporting API is enabled."), nil, nil
 		}
 

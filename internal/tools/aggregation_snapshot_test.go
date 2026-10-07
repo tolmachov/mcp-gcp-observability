@@ -213,15 +213,11 @@ func testSnapshotSameWeekdayHourSpecThreading(t *testing.T) {
 	assert.Equal(t, "same_weekday_hour", snap.BaselineMode)
 }
 
-// TestSnapshotAggregationWarningsDoNotBreakResult verifies that non-zero
-// QueryWarnings returned by QueryTimeSeriesAggregated flow through
-// the handler without preventing a valid result. This exercises the
-// reportQueryWarnings → mcpLog plumbing: if the warning path panicked
-// or short-circuited the handler, the result would be an error.
-// Note: capturing the actual MCP log notification on the client side would
-// require registering a LoggingHandler on the client — this test guards
-// the code path without verifying the notification payload.
-func TestSnapshotAggregationWarningsDoNotBreakResult(t *testing.T) {
+// TestSnapshotAggregationWarningsReachNote verifies that non-zero
+// QueryWarnings returned by QueryTimeSeriesAggregated still yield a valid
+// snapshot and that every warning of the current window is reported in the
+// result note.
+func TestSnapshotAggregationWarningsReachNote(t *testing.T) {
 	metricType := "custom.googleapis.com/business_kpi_counter"
 	registry := loadTestRegistry(t, aggregationTestRegistryYAML)
 	fq := newFakeQuerier()
@@ -233,7 +229,7 @@ func TestSnapshotAggregationWarningsDoNotBreakResult(t *testing.T) {
 		makeTimeSeries(time.Now().Add(-1*time.Hour), []float64{10, 20, 30, 40, 50, 60, 70, 80}),
 	}
 	// Set SingleGroup, DepartedGroupBuckets, and CarryForwardBuckets to cover
-	// the fold branches of queryWarningMessages (and thus reportQueryWarnings).
+	// the fold branches of queryWarningMessages.
 	fq.warnings = gcpdata.QueryWarnings{
 		SingleGroup:          true,
 		GroupCount:           1,
@@ -246,6 +242,19 @@ func TestSnapshotAggregationWarningsDoNotBreakResult(t *testing.T) {
 	snap := runAggregationSnapshot(t, fq, registry, metricType)
 	assert.False(t, snap.NoData, "expected valid snapshot, got no_data=true")
 	assert.NotEmpty(t, snap.Classification, "classification must not be empty")
+	for _, want := range []string{
+		// SingleGroup
+		"two-stage aggregation returned 1 group(s)",
+		"verify the configured group_by label actually exists",
+		// DepartedGroupBuckets
+		"2 of 60 folded buckets dropped at least one departed group",
+		"1 distinct group series departed during the window",
+		// CarryForwardBuckets
+		"3 of 60 folded buckets used carry-forward for at least one group",
+		"trend/spike detection may be noisy",
+	} {
+		assert.Contains(t, snap.Note, want)
+	}
 }
 
 func runAggregationSnapshot(t *testing.T, fq *fakeQuerier, registry *metrics.Registry, metricType string) *MetricSnapshotResult {

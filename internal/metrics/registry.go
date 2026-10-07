@@ -12,7 +12,7 @@ import (
 	"slices"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 // defaultRegistryYAML: embedded default semantic registry for standard GCP services.

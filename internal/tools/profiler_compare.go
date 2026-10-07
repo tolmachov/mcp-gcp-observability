@@ -39,12 +39,7 @@ func RegisterProfilerCompare(s *mcp.Server, d Deps) {
 			in.ProfileID, in.BaseProfileID, in.ValueIndex, 10)
 		stopHeartbeat()
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "profiler_compare", fmt.Sprintf("compare profiles failed: %v", err))
 			return gcpErrorResult(fmt.Sprintf("Failed to compare profiles: %v", err), err, ""), nil, nil
-		}
-
-		if result.Warning != "" {
-			mcpLog(ctx, req, logLevelWarning, "profiler_compare", result.Warning)
 		}
 
 		return nil, result, nil

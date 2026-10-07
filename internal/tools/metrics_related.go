@@ -97,16 +97,12 @@ func RegisterMetricsRelated(s *mcp.Server, d Deps) {
 
 			relDesc, err := d.Querier.GetMetricDescriptor(ctx, project, relMetric)
 			if err != nil {
-				mcpLog(ctx, req, logLevelWarning, "metrics_related",
-					fmt.Sprintf("descriptor lookup failed for %s: %v", relMetric, err))
 				skipFailure(relMetric, fmt.Errorf("failed to get metric descriptor: %w", err))
 				return nil
 			}
 
 			relAggSpec := relMeta.ResolveAggregation()
 			if err := relAggSpec.Validate(); err != nil {
-				mcpLog(ctx, req, logLevelError, "metrics_related",
-					fmt.Sprintf("registry misconfiguration for %s: %v", relMetric, err))
 				addSkip(relMetric, formatRegistryMisconfigError(relMetric, err), skipMisconfig, err)
 				return nil
 			}
@@ -127,10 +123,8 @@ func RegisterMetricsRelated(s *mcp.Server, d Deps) {
 					return d.Querier.QueryTimeSeriesAggregated(ctx, p, relAggSpec)
 				})
 
-			addWarningNote(reportQueryWarnings(ctx, req, "metrics_related", relMetric, "current", current.warnings))
+			addWarningNote(queryWarningsNote(relMetric, "current", current.warnings))
 			if current.err != nil {
-				mcpLog(ctx, req, logLevelWarning, "metrics_related",
-					fmt.Sprintf("current window query failed for %s: %v", relMetric, current.err))
 				skipFailure(relMetric, fmt.Errorf("query failed: %w", current.err))
 				return nil
 			}
@@ -140,10 +134,8 @@ func RegisterMetricsRelated(s *mcp.Server, d Deps) {
 			}
 
 			baseline := baselineResults[0]
-			addWarningNote(reportQueryWarnings(ctx, req, "metrics_related", relMetric, baselineWindows[0].label, baseline.warnings))
+			addWarningNote(queryWarningsNote(relMetric, baselineWindows[0].label, baseline.warnings))
 			if baseline.err != nil {
-				mcpLog(ctx, req, logLevelWarning, "metrics_related",
-					fmt.Sprintf("baseline query failed for %s: %v", relMetric, baseline.err))
 				skipFailure(relMetric, fmt.Errorf("baseline query failed: %w", baseline.err))
 				return nil
 			}
@@ -191,7 +183,6 @@ func RegisterMetricsRelated(s *mcp.Server, d Deps) {
 		failures, failedErrs := failureSummary(skipped)
 		if len(signals) == 0 && failures != "" {
 			msg := "Every related signal failed or was skipped — correlation coverage is unavailable. " + failures
-			mcpLog(ctx, req, logLevelError, "metrics_related", msg)
 			return gcpErrorsResult(msg, failedErrs, ""), nil, nil
 		}
 
@@ -199,7 +190,6 @@ func RegisterMetricsRelated(s *mcp.Server, d Deps) {
 		if failures != "" {
 			partialNote = joinNote("Some related signals could not be queried and are excluded from results. "+failures,
 				errorGuidance(failedErrs, ""))
-			mcpLog(ctx, req, logLevelWarning, "metrics_related", partialNote)
 		}
 		return nil, &RelatedSignalsResult{
 			RelatedSignals: signals,

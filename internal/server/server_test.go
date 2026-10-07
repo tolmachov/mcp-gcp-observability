@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -313,6 +314,24 @@ func testServer(_ *testing.T) *Server {
 		version:   "test",
 		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
+}
+
+// TestServerDoesNotAdvertiseLogging pins that the server opts out of the SDK's
+// default logging capability: tools report everything in their results and
+// never send log notifications. The features the server does serve are still
+// advertised.
+func TestServerDoesNotAdvertiseLogging(t *testing.T) {
+	s := testServer(t)
+	srv, err := s.buildSingleVariantServer(VariantFull, testToolDeps(), s.completer)
+	require.NoError(t, err)
+	caps := connectInMemory(t, srv).InitializeResult().Capabilities
+	encoded, err := json.Marshal(caps)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), `"logging"`)
+	assert.NotNil(t, caps.Tools)
+	assert.NotNil(t, caps.Prompts)
+	assert.NotNil(t, caps.Resources)
+	assert.NotNil(t, caps.Completions)
 }
 
 // listToolsViaInMemory connects an in-memory MCP client to srv and returns

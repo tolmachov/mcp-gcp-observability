@@ -51,11 +51,7 @@ func RegisterTraceList(s *mcp.Server, d Deps) {
 		result, err := d.Traces.ListTraces(ctx, project,
 			filter, in.View, in.OrderBy, startTime, endTime, pageSize, in.PageToken)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "trace_list", fmt.Sprintf("list traces failed: %v", err))
 			return gcpErrorResult(fmt.Sprintf("Failed to list traces: %v", err), err, "Verify the project_id, filter syntax, and that Cloud Trace API is enabled."), nil, nil
-		}
-		if result.Truncated && result.TruncationHint != "" {
-			mcpLog(ctx, req, logLevelWarning, "trace_list", result.TruncationHint)
 		}
 
 		return nil, result, nil

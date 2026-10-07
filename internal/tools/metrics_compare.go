@@ -89,14 +89,14 @@ func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 
 		sendProgress(ctx, req, 1, 4, "Looking up metric descriptor")
 
-		descriptor, errRes := lookupMetricDescriptor(ctx, req, d.Querier, "metrics_compare", project, in.MetricType)
+		descriptor, errRes := lookupMetricDescriptor(ctx, d.Querier, project, in.MetricType)
 		if errRes != nil {
 			return errRes, nil, nil
 		}
 
 		sendProgress(ctx, req, 2, 4, "Querying both windows")
 
-		aggSpec, errRes := resolveValidAggSpec(ctx, req, "metrics_compare", in.MetricType, meta)
+		aggSpec, errRes := resolveValidAggSpec(in.MetricType, meta)
 		if errRes != nil {
 			return errRes, nil, nil
 		}
@@ -124,8 +124,8 @@ func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 				return d.Querier.QueryTimeSeriesAggregated(ctx, p, aggSpec)
 			})
 		warningsNote := joinNote(
-			reportQueryWarnings(ctx, req, "metrics_compare", in.MetricType, windowALabel, results[0].warnings),
-			reportQueryWarnings(ctx, req, "metrics_compare", in.MetricType, windowBLabel, results[1].warnings),
+			queryWarningsNote(in.MetricType, windowALabel, results[0].warnings),
+			queryWarningsNote(in.MetricType, windowBLabel, results[1].warnings),
 		)
 		if errA, errB := results[0].err, results[1].err; errA != nil || errB != nil {
 			var msgs []string
@@ -136,8 +136,7 @@ func RegisterMetricsCompare(s *mcp.Server, d Deps) {
 				msgs = append(msgs, fmt.Sprintf("window B: %v", errB))
 			}
 			msg := strings.Join(msgs, "; ")
-			mcpLog(ctx, req, logLevelError, "metrics_compare", msg)
-			return metricQueryErrorResult(ctx, req, d.Querier, project, in.MetricType, in.Filter,
+			return metricQueryErrorResult(ctx, d.Querier, project, in.MetricType, in.Filter,
 				"Failed to query: "+msg, errA, errB), nil, nil
 		}
 

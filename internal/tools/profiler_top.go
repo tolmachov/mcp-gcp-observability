@@ -28,7 +28,7 @@ func RegisterProfilerTop(s *mcp.Server, d Deps) {
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerTopInput) (*mcp.CallToolResult, *gcpdata.ProfileTopResult, error) {
 		limit := clampLimit(in.Limit, 20, 50)
 
-		p, meta, errRes := loadProfile(ctx, req, d, "profiler_top", in.ProjectID, in.ProfileID, in.BaseProfileID)
+		p, meta, errRes := loadProfile(ctx, req, d, in.ProjectID, in.ProfileID, in.BaseProfileID)
 		if errRes != nil {
 			return errRes, nil, nil
 		}
@@ -37,7 +37,6 @@ func RegisterProfilerTop(s *mcp.Server, d Deps) {
 
 		topFuncs, total, truncated, err := gcpdata.TopFunctions(p, in.ValueIndex, limit, in.SortBy, in.Filter)
 		if err != nil {
-			mcpLog(ctx, req, logLevelWarning, "profiler_top", fmt.Sprintf("analysis failed: %v", err))
 			return ErrorResult(fmt.Sprintf("Failed to analyze profile: %v", err)), nil, nil
 		}
 		// TopFunctions validated in.ValueIndex against the profile's value types.

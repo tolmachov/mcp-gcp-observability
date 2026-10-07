@@ -72,7 +72,6 @@ func RegisterTraceGet(s *mcp.Server, d Deps) {
 
 		result, err := d.Traces.GetTrace(ctx, project, in.TraceID)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "trace_get", fmt.Sprintf("get trace %s failed: %v", in.TraceID, err))
 			return gcpErrorResult(fmt.Sprintf("Failed to get trace %q: %v", in.TraceID, err), err,
 				"Verify the project_id, credentials, and that Cloud Trace API is enabled.",
 				codeGuidance{codes.InvalidArgument, "Verify the trace_id is a valid 32-character hex string (not the full resource path). Use logs_find_requests to discover valid trace IDs."},

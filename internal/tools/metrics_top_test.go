@@ -10,7 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
-	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
 
 // TestLabelValueFromSeries_MetadataNamespaces verifies that the four
@@ -111,11 +110,12 @@ func TestTopContributorsReducerFromRegistry(t *testing.T) {
 	}
 }
 
-// TestTopContributorsTwoStageDoesNotCrash locks the divergence-warning
+// TestTopContributorsTwoStageNote locks the divergence-note
 // contract: when the registry uses two-stage aggregation, top_contributors
-// drops the WithinGroup dedup stage and operators must see a warning so
-// they know per-contributor totals may differ from snapshot/compare.
-func TestTopContributorsTwoStageDoesNotCrash(t *testing.T) {
+// drops the WithinGroup dedup stage and callers must see a two-stage note in
+// the result so they know per-contributor totals may differ from
+// snapshot/compare.
+func TestTopContributorsTwoStageNote(t *testing.T) {
 	const metricType = "custom.googleapis.com/players_count"
 	registry := loadTestRegistry(t, aggregationTestRegistryYAML)
 
@@ -157,12 +157,6 @@ func TestTopContributorsTwoStageDoesNotCrash(t *testing.T) {
 	unmarshalResult(t, result, &top)
 	assert.Contains(t, top.Note, "two-stage aggregation")
 	require.NotEmpty(t, top.Contributors, "expected at least one contributor, got none")
-	// The resolved spec must still be flagged two-stage, otherwise the
-	// warning code path (the silent-failure-hunter finding) is dead.
-	if !meta.ResolveAggregation().IsTwoStage() {
-		t.Error("post-handle: spec lost its two-stage flag — warning emit code is unreachable")
-	}
-	_ = metrics.ReducerSum // anchor the metrics import even if no other reference exists
 }
 
 func TestTopContributorsTruncationDoesNotMasqueradeAsMissingDimension(t *testing.T) {

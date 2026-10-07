@@ -40,7 +40,6 @@ func RegisterLogsQuery(s *mcp.Server, d Deps) {
 
 		result, err := d.Logs.QueryLogs(ctx, project, filter, limit, in.Order, in.PageToken)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "logs_query", fmt.Sprintf("query failed for project %s: %v", project, err))
 			return gcpErrorResult(fmt.Sprintf("Failed to query logs: %v", err), err, "Verify the project_id and filter syntax."), nil, nil
 		}
 

@@ -12,9 +12,9 @@ jobs:
   build-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -37,7 +37,7 @@ jobs:
       - name: Race test
         run: go test -race ./...
 
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '25'
@@ -71,23 +71,23 @@ jobs:
           FIRESTORE_EMULATOR_HOST=127.0.0.1:8081 go test ./internal/authsrv -run TestFirestoreStoreEmulator -count=1
 
       - name: Vulnerability scan
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
 
-      # Pin golangci-lint to a v2 release built with Go 1.26. "latest" on the
-      # old action major resolved to a v1 build (Go 1.24) that refuses to load a
-      # go 1.26 module ("build Go version lower than targeted"). The action major
-      # must be v9+ — v8 and earlier still run on the deprecated Node 20.
+      # Pin a golangci-lint v2 release built with at least the Go version in
+      # go.mod: an older build refuses to load the module ("build Go version
+      # lower than targeted"); "latest" on old action majors resolved to a v1
+      # build. The action major must be v9+ — v8 and earlier run on Node 20.
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.12.2
+          version: v2.14.0

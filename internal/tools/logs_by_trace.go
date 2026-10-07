@@ -38,7 +38,6 @@ func RegisterLogsByTrace(s *mcp.Server, d Deps) {
 
 		result, err := d.Logs.QueryLogsByTrace(ctx, project, in.TraceID, timeFilter, limit, in.PageToken)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "logs_by_trace", fmt.Sprintf("trace query failed for %s: %v", in.TraceID, err))
 			return gcpErrorResult(fmt.Sprintf("Failed to query logs by trace: %v", err), err, "Verify the trace_id format (hex string, not full resource path). Use logs_find_requests to discover valid trace IDs."), nil, nil
 		}
 

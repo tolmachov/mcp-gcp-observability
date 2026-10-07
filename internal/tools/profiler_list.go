@@ -57,7 +57,6 @@ func RegisterProfilerList(s *mcp.Server, d Deps) {
 			PageToken:   in.PageToken,
 		})
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "profiler_list", fmt.Sprintf("list profiles failed: %v", err))
 			return gcpErrorResult(fmt.Sprintf("Failed to list profiles: %v", err), err, "Verify the project_id and that Cloud Profiler API is enabled."), nil, nil
 		}
 

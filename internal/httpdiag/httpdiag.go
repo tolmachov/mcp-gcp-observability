@@ -13,6 +13,9 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const maxErrorBytes = 4096
@@ -180,7 +183,7 @@ func safeMethod(method string) string {
 		"resources/templates/list", "resources/subscribe", "resources/unsubscribe", "prompts/list",
 		"prompts/get", "completion/complete", "logging/setLevel", "notifications/initialized",
 		"notifications/cancelled", "notifications/progress", "notifications/roots/list_changed", //nolint:misspell // MCP wire spelling
-		"tasks/get", "tasks/list", "tasks/result", "tasks/cancel":
+		"tasks/get", "tasks/list", "tasks/result", "tasks/cancel", "server/discover", "subscriptions/listen":
 		return method
 	default:
 		return "unknown"
@@ -225,17 +228,20 @@ func protocolVersion(value string) string {
 }
 
 // SDK errors sometimes echo the JSON payload, method, URI, or Last-Event-ID.
-// Match their static prefixes and emit only our own reason classes. Never log
+// Match a JSON-RPC error by its code and static message prefix, a plain-text
+// body by its static prefix, and emit only our own reason classes. Never log
 // an unknown body verbatim, even if it is short or looks like a normal error.
 func classifyError(body string) string {
 	var rpc struct {
-		Error *struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
+		Error *jsonrpc.Error `json:"error"`
 	}
 	if json.Unmarshal([]byte(body), &rpc) == nil && rpc.Error != nil {
-		body = rpc.Error.Message
+		for _, rule := range rpcRejectionReasons {
+			if rule.code == rpc.Error.Code && strings.HasPrefix(rpc.Error.Message, rule.prefix) {
+				return rule.reason
+			}
+		}
+		return "unclassified_http_error"
 	}
 	for _, rule := range rejectionReasons {
 		if strings.HasPrefix(body, rule.prefix) {
@@ -245,16 +251,36 @@ func classifyError(body string) string {
 	return "unclassified_http_error"
 }
 
+// rpcRejectionReasons is matched in order, so a specific prefix must precede
+// a broader one with the same code; an empty prefix matches any message.
+var rpcRejectionReasons = []struct {
+	code           int64
+	prefix, reason string
+}{
+	{mcp.CodeUnsupportedProtocolVersion, "", "unsupported_protocol_version"},
+	{mcp.CodeHeaderMismatch, "Mcp-Protocol-Version header is required", "missing_protocol_version_header"},
+	{mcp.CodeHeaderMismatch, "Mcp-Protocol-Version header ", "protocol_version_header_mismatch"},
+	{mcp.CodeHeaderMismatch, "missing required Mcp-Method header", "missing_mcp_method_header"},
+	{mcp.CodeHeaderMismatch, "missing required Mcp-Name header", "missing_mcp_name_header"},
+	{mcp.CodeHeaderMismatch, "header mismatch: Mcp-Method", "mcp_method_header_mismatch"},
+	{mcp.CodeHeaderMismatch, "header mismatch: Mcp-Name", "mcp_name_header_mismatch"},
+	{mcp.CodeHeaderMismatch, "failed to extract name from parameters", "invalid_mcp_name_parameters"},
+	{mcp.CodeHeaderMismatch, "", "mcp_param_header_mismatch"},
+	{mcp.CodeMissingRequiredClientCapabilities, "", "missing_client_capabilities"},
+	{jsonrpc.CodeMethodNotFound, "", "unsupported_rpc_method"},
+	{jsonrpc.CodeInvalidParams, "missing or invalid _meta field", "invalid_request_meta"},
+	{jsonrpc.CodeInvalidParams, "invalid _meta field", "invalid_request_meta"},
+	{jsonrpc.CodeInvalidParams, "", "invalid_params"},
+	{jsonrpc.CodeInvalidRequest, "duplicate in-flight request ID", "duplicate_request_id"},
+	{jsonrpc.CodeInvalidRequest, "", "invalid_request"},
+}
+
+// rejectionReasons classifies plain-text bodies by their static prefix.
 var rejectionReasons = []struct{ prefix, reason string }{
 	{"Accept must contain both", "accept_requires_json_and_sse"},
 	{"Accept must contain 'text/event-stream'", "accept_requires_sse"},
 	{"Content-Type must be", "unsupported_content_type"},
 	{"Bad Request: Unsupported protocol version", "unsupported_protocol_version"},
-	{"missing required Mcp-Method header", "missing_mcp_method_header"},
-	{"missing required Mcp-Name header", "missing_mcp_name_header"},
-	{"header mismatch: Mcp-Method", "mcp_method_header_mismatch"},
-	{"header mismatch: Mcp-Name", "mcp_name_header_mismatch"},
-	{"failed to extract name from parameters", "invalid_mcp_name_parameters"},
 	{"JSON-RPC batching is not supported", "jsonrpc_batch_not_supported"},
 	{"malformed payload:", "malformed_jsonrpc"},
 	{"JSON RPC not handled:", "unsupported_rpc_method"},

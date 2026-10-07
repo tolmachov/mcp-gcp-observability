@@ -48,7 +48,6 @@ func RegisterProfilerTrends(s *mcp.Server, d Deps) {
 			MaxFunctions:   maxFunctions,
 		}, progressFn)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "profiler_trends", fmt.Sprintf("compute trends failed: %v", err))
 			return gcpErrorResult(fmt.Sprintf("Failed to compute trends: %v", err), err, ""), nil, nil
 		}
 

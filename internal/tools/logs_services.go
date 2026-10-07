@@ -35,7 +35,6 @@ func RegisterLogsServices(s *mcp.Server, d Deps) {
 
 		result, err := d.Logs.ListServices(ctx, project, timeFilter)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "logs_services", fmt.Sprintf("list services failed for project %s: %v", project, err))
 			return gcpErrorResult(fmt.Sprintf("Failed to list services: %v", err), err, "Verify the project_id and that Cloud Logging API is enabled."), nil, nil
 		}
 
