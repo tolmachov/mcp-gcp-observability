@@ -28,7 +28,7 @@ func RegisterProfilerPeek(s *mcp.Server, d Deps) {
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerPeekInput) (*mcp.CallToolResult, *gcpdata.ProfilePeekResult, error) {
 		limit := clampLimit(in.Limit, 10, 30)
 
-		p, meta, errRes := loadProfile(ctx, req, d, "profiler_peek", in.ProjectID, in.ProfileID, in.BaseProfileID)
+		p, meta, errRes := loadProfile(ctx, req, d, in.ProjectID, in.ProfileID, in.BaseProfileID)
 		if errRes != nil {
 			return errRes, nil, nil
 		}
@@ -37,7 +37,6 @@ func RegisterProfilerPeek(s *mcp.Server, d Deps) {
 
 		funcInfo, callers, callees, err := gcpdata.PeekFunction(p, in.FunctionName, in.ValueIndex, limit)
 		if err != nil {
-			mcpLog(ctx, req, logLevelWarning, "profiler_peek", fmt.Sprintf("analysis failed: %v", err))
 			return ErrorResult(fmt.Sprintf("Failed to peek function: %v", err)), nil, nil
 		}
 

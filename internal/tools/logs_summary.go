@@ -40,7 +40,6 @@ func RegisterLogsSummary(s *mcp.Server, d Deps) {
 					fmt.Sprintf("Scanned %d/%d entries", scanned, total))
 			})
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "logs_summary", fmt.Sprintf("summarize failed for project %s: %v", project, err))
 			return gcpErrorResult(fmt.Sprintf("Failed to summarize logs: %v", err), err, "Verify the project_id and filter syntax."), nil, nil
 		}
 

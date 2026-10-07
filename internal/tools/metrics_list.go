@@ -67,7 +67,6 @@ func RegisterMetricsList(s *mcp.Server, d Deps) {
 		if apiLimit > 0 {
 			descriptors, err := d.Querier.ListMetricDescriptors(ctx, project, apiFilter, apiLimit)
 			if err != nil {
-				mcpLog(ctx, req, logLevelError, "metrics_list", fmt.Sprintf("listing metric descriptors failed: %v", err))
 				return gcpErrorResult(fmt.Sprintf("Failed to list metrics: %v", err), err, ""), nil, nil
 			}
 

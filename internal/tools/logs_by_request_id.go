@@ -39,7 +39,6 @@ func RegisterLogsByRequestID(s *mcp.Server, d Deps) {
 
 		result, err := d.Logs.QueryLogsByRequestID(ctx, project, in.RequestID, timeFilter, limit, in.PageToken)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "logs_by_request_id", fmt.Sprintf("request ID query failed for %s: %v", in.RequestID, err))
 			return gcpErrorResult(fmt.Sprintf("Failed to query logs by request ID: %v", err), err, "Verify the request_id is correct. Use logs_find_requests to discover valid request IDs."), nil, nil
 		}
 

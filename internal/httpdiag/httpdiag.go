@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 )
 
 const maxErrorBytes = 4096
@@ -230,11 +232,16 @@ func protocolVersion(value string) string {
 func classifyError(body string) string {
 	var rpc struct {
 		Error *struct {
-			Code    int    `json:"code"`
+			Code    int64  `json:"code"`
 			Message string `json:"message"`
 		} `json:"error"`
 	}
 	if json.Unmarshal([]byte(body), &rpc) == nil && rpc.Error != nil {
+		// The SDK quotes the method at the start of some method-not-found
+		// messages, so the code, not a prefix, identifies them.
+		if rpc.Error.Code == jsonrpc.CodeMethodNotFound {
+			return "unsupported_rpc_method"
+		}
 		body = rpc.Error.Message
 	}
 	for _, rule := range rejectionReasons {
@@ -250,10 +257,17 @@ var rejectionReasons = []struct{ prefix, reason string }{
 	{"Accept must contain 'text/event-stream'", "accept_requires_sse"},
 	{"Content-Type must be", "unsupported_content_type"},
 	{"Bad Request: Unsupported protocol version", "unsupported_protocol_version"},
+	{"unsupported protocol version", "unsupported_protocol_version"},
+	{"protocol version ", "unsupported_protocol_version"},
+	{"Mcp-Protocol-Version header is required", "missing_protocol_version_header"},
+	{"Mcp-Protocol-Version header ", "protocol_version_header_mismatch"},
+	{"missing or invalid _meta field", "invalid_request_meta"},
+	{"invalid _meta field", "invalid_request_meta"},
 	{"missing required Mcp-Method header", "missing_mcp_method_header"},
 	{"missing required Mcp-Name header", "missing_mcp_name_header"},
 	{"header mismatch: Mcp-Method", "mcp_method_header_mismatch"},
 	{"header mismatch: Mcp-Name", "mcp_name_header_mismatch"},
+	{"header mismatch:", "mcp_param_header_mismatch"},
 	{"failed to extract name from parameters", "invalid_mcp_name_parameters"},
 	{"JSON-RPC batching is not supported", "jsonrpc_batch_not_supported"},
 	{"malformed payload:", "malformed_jsonrpc"},
@@ -261,6 +275,7 @@ var rejectionReasons = []struct{ prefix, reason string }{
 	{"invalid request: unexpected id", "notification_has_id"},
 	{"invalid request: missing id", "request_missing_id"},
 	{"invalid request: missing required", "request_missing_params"},
+	{"duplicate in-flight request ID", "duplicate_request_id"},
 	{"POST requires a non-empty body", "empty_request_body"},
 	{"can't send Last-Event-ID for POST", "last_event_id_on_post"},
 	{"malformed Last-Event-ID", "malformed_last_event_id"},

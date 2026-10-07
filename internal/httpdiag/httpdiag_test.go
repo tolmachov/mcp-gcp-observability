@@ -25,7 +25,12 @@ func TestSDKRejectionsAreDiagnosableWithoutSecrets(t *testing.T) {
 	}{
 		{name: "accept", body: `{"jsonrpc":"2.0","id":1,"method":"ping"}`, headers: map[string]string{"Accept": "application/json"}, reason: "accept_requires_json_and_sse"},
 		{name: "content type", body: `{}`, headers: map[string]string{"Content-Type": "text/plain"}, reason: "unsupported_content_type"},
-		{name: "version", body: `{}`, headers: map[string]string{"Mcp-Protocol-Version": "2099-01-01"}, reason: "unsupported_protocol_version"},
+		{name: "version", body: `{"jsonrpc":"2.0","id":1,"method":"ping"}`, headers: map[string]string{"Mcp-Protocol-Version": "2024-01-01"}, reason: "unsupported_protocol_version"},
+		{name: "future version", body: newProtocolRequest("tools/list", "2099-01-01"), headers: map[string]string{"Mcp-Protocol-Version": "2099-01-01", "Mcp-Method": "tools/list"}, reason: "unsupported_protocol_version"},
+		{name: "missing request meta", body: `{"jsonrpc":"2.0","id":1,"method":"ping"}`, headers: map[string]string{"Mcp-Protocol-Version": "2026-07-28"}, reason: "invalid_request_meta"},
+		{name: "missing version header", body: newProtocolRequest("tools/list", "2026-07-28"), headers: map[string]string{"Mcp-Protocol-Version": "", "Mcp-Method": "tools/list"}, reason: "missing_protocol_version_header"},
+		{name: "version header mismatch", body: newProtocolRequest("tools/list", "2026-07-28"), headers: map[string]string{"Mcp-Method": "tools/list"}, reason: "protocol_version_header_mismatch"},
+		{name: "method removed in new protocol", body: newProtocolRequest("ping", "2026-07-28"), headers: map[string]string{"Mcp-Protocol-Version": "2026-07-28", "Mcp-Method": "ping"}, reason: "unsupported_rpc_method"},
 		{name: "notification with id", body: `{"jsonrpc":"2.0","id":1,"method":"notifications/initialized"}`, reason: "notification_has_id"},
 		{name: "missing id", body: `{"jsonrpc":"2.0","method":"ping"}`, reason: "request_missing_id"},
 		{name: "missing params", body: `{"jsonrpc":"2.0","id":1,"method":"tools/call"}`, reason: "request_missing_params"},
@@ -128,4 +133,13 @@ func TestSuccessfulStreamFlushesBeforeHandlerCompletes(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "data: first\n\n", string(chunk))
 	assert.Empty(t, logs.String())
+}
+
+// newProtocolRequest is a sessionless (protocol 2026-07-28+) request: the
+// protocol version and client identity travel in _meta on every request.
+func newProtocolRequest(method, version string) string {
+	return `{"jsonrpc":"2.0","id":1,"method":"` + method + `","params":{"_meta":{` +
+		`"io.modelcontextprotocol/protocolVersion":"` + version + `",` +
+		`"io.modelcontextprotocol/clientInfo":{"name":"c","version":"1"},` +
+		`"io.modelcontextprotocol/clientCapabilities":{}}}}`
 }

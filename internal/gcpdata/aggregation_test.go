@@ -593,9 +593,9 @@ func TestQueryTimeSeriesAggregatedInvalidSpec(t *testing.T) {
 	_, _, err := (&MonitoringQuerier{}).QueryTimeSeriesAggregated(context.Background(), QueryTimeSeriesParams{}, metrics.AggregationSpec{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid aggregation spec")
-	// The error must wrap the sentinel so tool handlers can escalate
-	// registry misconfiguration to logLevelError instead of lumping
-	// it with transient GCP failures.
+	// The error must wrap the sentinel so tool handlers can report
+	// registry misconfiguration (fix the YAML) instead of lumping it
+	// with transient GCP failures.
 	assert.True(t, errors.Is(err, metrics.ErrInvalidAggregationSpec))
 }
 

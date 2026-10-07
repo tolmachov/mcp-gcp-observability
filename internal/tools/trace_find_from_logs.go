@@ -44,11 +44,7 @@ func RegisterTraceFindFromLogs(s *mcp.Server, d Deps) {
 
 		result, err := d.Logs.FindTracesFromLogs(ctx, project, in.Filter, timeFilter, scanLimit, resultLimit)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "trace_find_from_logs", fmt.Sprintf("find traces from logs failed: %v", err))
 			return gcpErrorResult(fmt.Sprintf("Failed to find traces from logs: %v", err), err, "Verify the project_id and filter syntax."), nil, nil
-		}
-		if result.Truncated && result.TruncationHint != "" {
-			mcpLog(ctx, req, logLevelWarning, "trace_find_from_logs", result.TruncationHint)
 		}
 
 		return nil, result, nil

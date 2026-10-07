@@ -47,8 +47,9 @@ func TestFetchAvailableLabels_PubsubSub(t *testing.T) {
 	fq.descriptors = []gcpdata.MetricDescriptorInfo{pubsubSubDescriptor()}
 	fq.resourceLabels = pubsubSubResourceLabels()
 
-	labels := fetchAvailableLabels(context.Background(), nil, fq, "my-project", "pubsub.googleapis.com/subscription/sent_message_count")
+	labels, note := fetchAvailableLabels(context.Background(), fq, "my-project", "pubsub.googleapis.com/subscription/sent_message_count")
 	require.NotNil(t, labels)
+	assert.Empty(t, note)
 	assert.True(t, equalSortedStrings(labels.Metric, []string{"delivery_type", "topic_id"}))
 	got, ok := labels.Resource["pubsub_subscription"]
 	require.True(t, ok)
@@ -58,8 +59,9 @@ func TestFetchAvailableLabels_PubsubSub(t *testing.T) {
 func TestFetchAvailableLabels_DescriptorMissing(t *testing.T) {
 	fq := newFakeQuerier()
 	// No descriptors registered → ListMetricDescriptors returns empty → fetch must return nil.
-	labels := fetchAvailableLabels(context.Background(), nil, fq, "p", "x.googleapis.com/unknown")
+	labels, note := fetchAvailableLabels(context.Background(), fq, "p", "x.googleapis.com/unknown")
 	assert.Nil(t, labels)
+	assert.Empty(t, note)
 }
 
 func TestFetchAvailableLabels_UnknownResourceType(t *testing.T) {
@@ -73,8 +75,9 @@ func TestFetchAvailableLabels_UnknownResourceType(t *testing.T) {
 			MonitoredResourceTypes: []string{"unknown_type"},
 		},
 	}
-	labels := fetchAvailableLabels(context.Background(), nil, fq, "p", "x.googleapis.com/foo")
+	labels, note := fetchAvailableLabels(context.Background(), fq, "p", "x.googleapis.com/foo")
 	require.NotNil(t, labels)
+	assert.Empty(t, note)
 	assert.Equal(t, 1, len(labels.Metric))
 	assert.Equal(t, "kind", labels.Metric[0])
 	assert.Nil(t, labels.Resource)
@@ -134,7 +137,6 @@ func TestEnrichInvalidFilterError_MisplacedNamespaceHint(t *testing.T) {
 	origErr := errors.New(`rpc error: code = InvalidArgument desc = The supplied filter does not specify a valid combination [trace-id=abc123]`)
 	msg := enrichInvalidFilterError(
 		context.Background(),
-		nil,
 		fq,
 		"my-project",
 		"pubsub.googleapis.com/subscription/sent_message_count",
@@ -174,9 +176,11 @@ func TestEnrichInvalidFilterError_DescriptorUnavailableFallback(t *testing.T) {
 	fq.listMetricDescriptorsErr = errors.New("upstream is down")
 	origErr := errors.New("the supplied filter does not specify a valid combination")
 
-	msg := enrichInvalidFilterError(context.Background(), nil, fq, "p", "x.googleapis.com/foo", "resource.labels.bogus=1", origErr)
+	msg := enrichInvalidFilterError(context.Background(), fq, "p", "x.googleapis.com/foo", "resource.labels.bogus=1", origErr)
 	assert.Contains(t, msg, "the supplied filter does not specify a valid combination")
 	assert.Contains(t, msg, "Could not fetch label descriptors")
+	// The enrichment failure itself is named, not just its consequence.
+	assert.Contains(t, msg, "upstream is down")
 }
 
 func TestMetricsSnapshot_AttachesAvailableLabels(t *testing.T) {
@@ -270,6 +274,8 @@ func TestMetricsSnapshot_LabelEnrichmentSoftDegradation(t *testing.T) {
 	// the failed RPC should surface exactly that type.
 	require.Greater(t, len(snap.AvailableLabels.IncompleteTypes), 0)
 	assert.Equal(t, "pubsub_subscription", snap.AvailableLabels.IncompleteTypes[0])
+	// The note names the failure behind the incomplete resource labels.
+	assert.Contains(t, snap.Note, "permission denied on ListMonitoredResourceDescriptors")
 }
 
 func TestMetricsSnapshot_EnrichedErrorOnInvalidFilter(t *testing.T) {
@@ -363,9 +369,10 @@ func TestAvailableLabelsStopsAfterResourceLabelsFailure(t *testing.T) {
 	q := &countingLabelsQuerier{fakeQuerier: fq}
 	desc := gcpdata.MetricDescriptorBasic{MonitoredResourceTypes: []string{"a", "b", "c"}}
 
-	labels := availableLabelsFromDescriptor(context.Background(), nil, q, "p", "m", desc)
+	labels, note := availableLabelsFromDescriptor(context.Background(), q, "p", "m", desc)
 
 	assert.Equal(t, 1, q.calls)
 	assert.Equal(t, []string{"a", "b", "c"}, labels.IncompleteTypes)
 	assert.Nil(t, labels.Resource)
+	assert.Equal(t, `Resource label keys of metric "m" could not be fetched (listing failed); available_labels.resource is incomplete for a, b, c.`, note)
 }

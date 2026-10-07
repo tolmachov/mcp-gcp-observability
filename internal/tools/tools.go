@@ -101,13 +101,8 @@ var readOnlyAnnotations = &mcp.ToolAnnotations{
 	IdempotentHint: true,
 }
 
-// Logging level constants for MCP log notifications.
-const (
-	logLevelWarning mcp.LoggingLevel = "warning"
-	logLevelError   mcp.LoggingLevel = "error"
-)
-
-// notifyErrLog is used to log dropped MCP notification errors. Defaults to
+// notifyErrLog receives the server-side diagnostics of tool handlers: dropped
+// progress notifications and panics recovered in parallel tasks. Defaults to
 // slog.Default(); call SetNotifyLogger at server startup to route to the
 // configured errOut writer instead. atomic.Pointer ensures SetNotifyLogger
 // is safe to call concurrently with in-flight tool handlers.
@@ -117,7 +112,7 @@ func init() {
 	notifyErrLog.Store(slog.Default())
 }
 
-// SetNotifyLogger configures where notification-drop errors are written.
+// SetNotifyLogger configures where tool handler diagnostics are written.
 // Safe to call concurrently with tool handlers.
 func SetNotifyLogger(l *slog.Logger) { notifyErrLog.Store(l) }
 
@@ -179,31 +174,11 @@ func startProgressHeartbeat(ctx context.Context, req *mcp.CallToolRequest, messa
 	}
 }
 
-// mcpLog sends a structured log message via MCP logging notification.
-func mcpLog(ctx context.Context, req *mcp.CallToolRequest, level mcp.LoggingLevel, logger string, data any) {
-	if req == nil || req.Session == nil {
-		notifyErrLog.Load().Warn("log notification: no session", "level", level, "logger", logger, "data", data)
-		return
-	}
-	if err := req.Session.Log(ctx, &mcp.LoggingMessageParams{
-		Level:  level,
-		Logger: logger,
-		Data:   data,
-	}); err != nil {
-		notifyErrLog.Load().Warn("log notification dropped", "level", level, "logger", logger, "err", err)
-	}
-}
-
-// reportQueryWarnings logs each non-fatal query warning to the client and
-// returns them joined as a note for the tool result, so the log and the note
-// always say the same thing. windowLabel names the queried window (current,
-// baseline (prev_window), window_a, ...).
-func reportQueryWarnings(ctx context.Context, req *mcp.CallToolRequest, tool, metricType, windowLabel string, warnings gcpdata.QueryWarnings) string {
-	msgs := queryWarningMessages(metricType, windowLabel, warnings)
-	for _, msg := range msgs {
-		mcpLog(ctx, req, logLevelWarning, tool, msg)
-	}
-	return joinNote(msgs...)
+// queryWarningsNote joins the non-fatal query warnings into a note for the
+// tool result. windowLabel names the queried window (current, baseline
+// (prev_window), window_a, ...).
+func queryWarningsNote(metricType, windowLabel string, warnings gcpdata.QueryWarnings) string {
+	return joinNote(queryWarningMessages(metricType, windowLabel, warnings)...)
 }
 
 // queryWarningMessages returns one message per warning in warnings.
@@ -271,42 +246,37 @@ func formatRegistryMisconfigError(metricType string, err error) string {
 // a tool error: a registry misconfiguration names the YAML to fix, an invalid
 // label filter lists the labels the metric accepts, and any other failure is
 // msg followed by the guidance for errs. Nil errs are ignored.
-func metricQueryErrorResult(ctx context.Context, req *mcp.CallToolRequest, q gcpdata.MetricsQuerier, project, metricType, filter, msg string, errs ...error) *mcp.CallToolResult {
+func metricQueryErrorResult(ctx context.Context, q gcpdata.MetricsQuerier, project, metricType, filter, msg string, errs ...error) *mcp.CallToolResult {
 	if slices.ContainsFunc(errs, invalidAggregationSpecError) {
 		return ErrorResult(formatRegistryMisconfigError(metricType, errors.Join(errs...)))
 	}
 	if slices.ContainsFunc(errs, isInvalidFilterError) {
-		return ErrorResult(enrichInvalidFilterError(ctx, req, q, project, metricType, filter, errors.Join(errs...)))
+		return ErrorResult(enrichInvalidFilterError(ctx, q, project, metricType, filter, errors.Join(errs...)))
 	}
 	return gcpErrorsResult(msg, errs, "")
 }
 
 // lookupMetricDescriptor fetches the Cloud Monitoring descriptor for metricType,
-// logging and returning a ready-to-send ErrorResult on failure. Shared by the
+// returning a ready-to-send ErrorResult on failure. Shared by the
 // snapshot/top/compare handlers, which all need the descriptor's Kind and
 // ValueType to build a query. On success the returned *mcp.CallToolResult is
-// nil; callers forward a non-nil one as (errRes, nil, nil). tool names the
-// caller for the log message.
-func lookupMetricDescriptor(ctx context.Context, req *mcp.CallToolRequest, q gcpdata.MetricsQuerier, tool, project, metricType string) (gcpdata.MetricDescriptorBasic, *mcp.CallToolResult) {
+// nil; callers forward a non-nil one as (errRes, nil, nil).
+func lookupMetricDescriptor(ctx context.Context, q gcpdata.MetricsQuerier, project, metricType string) (gcpdata.MetricDescriptorBasic, *mcp.CallToolResult) {
 	descriptor, err := q.GetMetricDescriptor(ctx, project, metricType)
 	if err != nil {
-		mcpLog(ctx, req, logLevelError, tool, fmt.Sprintf("metric descriptor lookup failed: %v", err))
 		return descriptor, gcpErrorResult(fmt.Sprintf("Failed to look up metric descriptor: %v", err), err, "Verify the metric_type.")
 	}
 	return descriptor, nil
 }
 
 // resolveValidAggSpec resolves meta's aggregation strategy and validates it,
-// logging and returning a ready-to-send ErrorResult on registry
-// misconfiguration. Shared by the snapshot/top/compare handlers; on success the
+// returning a ready-to-send ErrorResult on registry misconfiguration. Shared by the snapshot/top/compare handlers; on success the
 // returned *mcp.CallToolResult is nil. metrics_related is intentionally not a
 // caller — it skips a misconfigured related metric rather than failing the
 // whole request.
-func resolveValidAggSpec(ctx context.Context, req *mcp.CallToolRequest, tool, metricType string, meta metrics.MetricMeta) (metrics.AggregationSpec, *mcp.CallToolResult) {
+func resolveValidAggSpec(metricType string, meta metrics.MetricMeta) (metrics.AggregationSpec, *mcp.CallToolResult) {
 	aggSpec := meta.ResolveAggregation()
 	if err := aggSpec.Validate(); err != nil {
-		mcpLog(ctx, req, logLevelError, tool,
-			fmt.Sprintf("registry misconfiguration for %s: %v", metricType, err))
 		return aggSpec, ErrorResult(formatRegistryMisconfigError(metricType, err))
 	}
 	return aggSpec, nil
@@ -405,7 +375,7 @@ func requireProfiler(q gcpdata.ProfilerQuerier) {
 // request-local current-minus-base diff when baseProfileID is set) for
 // profiler_top, profiler_peek and profiler_flamegraph. On failure it returns
 // the tool error result to send back.
-func loadProfile(ctx context.Context, req *mcp.CallToolRequest, d Deps, tool, projectID, profileID, baseProfileID string) (*profile.Profile, gcpdata.ProfileMeta, *mcp.CallToolResult) {
+func loadProfile(ctx context.Context, req *mcp.CallToolRequest, d Deps, projectID, profileID, baseProfileID string) (*profile.Profile, gcpdata.ProfileMeta, *mcp.CallToolResult) {
 	project, err := d.Project.Resolve(projectID)
 	if err != nil {
 		return nil, gcpdata.ProfileMeta{}, ErrorResult(err.Error())
@@ -416,7 +386,6 @@ func loadProfile(ctx context.Context, req *mcp.CallToolRequest, d Deps, tool, pr
 	p, meta, err := d.Profiler.GetProfileOrDiff(ctx, project, profileID, baseProfileID)
 	stopHeartbeat()
 	if err != nil {
-		mcpLog(ctx, req, logLevelError, tool, fmt.Sprintf("fetch profile failed: %v", err))
 		return nil, gcpdata.ProfileMeta{}, gcpErrorResult(fmt.Sprintf("Failed to fetch profile: %v", err), err, "")
 	}
 	return p, meta, nil

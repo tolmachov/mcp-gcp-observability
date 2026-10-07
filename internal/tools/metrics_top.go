@@ -63,20 +63,15 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 
 		sendProgress(ctx, req, 1, 3, "Looking up metric descriptor")
 
-		descriptor, errRes := lookupMetricDescriptor(ctx, req, d.Querier, "metrics_top_contributors", project, in.MetricType)
+		descriptor, errRes := lookupMetricDescriptor(ctx, d.Querier, project, in.MetricType)
 		if errRes != nil {
 			return errRes, nil, nil
 		}
-		availableLabels := availableLabelsFromDescriptor(ctx, req, d.Querier, project, in.MetricType, descriptor)
+		availableLabels, labelsNote := availableLabelsFromDescriptor(ctx, d.Querier, project, in.MetricType, descriptor)
 
-		aggSpec, errRes := resolveValidAggSpec(ctx, req, "metrics_top_contributors", in.MetricType, meta)
+		aggSpec, errRes := resolveValidAggSpec(in.MetricType, meta)
 		if errRes != nil {
 			return errRes, nil, nil
-		}
-		if aggSpec.IsTwoStage() {
-			mcpLog(ctx, req, logLevelWarning, "metrics_top_contributors",
-				fmt.Sprintf("metric %q has two-stage aggregation (group_by=%v, within_group=%s, across_groups=%s); top_contributors only applies %s across the chosen dimension %q and ignores the within_group dedup stage. Per-contributor totals may differ from metrics_snapshot — fix by overriding the dimension or trust snapshot for headline numbers.",
-					in.MetricType, aggSpec.GroupBy, aggSpec.WithinGroup, aggSpec.AcrossGroups, aggSpec.AcrossGroups, in.Dimension))
 		}
 		reducer := gcpdata.ReducerToGCP(aggSpec.AcrossGroups)
 
@@ -100,10 +95,9 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 				return d.Querier.QueryTimeSeries(ctx, p)
 			})
 
-		currentWarningsNote := reportQueryWarnings(ctx, req, "metrics_top_contributors", in.MetricType, "current", current.warnings)
+		currentWarningsNote := queryWarningsNote(in.MetricType, "current", current.warnings)
 		if err := current.err; err != nil {
-			mcpLog(ctx, req, logLevelError, "metrics_top_contributors", fmt.Sprintf("current window query failed: %v", err))
-			return metricQueryErrorResult(ctx, req, d.Querier, project, in.MetricType, in.Filter,
+			return metricQueryErrorResult(ctx, d.Querier, project, in.MetricType, in.Filter,
 				fmt.Sprintf("Failed to query metric: %v", err), err), nil, nil
 		}
 		currentSeries := current.series
@@ -115,7 +109,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 				Dimension:       in.Dimension,
 				Contributors:    []Contributor{},
 				NoData:          true,
-				Note:            joinNote(msg, currentWarningsNote),
+				Note:            joinNote(msg, currentWarningsNote, labelsNote),
 				AvailableLabels: availableLabels,
 				NonFinitePoints: current.warnings.NonFinitePoints,
 			}
@@ -128,10 +122,9 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 		// ranked by current value instead.
 		var baselineErrNote, noBaselineDataNote string
 		rankByCurrent := false
-		baselineNote, err := collectBaseline(ctx, req, "metrics_top_contributors", in.MetricType, baseline.mode, baselineWindows, baselineResults)
+		baselineNote, err := collectBaseline(in.MetricType, baseline.mode, baselineWindows, baselineResults)
 		baselineByLabel := map[string][][]metrics.Point{}
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "metrics_top_contributors", fmt.Sprintf("baseline query failed: %v", err))
 			baselineErrNote = joinNote(baselineFailureNote(baseline.mode, err, baselineResults),
 				"Returning current-window contributors only; delta_pct and share_of_anomaly are not meaningful.")
 			rankByCurrent = true
@@ -190,7 +183,6 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 				"Partial dimension coverage: %d of %d series did not expose %q and were excluded from share_of_anomaly. Shares below sum to 100%% over the remaining %d attributable series.",
 				missingCount, totalSeries, in.Dimension, len(attributed),
 			)
-			mcpLog(ctx, req, logLevelWarning, "metrics_top_contributors", partialCoverageNote)
 		}
 
 		type processedContrib struct {
@@ -249,7 +241,7 @@ func RegisterMetricsTop(s *mcp.Server, d Deps) {
 			twoStageNote = fmt.Sprintf("This metric uses two-stage aggregation in the registry (group_by=%v, within_group=%s, across_groups=%s). `metrics_top_contributors` applies only %s across the requested dimension %q and does not run the within_group dedup stage, so contributor totals may differ from `metrics_snapshot` and `metrics_compare`.",
 				aggSpec.GroupBy, aggSpec.WithinGroup, aggSpec.AcrossGroups, aggSpec.AcrossGroups, in.Dimension)
 		}
-		note := joinNote(baselineErrNote, baselineNote, noBaselineDataNote, partialCoverageNote, twoStageNote, currentWarningsNote)
+		note := joinNote(baselineErrNote, baselineNote, noBaselineDataNote, partialCoverageNote, twoStageNote, currentWarningsNote, labelsNote)
 
 		return nil, &TopContributorsResult{
 			Dimension:       in.Dimension,

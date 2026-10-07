@@ -36,7 +36,6 @@ func RegisterErrorsList(s *mcp.Server, d Deps) {
 
 		result, err := d.Errors.ListErrors(ctx, project, window, limit, in.ServiceFilter, in.VersionFilter)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "errors_list", fmt.Sprintf("list errors failed for project %s: %v", project, err))
 			return gcpErrorResult(fmt.Sprintf("Failed to list errors: %v", err), err, "Verify the project_id and that Error Reporting API is enabled."), nil, nil
 		}
 

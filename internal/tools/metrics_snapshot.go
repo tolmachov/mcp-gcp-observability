@@ -154,7 +154,7 @@ func queryWithBaseline(ctx context.Context, tool string, current gcpdata.QueryTi
 // into one note so a warning repeated in every window is reported once. The
 // returned note carries the partial-failure note, with the guidance for the
 // failed queries, and the warning note.
-func collectBaseline(ctx context.Context, req *mcp.CallToolRequest, tool, metricType string, mode baselineMode, windows []baselineWindow, results []windowResult) (string, error) {
+func collectBaseline(metricType string, mode baselineMode, windows []baselineWindow, results []windowResult) (string, error) {
 	var warnings gcpdata.QueryWarnings
 	var errs []error
 	withData := 0
@@ -171,7 +171,7 @@ func collectBaseline(ctx context.Context, req *mcp.CallToolRequest, tool, metric
 	if len(windows) > 1 {
 		warningsLabel = fmt.Sprintf("baseline (%s, summed over %d windows)", mode, len(windows))
 	}
-	warningsNote := reportQueryWarnings(ctx, req, tool, metricType, warningsLabel, warnings)
+	warningsNote := queryWarningsNote(metricType, warningsLabel, warnings)
 	if len(errs) == 0 {
 		return warningsNote, nil
 	}
@@ -182,10 +182,8 @@ func collectBaseline(ctx context.Context, req *mcp.CallToolRequest, tool, metric
 		}
 		return "", fmt.Errorf("%d of %d baseline queries failed and the rest returned no data: %w", len(errs), len(windows), joined)
 	}
-	mcpLog(ctx, req, logLevelWarning, tool,
-		fmt.Sprintf("baseline partial failure: %d of %d queries failed (%v); using %d windows of data", len(errs), len(windows), joined, withData))
-	partial := fmt.Sprintf("Baseline partial failure (%s): %d of %d baseline windows could not be fetched; baseline computed from %d windows. Results may be less reliable.",
-		mode, len(errs), len(windows), withData)
+	partial := fmt.Sprintf("Baseline partial failure (%s): %d of %d baseline windows could not be fetched (%v); baseline computed from %d windows. Results may be less reliable.",
+		mode, len(errs), len(windows), joined, withData)
 	return joinNote(partial, baselineFailureAdvice(results), warningsNote), nil
 }
 
@@ -296,12 +294,12 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 
 		sendProgress(ctx, req, 1, 3, "Looking up metric descriptor")
 
-		descriptor, errRes := lookupMetricDescriptor(ctx, req, d.Querier, "metrics_snapshot", project, in.MetricType)
+		descriptor, errRes := lookupMetricDescriptor(ctx, d.Querier, project, in.MetricType)
 		if errRes != nil {
 			return errRes, nil, nil
 		}
 
-		aggSpec, errRes := resolveValidAggSpec(ctx, req, "metrics_snapshot", in.MetricType, meta)
+		aggSpec, errRes := resolveValidAggSpec(in.MetricType, meta)
 		if errRes != nil {
 			return errRes, nil, nil
 		}
@@ -324,12 +322,13 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 				return d.Querier.QueryTimeSeriesAggregated(ctx, p, aggSpec)
 			})
 
-		currentWarningsNote := reportQueryWarnings(ctx, req, "metrics_snapshot", in.MetricType, "current", current.warnings)
+		currentWarningsNote := queryWarningsNote(in.MetricType, "current", current.warnings)
 		if err := current.err; err != nil {
-			mcpLog(ctx, req, logLevelError, "metrics_snapshot", fmt.Sprintf("current window query failed: %v", err))
-			return metricQueryErrorResult(ctx, req, d.Querier, project, in.MetricType, in.Filter,
+			return metricQueryErrorResult(ctx, d.Querier, project, in.MetricType, in.Filter,
 				fmt.Sprintf("Failed to query metric: %v", err), err), nil, nil
 		}
+
+		availableLabels, labelsNote := availableLabelsFromDescriptor(ctx, d.Querier, project, in.MetricType, descriptor)
 
 		currentPoints := mergePoints(current.series)
 		if len(currentPoints) == 0 {
@@ -340,7 +339,7 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 				Unit:                     meta.Unit,
 				AutoDetected:             meta.AutoDetected,
 				NoData:                   true,
-				Note:                     joinNote(emptyWindowMessage(in.MetricType, windowStr, descriptor.Kind, in.Filter), currentWarningsNote),
+				Note:                     joinNote(emptyWindowMessage(in.MetricType, windowStr, descriptor.Kind, in.Filter), currentWarningsNote, labelsNote),
 				BaselineMode:             string(baseline.mode),
 				Trend:                    "unchanged",
 				Classification:           string(metrics.ClassInsufficientData),
@@ -355,17 +354,16 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 					From: start.Format(time.RFC3339),
 					To:   now.Format(time.RFC3339),
 				},
-				AvailableLabels: availableLabelsFromDescriptor(ctx, req, d.Querier, project, in.MetricType, descriptor),
+				AvailableLabels: availableLabels,
 			}
 			res, out := chartCallResult(r, r.withoutChart(), chartStaticURI)
 			return res, out, nil
 		}
 
 		var baselineErrNote string
-		baselineNote, err := collectBaseline(ctx, req, "metrics_snapshot", in.MetricType, baseline.mode, baselineWindows, baselineResults)
+		baselineNote, err := collectBaseline(in.MetricType, baseline.mode, baselineWindows, baselineResults)
 		var baselineStats metrics.BaselineStats
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "metrics_snapshot", fmt.Sprintf("baseline query failed: %v", err))
 			baselineErrNote = joinNote(baselineFailureNote(baseline.mode, err, baselineResults),
 				"Returning current-window snapshot with baseline_reliable=false; delta fields are not meaningful.")
 		} else {
@@ -418,7 +416,8 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 				From: start.Format(time.RFC3339),
 				To:   now.Format(time.RFC3339),
 			},
-			Note: joinNote(baselineErrNote, currentWarningsNote, baselineNote),
+			Note:            joinNote(baselineErrNote, currentWarningsNote, baselineNote, labelsNote),
+			AvailableLabels: availableLabels,
 		}
 		result.DataQuality.NonFinitePoints = current.warnings.NonFinitePoints
 
@@ -434,8 +433,6 @@ func RegisterMetricsSnapshot(s *mcp.Server, d Deps) {
 				TailRatio: f.TailRatio,
 			}
 		}
-
-		result.AvailableLabels = availableLabelsFromDescriptor(ctx, req, d.Querier, project, in.MetricType, descriptor)
 
 		result.ChartPoints = toChartPoints(currentPoints)
 		res, out := chartCallResult(result, result.withoutChart(), chartStaticURI)

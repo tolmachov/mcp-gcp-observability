@@ -32,7 +32,6 @@ func RegisterErrorsGet(s *mcp.Server, d Deps) {
 
 		result, err := d.Errors.GetErrorGroup(ctx, project, in.GroupID, limit, in.PageToken)
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "errors_get", fmt.Sprintf("get error group %s failed: %v", in.GroupID, err))
 			return gcpErrorResult(fmt.Sprintf("Failed to get error group: %v", err), err, "Verify the group_id is valid — use errors_list to find available group IDs."), nil, nil
 		}
 

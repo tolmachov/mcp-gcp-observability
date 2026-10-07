@@ -4,7 +4,7 @@ Instructions for coding agents working in this repository.
 
 ## Project
 
-Go 1.26 MCP server for Google Cloud observability: Cloud Logging, Error Reporting,
+Go 1.27 MCP server for Google Cloud observability: Cloud Logging, Error Reporting,
 Cloud Trace, Cloud Monitoring and Cloud Profiler. `main.go` loads `.env` (godotenv)
 and runs `internal.New(...).Run` — a urfave/cli v3 app with subcommands `run`
 (start the server) and `validate-registry` (check a metrics registry overlay).
@@ -44,7 +44,7 @@ make test-integration  # real GCP project + credentials required
 ```
 
 CI (`.github/workflows/ci.yml`) runs `go build`, `go vet`, `go test ./...` and
-golangci-lint v2.12.2. A change is done only when all of them pass with zero lint issues.
+golangci-lint v2.14.0. A change is done only when all of them pass with zero lint issues.
 
 ## Conventions
 

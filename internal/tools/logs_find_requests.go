@@ -48,7 +48,6 @@ func RegisterLogsFindRequests(s *mcp.Server, d Deps) {
 			Limit:      limit,
 		})
 		if err != nil {
-			mcpLog(ctx, req, logLevelError, "logs_find_requests", fmt.Sprintf("find requests failed: %v", err))
 			return gcpErrorResult(fmt.Sprintf("Failed to find requests: %v", err), err, "Verify the project_id and that the URL pattern is correct."), nil, nil
 		}
 

@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -30,9 +29,11 @@ type AvailableLabels struct {
 // availableLabelsFromDescriptor builds an AvailableLabels value from a metric
 // descriptor the handler has already fetched. GetResourceLabels loads every
 // resource type of the project in one listing, so once it fails the remaining
-// types are marked incomplete instead of repeating the failing listing.
-func availableLabelsFromDescriptor(ctx context.Context, req *mcp.CallToolRequest, querier gcpdata.MetricsQuerier, project, metricType string, desc gcpdata.MetricDescriptorBasic) *AvailableLabels {
+// types are marked incomplete instead of repeating the failing listing, and
+// the returned note says why; the note is empty otherwise.
+func availableLabelsFromDescriptor(ctx context.Context, querier gcpdata.MetricsQuerier, project, metricType string, desc gcpdata.MetricDescriptorBasic) (*AvailableLabels, string) {
 	result := &AvailableLabels{}
+	var note string
 	for _, l := range desc.Labels {
 		result.Metric = append(result.Metric, l.Key)
 	}
@@ -43,8 +44,8 @@ func availableLabelsFromDescriptor(ctx context.Context, req *mcp.CallToolRequest
 		for i, rt := range desc.MonitoredResourceTypes {
 			labels, rerr := querier.GetResourceLabels(ctx, project, rt)
 			if rerr != nil {
-				mcpLog(ctx, req, logLevelWarning, "metric_labels",
-					fmt.Sprintf("GetResourceLabels failed for type %q (metric %q): %v", rt, metricType, rerr))
+				note = fmt.Sprintf("Resource label keys of metric %q could not be fetched (%v); available_labels.resource is incomplete for %s.",
+					metricType, rerr, strings.Join(desc.MonitoredResourceTypes[i:], ", "))
 				result.IncompleteTypes = append(result.IncompleteTypes, desc.MonitoredResourceTypes[i:]...)
 				break
 			}
@@ -58,28 +59,28 @@ func availableLabelsFromDescriptor(ctx context.Context, req *mcp.CallToolRequest
 			result.Resource = nil
 		}
 	}
-	return result
+	return result, note
 }
 
 // fetchAvailableLabels loads metric-level and resource-level labels for a
-// metric type via a fresh ListMetricDescriptors RPC.
-func fetchAvailableLabels(ctx context.Context, req *mcp.CallToolRequest, querier gcpdata.MetricsQuerier, project, metricType string) *AvailableLabels {
+// metric type via a fresh ListMetricDescriptors RPC. The labels are nil when
+// the metric has no descriptor or the listing failed; the note says why
+// labels are missing or incomplete, and is empty otherwise.
+func fetchAvailableLabels(ctx context.Context, querier gcpdata.MetricsQuerier, project, metricType string) (*AvailableLabels, string) {
 	filter := fmt.Sprintf(`metric.type = "%s"`, gcpdata.EscapeFilterValue(metricType))
 	descs, err := querier.ListMetricDescriptors(ctx, project, filter, 1)
 	if err != nil {
-		mcpLog(ctx, req, logLevelWarning, "metric_labels",
-			fmt.Sprintf("ListMetricDescriptors failed for %q in %q: %v", metricType, project, err))
-		return nil
+		return nil, fmt.Sprintf("Listing the descriptor of metric %q failed: %v.", metricType, err)
 	}
 	if len(descs) == 0 {
-		return nil
+		return nil, ""
 	}
 	desc := descs[0]
 	basic := gcpdata.MetricDescriptorBasic{
 		Labels:                 desc.Labels,
 		MonitoredResourceTypes: desc.MonitoredResourceTypes,
 	}
-	return availableLabelsFromDescriptor(ctx, req, querier, project, metricType, basic)
+	return availableLabelsFromDescriptor(ctx, querier, project, metricType, basic)
 }
 
 var invalidFilterErrRe = regexp.MustCompile(`(?i)filter does not specify a valid combination`)
@@ -97,10 +98,11 @@ func isInvalidFilterError(err error) bool {
 	return invalidFilterErrRe.MatchString(err.Error())
 }
 
-func enrichInvalidFilterError(ctx context.Context, req *mcp.CallToolRequest, querier gcpdata.MetricsQuerier, project, metricType, labelFilter string, origErr error) string {
-	labels := fetchAvailableLabels(ctx, req, querier, project, metricType)
+func enrichInvalidFilterError(ctx context.Context, querier gcpdata.MetricsQuerier, project, metricType, labelFilter string, origErr error) string {
+	labels, labelsNote := fetchAvailableLabels(ctx, querier, project, metricType)
 	if labels == nil {
-		return fmt.Sprintf("Failed to query metric: %v\n\n(Could not fetch label descriptors for %q to suggest a fix.)", origErr, metricType)
+		return fmt.Sprintf("Failed to query metric: %v\n\n(%s)", origErr,
+			joinNote(fmt.Sprintf("Could not fetch label descriptors for %q to suggest a fix.", metricType), labelsNote))
 	}
 
 	var b strings.Builder
@@ -126,6 +128,9 @@ func enrichInvalidFilterError(ctx context.Context, req *mcp.CallToolRequest, que
 		b.WriteString("  resource.labels: (none)\n")
 	}
 
+	if labelsNote != "" {
+		b.WriteString("\nNote: " + labelsNote + "\n")
+	}
 	if hint := filterMisplaceHint(labelFilter, labels); hint != "" {
 		b.WriteString("\nHint: " + hint + "\n")
 	}
