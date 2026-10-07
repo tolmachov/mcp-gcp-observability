@@ -20,49 +20,39 @@ const maxRegistrationBody = 64 << 10
 func (a *AuthServer) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var meta oauthex.ClientRegistrationMetadata
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRegistrationBody)).Decode(&meta); err != nil {
-		a.registrationError(w, "invalid_client_metadata", "request body is not valid client metadata JSON", err.Error())
+		a.registrationError(w, "invalid_client_metadata", "invalid_client_metadata_json", "request body is not valid client metadata JSON", err.Error())
 		return
 	}
 	if len(meta.RedirectURIs) == 0 {
-		a.registrationError(w, "invalid_redirect_uri", "at least one redirect_uri is required", "")
+		a.registrationError(w, "invalid_redirect_uri", "missing_redirect_uri", "at least one redirect_uri is required", "")
 		return
 	}
 	for _, u := range meta.RedirectURIs {
 		if !a.policy.allowed(u) {
-			a.registrationError(w, "invalid_redirect_uri",
+			a.registrationError(w, "invalid_redirect_uri", "redirect_uri_not_allowed",
 				"redirect_uri is not allowed: use a loopback http URI or ask the server operator to allowlist it", u)
 			return
 		}
 	}
 	for _, gt := range meta.GrantTypes {
 		if gt != "authorization_code" && gt != "refresh_token" {
-			a.registrationError(w, "invalid_client_metadata", "unsupported grant_type", gt)
+			a.registrationError(w, "invalid_client_metadata", "unsupported_grant_type", "unsupported grant_type", gt)
 			return
 		}
 	}
 	for _, rt := range meta.ResponseTypes {
 		if rt != "code" {
-			a.registrationError(w, "invalid_client_metadata", "unsupported response_type", rt)
+			a.registrationError(w, "invalid_client_metadata", "unsupported_response_type", "unsupported response_type", rt)
 			return
 		}
 	}
 
 	now := a.now()
-	clientID, err := a.sealer.signClientID(clientIDClaims{
+	clientID := a.sealer.signClientID(clientIDClaims{
 		RedirectURIs: meta.RedirectURIs,
 		ClientName:   meta.ClientName,
 		IssuedAt:     now.Unix(),
 	})
-	if err != nil {
-		// Server fault, not the client's metadata: report it as such so
-		// nobody burns time "fixing" valid metadata.
-		a.logger.Error("signing client_id failed", "err", err)
-		a.writeJSON(w, http.StatusInternalServerError, &oauthex.ClientRegistrationError{
-			ErrorCode:        "server_error",
-			ErrorDescription: "internal error, retry later",
-		})
-		return
-	}
 
 	// Echo the metadata back with the values this server enforces.
 	meta.TokenEndpointAuthMethod = "none"
@@ -85,26 +75,33 @@ func (a *AuthServer) parseClientID(clientID string) (*clientIDClaims, error) {
 	return &claims, nil
 }
 
-// registrationError writes an RFC 7591 §3.2.2 error response. reason is an
-// application-owned constant and goes to the HTTP rejection diagnostic; value
+// registrationError writes an RFC 7591 §3.2.2 error response. reason is the
+// static class the HTTP rejection diagnostic records and description the
+// client-facing error_description, both application-owned constants; value
 // is the offending client metadata (public, never a credential), logged
 // separately so an operator can see what a client actually sent.
-func (a *AuthServer) registrationError(w http.ResponseWriter, code, reason, value string) {
-	httpdiag.Reject(w, code, reason)
-	description := reason
+func (a *AuthServer) registrationError(w http.ResponseWriter, code, reason, description, value string) {
 	if value != "" {
 		a.logger.Warn("client registration rejected", "oauth_error", code, "reason", reason, "value", value)
-		description = fmt.Sprintf("%s: %q", reason, value)
+		description = fmt.Sprintf("%s: %q", description, value)
 	}
-	a.writeJSON(w, http.StatusBadRequest, &oauthex.ClientRegistrationError{
+	a.writeOAuthError(w, http.StatusBadRequest, code, reason, &oauthex.ClientRegistrationError{
 		ErrorCode:        code,
 		ErrorDescription: description,
 	})
 }
 
-// writeJSON writes v as a JSON response with the given status. Encode
-// failures cannot be reported to the client (headers are out) but are logged:
-// a marshal bug must not be permanently invisible.
+// writeOAuthError writes an OAuth error body with an error status, recording
+// its code and static reason class for the HTTP rejection diagnostic.
+func (a *AuthServer) writeOAuthError(w http.ResponseWriter, status int, code, reason string, body any) {
+	httpdiag.RejectOAuth(w, code, reason)
+	a.writeJSON(w, status, body)
+}
+
+// writeJSON writes v as a JSON response with the given status; error
+// responses go through writeOAuthError so they carry a rejection reason.
+// Encode failures cannot be reported to the client (headers are out) but are
+// logged: a marshal bug must not be permanently invisible.
 func (a *AuthServer) writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

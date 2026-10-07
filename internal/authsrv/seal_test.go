@@ -33,8 +33,7 @@ func TestSealedArtifactsRoundTripAndSeparateKinds(t *testing.T) {
 	s := testSealer(t)
 	now := time.Now()
 	in := accessClaims{Subject: "sub", FamilyID: "family", GoogleAccessToken: "g", IssuedAt: now.Unix(), ExpiresAt: now.Add(time.Hour).Unix()}
-	blob, err := sealBlob(s, accessBlob, in)
-	require.NoError(t, err)
+	blob := sealBlob(s, accessBlob, in)
 	assert.True(t, strings.HasPrefix(blob, "mcp_at_v2_"))
 	out, err := openBlob(s, accessBlob, blob, now)
 	require.NoError(t, err)
@@ -47,10 +46,9 @@ func TestStateExpiryAndKeyRotation(t *testing.T) {
 	now := time.Now()
 	oldKey, newKey := testKey(t), testKey(t)
 	old := testSealer(t, oldKey)
-	blob, err := sealBlob(old, stateBlob, stateClaims{ClientID: "c", IssuedAt: now.Unix()})
-	require.NoError(t, err)
+	blob := sealBlob(old, stateBlob, stateClaims{ClientID: "c", IssuedAt: now.Unix()})
 	rotated := testSealer(t, newKey, oldKey)
-	_, err = openBlob(rotated, stateBlob, blob, now)
+	_, err := openBlob(rotated, stateBlob, blob, now)
 	require.NoError(t, err)
 	dropped := testSealer(t, newKey)
 	_, err = openBlob(dropped, stateBlob, blob, now)
@@ -61,8 +59,7 @@ func TestStateExpiryAndKeyRotation(t *testing.T) {
 
 func TestClientIDVersionAndSignature(t *testing.T) {
 	s := testSealer(t)
-	id, err := s.signClientID(clientIDClaims{RedirectURIs: []string{"http://localhost/cb"}, IssuedAt: time.Now().Unix()})
-	require.NoError(t, err)
+	id := s.signClientID(clientIDClaims{RedirectURIs: []string{"http://localhost/cb"}, IssuedAt: time.Now().Unix()})
 	assert.True(t, strings.HasPrefix(id, "mcp_cid_v2_"))
 	var claims clientIDClaims
 	require.NoError(t, s.verifyClientID(id, &claims))

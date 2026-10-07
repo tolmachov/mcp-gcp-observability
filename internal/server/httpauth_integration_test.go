@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -54,7 +53,7 @@ func newAuthedMCPTestServer(t *testing.T, variantID string) (*httptest.Server, *
 		}
 	})
 
-	handler := auth.RequireBearerToken(poolTestVerifier(), nil)(pool)
+	handler := poolBearer(poolTestVerifier())(pool)
 	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)
 	return ts, pool

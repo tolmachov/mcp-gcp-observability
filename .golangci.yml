@@ -17,8 +17,16 @@ linters:
     - gosec
     - unconvert
     - unparam
+    - forbidigo
 
   settings:
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: ^http\.Error$
+          msg: use httpdiag.Error so the rejection records its reason
+
+
     errorlint:
       errorf: true
       errorf-multi: true
@@ -49,13 +57,19 @@ linters:
   exclusions:
     rules:
       # Test files legitimately write world-readable fixture files, read paths
-      # built from test-local variables, use fixed-argument helpers, and call
-      # SDK methods directly. These checks add only noise there.
+      # built from test-local variables, use fixed-argument helpers, call
+      # SDK methods directly, and stand in for SDK handlers with http.Error.
+      # These checks add only noise there.
       - path: _test\.go
         linters:
           - gosec
           - unparam
           - wrapcheck
+          - forbidigo
+      # httpdiag.Error is the one place allowed to call http.Error.
+      - path: internal/httpdiag/
+        linters:
+          - forbidigo
 
 issues:
   max-issues-per-linter: 0

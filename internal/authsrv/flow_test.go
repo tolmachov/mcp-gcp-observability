@@ -277,7 +277,7 @@ func TestFullAuthorizationFlow(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "dev@example.com", extra.Email)
 	assert.Equal(t, "ya29.user-token", extra.GoogleAccessToken)
-	assert.False(t, info.Expiration.IsZero())
+	assert.True(t, info.Expiration.IsZero(), "expiry is the verifier's alone; the SDK must not re-check it")
 
 	// Refresh grant yields a fresh pair wrapping the refreshed Google token.
 	resp, err := http.PostForm(ts.URL+"/token", url.Values{
@@ -609,22 +609,26 @@ func TestVerifierRejections(t *testing.T) {
 	t.Run("garbage token", func(t *testing.T) {
 		_, err := a.verifyAccessToken(context.Background(), "mcp_at_garbage")
 		assert.ErrorIs(t, err, auth.ErrInvalidToken)
+		assert.Equal(t, "invalid_access_token", rejectionReason(t, err))
 	})
 	t.Run("refresh token is not an access token", func(t *testing.T) {
 		_, err := a.verifyAccessToken(context.Background(), tr.RefreshToken)
 		assert.ErrorIs(t, err, auth.ErrInvalidToken)
+		assert.Equal(t, "invalid_access_token", rejectionReason(t, err))
 	})
 	t.Run("expired token", func(t *testing.T) {
 		a.now = func() time.Time { return time.Now().Add(2 * time.Hour) }
 		t.Cleanup(func() { a.now = time.Now })
 		_, err := a.verifyAccessToken(context.Background(), tr.AccessToken)
 		assert.ErrorIs(t, err, auth.ErrInvalidToken)
+		assert.Equal(t, "access_token_expired", rejectionReason(t, err))
 	})
 	t.Run("domain removed from allowlist", func(t *testing.T) {
 		a.cfg.AllowedDomains = []string{"other.example"}
 		t.Cleanup(func() { a.cfg.AllowedDomains = []string{"example.com"} })
 		_, err := a.verifyAccessToken(context.Background(), tr.AccessToken)
 		assert.ErrorIs(t, err, auth.ErrInvalidToken)
+		assert.Equal(t, "domain_not_allowed", rejectionReason(t, err))
 	})
 
 	// The grant checks are the only thing that cuts off an access token that
@@ -649,6 +653,7 @@ func TestVerifierRejections(t *testing.T) {
 		mutateGrant(t, func(grants map[string]grantRecord) { delete(grants, familyID) })
 		_, err := a.verifyAccessToken(context.Background(), tr.AccessToken)
 		assert.ErrorIs(t, err, auth.ErrInvalidToken)
+		assert.Equal(t, "grant_not_found", rejectionReason(t, err))
 	})
 	t.Run("grant expired", func(t *testing.T) {
 		mutateGrant(t, func(grants map[string]grantRecord) {
@@ -658,6 +663,7 @@ func TestVerifierRejections(t *testing.T) {
 		})
 		_, err := a.verifyAccessToken(context.Background(), tr.AccessToken)
 		assert.ErrorIs(t, err, auth.ErrInvalidToken)
+		assert.Equal(t, "grant_inactive", rejectionReason(t, err))
 	})
 	t.Run("grant revoked", func(t *testing.T) {
 		_, err := a.verifyAccessToken(context.Background(), tr.AccessToken)
@@ -668,6 +674,7 @@ func TestVerifierRejections(t *testing.T) {
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 		_, err = a.verifyAccessToken(context.Background(), tr.AccessToken)
 		assert.ErrorIs(t, err, auth.ErrInvalidToken)
+		assert.Equal(t, "grant_inactive", rejectionReason(t, err))
 	})
 }
 

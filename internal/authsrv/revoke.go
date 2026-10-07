@@ -22,7 +22,7 @@ func (a *AuthServer) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	r.Body = http.MaxBytesReader(w, r.Body, maxFormBody)
 	if err := r.ParseForm(); err != nil {
-		a.tokenError(w, http.StatusBadRequest, "invalid_request", "malformed form body")
+		a.tokenError(w, http.StatusBadRequest, "invalid_request", "malformed_form_body", "malformed form body")
 		return
 	}
 	token := r.PostFormValue("token")
@@ -65,7 +65,7 @@ func (a *AuthServer) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		if err := a.idp.Revoke(r.Context(), googleToken); err != nil {
 			a.logger.Warn("upstream revocation failed, telling client to retry", "email", email, "err", err)
 			w.Header().Set("Retry-After", "5")
-			a.tokenError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "upstream revocation failed, retry")
+			a.tokenError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "upstream_revocation_failed", "upstream revocation failed, retry")
 			return
 		}
 	}

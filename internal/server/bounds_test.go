@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"math"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -20,28 +22,36 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
+	"github.com/tolmachov/mcp-gcp-observability/internal/httpdiag/httpdiagtest"
 )
 
-func TestRequestBodyLimitReturns413(t *testing.T) {
+func TestRequestBodyLimitRejections(t *testing.T) {
 	called := false
-	handler := limitRequestBody(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
+	limited := limitRequestBody(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
 	for _, tc := range []struct {
 		name    string
+		body    io.Reader
 		chunked bool
+		status  int
+		reason  string
 	}{
-		{name: "content length"},
-		{name: "chunked", chunked: true},
+		{"content length", strings.NewReader(strings.Repeat("x", maxMCPRequestBytes+1)), false,
+			http.StatusRequestEntityTooLarge, "request_body_too_large"},
+		{"chunked", strings.NewReader(strings.Repeat("x", maxMCPRequestBytes+1)), true,
+			http.StatusRequestEntityTooLarge, "request_body_too_large"},
+		{"read failure", iotest.ErrReader(errors.New("connection reset")), true,
+			http.StatusBadRequest, "request_body_read_failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			called = false
-			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(strings.Repeat("x", maxMCPRequestBytes+1)))
+			req := httptest.NewRequest(http.MethodPost, "/", tc.body)
 			if tc.chunked {
 				req.ContentLength = -1
 			}
-			w := httptest.NewRecorder()
-			handler.ServeHTTP(w, req)
-			assert.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
+			w, reason := httpdiagtest.Serve(t, limited, req)
+			assert.Equal(t, tc.status, w.Code)
 			assert.False(t, called)
+			assert.Equal(t, tc.reason, reason)
 		})
 	}
 }

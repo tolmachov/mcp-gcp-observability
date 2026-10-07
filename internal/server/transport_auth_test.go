@@ -23,6 +23,7 @@ import (
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/authsrv"
 	"github.com/tolmachov/mcp-gcp-observability/internal/httpdiag"
+	"github.com/tolmachov/mcp-gcp-observability/internal/httpdiag/httpdiagtest"
 )
 
 // fakeServerIdP is a minimal authsrv.IdentityProvider for wiring tests.
@@ -90,7 +91,7 @@ func newWiringServerWithLogger(t *testing.T, logger *slog.Logger) (*httptest.Ser
 	pool := newUserPool(context.Background(), b.builder(), discardLogger())
 	t.Cleanup(func() { _ = pool.Close() })
 
-	handler := httpdiag.Handler(logger, diagnosticRoutes, withCrossOriginProtection(limitRequestBody(buildAuthMux(as, cfg.IssuerURL, pool)), authCORSBypassPaths...))
+	handler := httpdiag.Handler(logger, diagnosticRoutes, withCrossOriginProtection(limitRequestBody(buildAuthMux(as, pool)), authCORSBypassPaths...))
 	ts.Config.Handler = handler
 	return ts, b
 }
@@ -100,7 +101,7 @@ func newWiringServerWithLogger(t *testing.T, logger *slog.Logger) (*httptest.Ser
 // not by the bearer-protected MCP catch-all.
 func TestMetadataCORSPreflight(t *testing.T) {
 	var logs bytes.Buffer
-	ts, _ := newWiringServerWithLogger(t, slog.New(slog.NewJSONHandler(&logs, nil)))
+	ts, _ := newWiringServerWithLogger(t, httpdiagtest.Logger(&logs))
 	for _, path := range []string{
 		authsrv.ProtectedResourceMetadataPath, authsrv.AuthServerMetadataPath,
 		authsrv.OpenIDConfigurationPath, authsrv.JWKSPath,
@@ -125,7 +126,7 @@ func TestMetadataCORSPreflight(t *testing.T) {
 
 func TestOAuthRejectionDiagnostics(t *testing.T) {
 	var logs bytes.Buffer
-	ts, _ := newWiringServerWithLogger(t, slog.New(slog.NewJSONHandler(&logs, nil)))
+	ts, _ := newWiringServerWithLogger(t, httpdiagtest.Logger(&logs))
 	resp, err := http.PostForm(ts.URL+"/token?secret=hidden-query", url.Values{
 		"grant_type": {"refresh_token"}, "refresh_token": {"legacy-hidden-refresh-token"},
 		"client_id": {"hidden-client-id"},
@@ -133,27 +134,81 @@ func TestOAuthRejectionDiagnostics(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close() //nolint:errcheck // test cleanup
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
-	var event map[string]any
-	require.NoError(t, json.Unmarshal(logs.Bytes(), &event))
+	event := httpdiagtest.Event(t, &logs)
 	assert.Equal(t, "invalid_grant", event["oauth_error"])
-	assert.Equal(t, "invalid refresh token", event["reason"])
+	assert.Equal(t, "invalid_refresh_token", event["reason"])
 	assert.Equal(t, "/token", event["route"])
 	assert.Equal(t, map[string]any{"id": resp.Header.Get("X-Request-ID")}, event["logging.googleapis.com/operation"])
 	assert.NotContains(t, logs.String(), "hidden")
 }
 
+// TestOwnRejectionReasons pins that rejections written by our own middleware
+// and handlers carry the reason they were marked with, not one guessed from
+// the response body.
+func TestOwnRejectionReasons(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+		header map[string]string
+		status int
+		reason string
+	}{
+		{"body too large", http.MethodPost, "/", strings.Repeat("x", maxMCPRequestBytes+1), nil,
+			http.StatusRequestEntityTooLarge, "request_body_too_large"},
+		{"cross-origin", http.MethodPost, "/", "{}", map[string]string{"Origin": "https://evil.example"},
+			http.StatusForbidden, "cross_origin_rejected"},
+		{"no bearer token", http.MethodPost, "/", "{}", nil,
+			http.StatusUnauthorized, "missing_bearer_token"},
+		{"authorize error page", http.MethodGet, authsrv.AuthorizePath, "", nil,
+			http.StatusBadRequest, "unknown_client"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			ts, _ := newWiringServerWithLogger(t, httpdiagtest.Logger(&logs))
+			req, err := http.NewRequestWithContext(t.Context(), tt.method, ts.URL+tt.path, strings.NewReader(tt.body))
+			require.NoError(t, err)
+			for k, v := range tt.header {
+				req.Header.Set(k, v)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close() //nolint:errcheck // test cleanup
+			require.Equal(t, tt.status, resp.StatusCode)
+			event := httpdiagtest.Event(t, &logs)
+			assert.Equal(t, tt.reason, event["reason"])
+		})
+	}
+}
+
+func TestCrossOriginRejectionKeepsStdlibBody(t *testing.T) {
+	serve := func(h http.Handler) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "http://example.com/", nil)
+		req.Header.Set("Sec-Fetch-Site", "cross-site")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	stdlib := serve(http.NewCrossOriginProtection().Handler(http.NotFoundHandler()))
+	got := serve(withCrossOriginProtection(http.NotFoundHandler()))
+	assert.Equal(t, http.StatusForbidden, got.Code)
+	assert.Equal(t, stdlib.Code, got.Code)
+	assert.Equal(t, stdlib.Body.String(), got.Body.String())
+}
+
 func TestRegisterRejectionDiagnostics(t *testing.T) {
 	var logs bytes.Buffer
-	ts, _ := newWiringServerWithLogger(t, slog.New(slog.NewJSONHandler(&logs, nil)))
+	ts, _ := newWiringServerWithLogger(t, httpdiagtest.Logger(&logs))
 	resp, err := http.Post(ts.URL+"/register", "application/json",
 		strings.NewReader(`{"redirect_uris":["https://portal.example/servers-callback"]}`))
 	require.NoError(t, err)
 	defer resp.Body.Close() //nolint:errcheck // test cleanup
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
-	var event map[string]any
-	require.NoError(t, json.Unmarshal(logs.Bytes(), &event))
+	event := httpdiagtest.Event(t, &logs)
 	assert.Equal(t, "invalid_redirect_uri", event["oauth_error"])
-	assert.Equal(t, "redirect_uri is not allowed: use a loopback http URI or ask the server operator to allowlist it", event["reason"])
+	assert.Equal(t, "redirect_uri_not_allowed", event["reason"])
 	assert.Equal(t, "/register", event["route"])
 }
 
@@ -163,15 +218,14 @@ func TestRejectionDiagnosticsNameEveryServedRoute(t *testing.T) {
 	for _, path := range authsrv.RoutePaths {
 		t.Run(path, func(t *testing.T) {
 			var logs bytes.Buffer
-			ts, _ := newWiringServerWithLogger(t, slog.New(slog.NewJSONHandler(&logs, nil)))
+			ts, _ := newWiringServerWithLogger(t, httpdiagtest.Logger(&logs))
 			req, err := http.NewRequest(http.MethodPut, ts.URL+path, nil)
 			require.NoError(t, err)
 			resp, err := ts.Client().Do(req)
 			require.NoError(t, err)
 			defer resp.Body.Close() //nolint:errcheck // test cleanup
 			require.GreaterOrEqual(t, resp.StatusCode, 400)
-			var event map[string]any
-			require.NoError(t, json.Unmarshal(logs.Bytes(), &event))
+			event := httpdiagtest.Event(t, &logs)
 			assert.Equal(t, path, event["route"])
 		})
 	}

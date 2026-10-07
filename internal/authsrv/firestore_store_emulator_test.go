@@ -24,8 +24,7 @@ func TestFirestoreStoreEmulator(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	now := time.Now().UTC()
-	suffix, err := randomOpaque(8)
-	require.NoError(t, err)
+	suffix := randomOpaque(8)
 	stateKey := "state-" + suffix
 	require.NoError(t, store.PutAuthorizationState(ctx, stateKey, authorizationStateRecord{
 		Claims: "encrypted", Status: "active", ExpiresAt: now.Add(time.Minute),

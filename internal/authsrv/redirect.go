@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+
+	"github.com/tolmachov/mcp-gcp-observability/internal/httpdiag"
 )
 
 // redirectPolicy decides which redirect URIs a client may register and use.
@@ -95,7 +97,7 @@ func matchRegistered(registered []string, raw string) bool {
 func redirectWithParams(w http.ResponseWriter, r *http.Request, redirectURI, state string, params url.Values) {
 	u, err := url.Parse(redirectURI)
 	if err != nil {
-		http.Error(w, "invalid redirect", http.StatusBadRequest)
+		httpdiag.Error(w, "invalid_redirect", "invalid redirect", http.StatusBadRequest)
 		return
 	}
 	q := u.Query()

@@ -18,24 +18,23 @@ func (a *AuthServer) handleCallback(w http.ResponseWriter, r *http.Request) {
 	rec, err := a.loadAuthorizationState(r.Context(), q.Get("state"), true)
 	switch {
 	case errors.Is(err, errBlobExpired):
-		a.renderErrorPage(w, "Login expired",
+		a.renderErrorPage(w, "login_expired", "Login expired",
 			"The login took too long. Start over from your MCP client.")
 		return
 	case err != nil && !errors.Is(err, errStateNotFound) && !errors.Is(err, errStateReplay):
 		a.logStoreFailure(r.Context(), "use_authorization_state", err)
-		a.renderErrorPageStatus(w, http.StatusServiceUnavailable, "Service unavailable",
-			"The authorization state store is unavailable. Try again later.")
+		a.renderStoreUnavailable(w)
 		return
 	case err != nil:
 		a.logger.Warn("callback state rejected", "reason", err)
-		a.renderErrorPage(w, "Invalid state",
+		a.renderErrorPage(w, "invalid_callback_state", "Invalid state",
 			"The OAuth state is missing or invalid. Start over from your MCP client.")
 		return
 	}
 	sc, err := openBlob(a.sealer, stateBlob, rec.Claims, a.now())
 	if err != nil {
 		a.logger.Error("stored OAuth state could not be decrypted", "err", err)
-		a.renderErrorPage(w, "Invalid state", "The OAuth state is invalid. Start over from your MCP client.")
+		a.renderErrorPage(w, "undecryptable_callback_state", "Invalid state", "The OAuth state is invalid. Start over from your MCP client.")
 		return
 	}
 
@@ -105,7 +104,7 @@ func (a *AuthServer) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claims, err := sealBlob(a.sealer, storedCodeBlob, codeClaims{
+	claims := sealBlob(a.sealer, storedCodeBlob, codeClaims{
 		Subject:            id.Subject,
 		Email:              id.Email,
 		Domain:             id.HostedDomain,
@@ -119,21 +118,8 @@ func (a *AuthServer) handleCallback(w http.ResponseWriter, r *http.Request) {
 		GoogleRefreshToken: tok.RefreshToken,
 		IssuedAt:           a.now().Unix(),
 	})
-	if err != nil {
-		a.logger.Error("sealing authorization code failed", "err", err)
-		redirectError(w, r, sc.RedirectURI, sc.ClientState, "server_error", "internal error")
-		return
-	}
-	familyID, err := randomOpaque(18)
-	if err != nil {
-		redirectError(w, r, sc.RedirectURI, sc.ClientState, "server_error", "internal error")
-		return
-	}
-	code, key, err := makeAuthorizationCode()
-	if err != nil {
-		redirectError(w, r, sc.RedirectURI, sc.ClientState, "server_error", "internal error")
-		return
-	}
+	familyID := randomOpaque(18)
+	code, key := makeAuthorizationCode()
 	if err := a.store.PutCode(r.Context(), key, codeRecord{Claims: claims, Status: "active", FamilyID: familyID, ExpiresAt: a.now().Add(codeTTL)}); err != nil {
 		a.logStoreFailure(r.Context(), "put_code", err)
 		redirectError(w, r, sc.RedirectURI, sc.ClientState, "server_error", "authorization state store unavailable")

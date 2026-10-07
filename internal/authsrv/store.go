@@ -62,12 +62,10 @@ type oauthStateStore interface {
 	Close() error
 }
 
-func randomOpaque(bytes int) (string, error) {
+func randomOpaque(bytes int) string {
 	b := make([]byte, bytes)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("generating random OAuth value: %w", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(b), nil
+	_, _ = rand.Read(b) // crypto/rand.Read never returns an error
+	return base64.RawURLEncoding.EncodeToString(b)
 }
 
 func tokenHash(raw string) string {
@@ -80,22 +78,14 @@ func secretMatches(raw, expected string) bool {
 	return subtle.ConstantTimeCompare([]byte(actual), []byte(expected)) == 1
 }
 
-func makeAuthorizationCode() (raw, key string, err error) {
-	secret, err := randomOpaque(32)
-	if err != nil {
-		return "", "", err
-	}
-	raw = prefixCode + secret
-	return raw, tokenHash(raw), nil
+func makeAuthorizationCode() (raw, key string) {
+	raw = prefixCode + randomOpaque(32)
+	return raw, tokenHash(raw)
 }
 
-func makeRefreshToken(familyID string) (raw, hash string, err error) {
-	secret, err := randomOpaque(32)
-	if err != nil {
-		return "", "", err
-	}
-	raw = prefixRefresh + familyID + "." + secret
-	return raw, tokenHash(secret), nil
+func makeRefreshToken(familyID string) (raw, hash string) {
+	secret := randomOpaque(32)
+	return prefixRefresh + familyID + "." + secret, tokenHash(secret)
 }
 
 func parseRefreshToken(raw string) (familyID, secret string, err error) {

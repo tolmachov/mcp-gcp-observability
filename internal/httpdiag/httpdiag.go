@@ -53,10 +53,22 @@ func ObserveBody(r *http.Request, body []byte) {
 	}
 }
 
-// Reject attaches an application-owned error code and static explanation to
-// the enclosing HTTP diagnostic. Callers must never pass user input or errors
-// from upstream services as the explanation.
-func Reject(w http.ResponseWriter, code, reason string) {
+// Error is http.Error for one of our own rejections: it records reason with
+// Reject and writes msg as the plain-text body.
+func Error(w http.ResponseWriter, reason, msg string, status int) {
+	Reject(w, reason)
+	http.Error(w, msg, status)
+}
+
+// Reject attaches the static reason class of one of our own rejections to
+// the enclosing HTTP diagnostic, so it is never guessed from the response
+// body. Use it directly only where the body is not plain text; otherwise use
+// Error. Callers must never pass user input or errors from upstream services.
+func Reject(w http.ResponseWriter, reason string) { RejectOAuth(w, "", reason) }
+
+// RejectOAuth is Reject for an OAuth error response, additionally recording
+// its RFC 6749 / RFC 7591 error code.
+func RejectOAuth(w http.ResponseWriter, code, reason string) {
 	for {
 		if rw, ok := w.(*responseWriter); ok {
 			rw.code, rw.reason = code, reason
@@ -275,10 +287,16 @@ var rpcRejectionReasons = []struct {
 	{jsonrpc.CodeInvalidRequest, "", "invalid_request"},
 }
 
-// rejectionReasons classifies plain-text bodies by their static prefix.
+// rejectionReasons classifies the plain-text bodies the go-sdk stateless
+// streamable handler can write in this server. Our own rejections are marked with Reject where they
+// happen and never appear here. SDK bodies our configuration rules out have
+// no row: stateful-only ones (sessions, GET streams, replay) because both MCP
+// handlers run with Stateless: true, its body-limit and read errors because
+// limitRequestBody runs first, connection failures because getServer never
+// returns nil and a fresh transport without an EventStore always connects,
+// and bearer-token ones because authsrv marks every rejection it delegates.
 var rejectionReasons = []struct{ prefix, reason string }{
 	{"Accept must contain both", "accept_requires_json_and_sse"},
-	{"Accept must contain 'text/event-stream'", "accept_requires_sse"},
 	{"Content-Type must be", "unsupported_content_type"},
 	{"Bad Request: Unsupported protocol version", "unsupported_protocol_version"},
 	{"JSON-RPC batching is not supported", "jsonrpc_batch_not_supported"},
@@ -289,30 +307,6 @@ var rejectionReasons = []struct{ prefix, reason string }{
 	{"invalid request: missing required", "request_missing_params"},
 	{"POST requires a non-empty body", "empty_request_body"},
 	{"can't send Last-Event-ID for POST", "last_event_id_on_post"},
-	{"malformed Last-Event-ID", "malformed_last_event_id"},
-	{"Bad Request: DELETE requires", "delete_missing_session_id"},
-	{"Bad Request: GET requires", "get_missing_session_id"},
-	{"no bearer token", "missing_bearer_token"},
-	{"invalid token:", "invalid_access_token"},
-	{"token expired", "access_token_expired"},
-	{"token missing expiration", "access_token_missing_expiration"},
-	{"insufficient scope", "insufficient_scope"},
-	{"request body exceeds", "request_body_too_large"},
-	{"failed to read", "request_body_read_failed"},
-	{"cross-origin request detected", "cross_origin_rejected"},
 	{"Forbidden: invalid Host header", "invalid_host"},
 	{"Method Not Allowed", "method_not_allowed"},
-	{"Method not allowed", "method_not_allowed"},
-	{"unsupported method", "method_not_allowed"},
-	{"session not found", "session_not_found"},
-	{"session user mismatch", "session_user_mismatch"},
-	{"session is closing", "session_closing"},
-	{"no server available", "no_server_available"},
-	{"failed connection", "mcp_connection_failed"},
-	{"transport not connected", "transport_not_connected"},
-	{"stream replay unsupported", "stream_replay_unsupported"},
-	{"stream ID conflicts", "stream_conflict"},
-	{"failed to replay events", "stream_replay_failed"},
-	{"storing stream:", "stream_store_failed"},
-	{"OAuth state store unavailable", "oauth_store_unavailable"},
 }

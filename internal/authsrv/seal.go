@@ -81,22 +81,28 @@ func (s *sealer) aad(kind blobKind) []byte {
 	return []byte(s.issuer + "|" + string(kind))
 }
 
-// sealBlob JSON-encodes v and returns prefix + base64url(keyID || nonce || ciphertext).
-func sealBlob[T issuedAtCarrier](s *sealer, spec blobSpec[T], v T) (string, error) {
-	payload, err := json.Marshal(v)
+// mustMarshal JSON-encodes v, one of this package's claims or metadata
+// structs. They hold no channels, functions, floats or fallible marshalers,
+// so encoding cannot fail; a failure is a programming error.
+func mustMarshal(what string, v any) []byte {
+	b, err := json.Marshal(v)
 	if err != nil {
-		return "", fmt.Errorf("encoding %s payload: %w", spec.kind, err)
+		panic(fmt.Sprintf("encoding %s: %v", what, err))
 	}
+	return b
+}
+
+// sealBlob JSON-encodes v and returns prefix + base64url(keyID || nonce || ciphertext).
+func sealBlob[T issuedAtCarrier](s *sealer, spec blobSpec[T], v T) string {
+	payload := mustMarshal(string(spec.kind), v)
 	k := s.ring.sealKey()
 	nonce := make([]byte, k.aead.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return "", fmt.Errorf("generating nonce: %w", err)
-	}
+	_, _ = rand.Read(nonce) // crypto/rand.Read never returns an error
 	buf := make([]byte, 0, 1+len(nonce)+len(payload)+k.aead.Overhead())
 	buf = append(buf, k.id)
 	buf = append(buf, nonce...)
 	buf = k.aead.Seal(buf, nonce, payload, s.aad(spec.kind))
-	return spec.prefix + base64.RawURLEncoding.EncodeToString(buf), nil
+	return spec.prefix + base64.RawURLEncoding.EncodeToString(buf)
 }
 
 // openBlob reverses sealBlob and enforces the spec's TTL. Every failure
@@ -135,15 +141,12 @@ func openBlob[T issuedAtCarrier](s *sealer, spec blobSpec[T], blob string, now t
 // signClientID JSON-encodes v and returns mcp_cid_ + base64url(payload) +
 // "." + base64url(HMAC). The DCR client_id is public (readable) but must be
 // unforgeable.
-func (s *sealer) signClientID(v clientIDClaims) (string, error) {
-	payload, err := json.Marshal(v)
-	if err != nil {
-		return "", fmt.Errorf("encoding %s payload: %w", kindClientID, err)
-	}
+func (s *sealer) signClientID(v clientIDClaims) string {
+	payload := mustMarshal(string(kindClientID), v)
 	k := s.ring.sealKey()
 	mac := s.mac(k, kindClientID, payload)
 	return prefixClientID + base64.RawURLEncoding.EncodeToString(payload) + "." +
-		base64.RawURLEncoding.EncodeToString(mac), nil
+		base64.RawURLEncoding.EncodeToString(mac)
 }
 
 // verifyClientID reverses signClientID, trying every ring key. Any failure

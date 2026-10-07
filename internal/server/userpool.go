@@ -15,6 +15,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/authsrv"
+	"github.com/tolmachov/mcp-gcp-observability/internal/httpdiag"
 )
 
 const (
@@ -145,7 +146,7 @@ func (p *userPool) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	user, okUser := authsrv.Identity(r.Context())
 	ts, okTS := authsrv.GoogleTokenSource(r.Context())
 	if !okUser || !okTS || user.Subject == "" {
-		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+		httpdiag.Error(w, "unauthenticated", "unauthenticated", http.StatusUnauthorized)
 		return
 	}
 
@@ -157,14 +158,14 @@ func (p *userPool) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, errPoolFull):
 		p.logger.Warn("user pool at capacity, rejecting request", "user", user.Email, "cap", p.maxUsers)
 		w.Header().Set("Retry-After", "60")
-		http.Error(w, "server is at capacity, retry later", http.StatusServiceUnavailable)
+		httpdiag.Error(w, "user_pool_at_capacity", "server is at capacity, retry later", http.StatusServiceUnavailable)
 		return
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		// The caller went away while waiting for the build; nothing to send.
 		return
 	case err != nil:
 		p.logger.Error("building user assembly failed", "user", user.Email, "err", err)
-		http.Error(w, "failed to initialize GCP clients", http.StatusServiceUnavailable)
+		httpdiag.Error(w, "user_assembly_failed", "failed to initialize GCP clients", http.StatusServiceUnavailable)
 		return
 	}
 	select {
@@ -173,7 +174,7 @@ func (p *userPool) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		p.logger.Warn("user_tool_saturation", "user", user.Email, "limit", maxConcurrentUserCalls)
 		w.Header().Set("Retry-After", "1")
-		http.Error(w, "too many concurrent requests", http.StatusTooManyRequests)
+		httpdiag.Error(w, "user_concurrency_limit", "too many concurrent requests", http.StatusTooManyRequests)
 		return
 	}
 	entry.handler.ServeHTTP(w, r)

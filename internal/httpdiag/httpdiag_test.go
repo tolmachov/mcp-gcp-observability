@@ -182,3 +182,39 @@ func TestSafeMethodKeepsNewProtocolMethods(t *testing.T) {
 		assert.Equal(t, m, safeMethod(m))
 	}
 }
+
+type unwrappingWriter struct{ http.ResponseWriter }
+
+func (w unwrappingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+type opaqueWriter struct{ http.ResponseWriter }
+
+// TestRejectReachesThroughWrappers pins that a reason set behind a
+// middleware's writer wrapper reaches the diagnostic when the wrapper
+// supports Unwrap, and that the body is classified as usual when it doesn't.
+func TestRejectReachesThroughWrappers(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		wrap   func(http.ResponseWriter) http.ResponseWriter
+		reason string
+	}{
+		{"direct", func(w http.ResponseWriter) http.ResponseWriter { return w }, "own_reason"},
+		{"unwrapping wrapper", func(w http.ResponseWriter) http.ResponseWriter { return unwrappingWriter{w} }, "own_reason"},
+		{"opaque wrapper", func(w http.ResponseWriter) http.ResponseWriter { return opaqueWriter{w} }, "unclassified_http_error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			h := Handler(slog.New(slog.NewJSONHandler(&logs, nil)), nil, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				Error(tc.wrap(w), "own_reason", "private detail", http.StatusServiceUnavailable)
+			}))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", nil))
+			assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+			assert.Equal(t, "private detail\n", rec.Body.String())
+			var event map[string]any
+			require.NoError(t, json.Unmarshal(logs.Bytes(), &event))
+			assert.Equal(t, tc.reason, event["reason"])
+			assert.NotContains(t, logs.String(), "private detail")
+		})
+	}
+}

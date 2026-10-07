@@ -5,13 +5,17 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
+
+	"github.com/tolmachov/mcp-gcp-observability/internal/httpdiag/httpdiagtest"
 )
 
 // readAll drains and closes a response body.
@@ -207,11 +211,10 @@ func TestAuthorizeConfirmRejections(t *testing.T) {
 		assert.Contains(t, body, "Invalid request")
 	})
 	t.Run("expired request renders distinct error", func(t *testing.T) {
-		claims, err := sealBlob(a.sealer, stateBlob, stateClaims{
+		claims := sealBlob(a.sealer, stateBlob, stateClaims{
 			ClientID: "c", RedirectURI: "http://localhost/cb", CodeChallenge: "x",
 			IssuedAt: time.Now().Unix(),
 		})
-		require.NoError(t, err)
 		raw := prefixState + "expired-test-state"
 		require.NoError(t, a.store.PutAuthorizationState(context.Background(), tokenHash(raw), authorizationStateRecord{
 			Claims: claims, Status: "active", ExpiresAt: time.Now().Add(-time.Second),
@@ -228,6 +231,46 @@ func TestAuthorizeConfirmRejections(t *testing.T) {
 		_ = resp.Body.Close()
 		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	})
+}
+
+// TestErrorPageRejectionReasons pins the httpdiag reason each terminal error
+// page records.
+func TestErrorPageRejectionReasons(t *testing.T) {
+	a, ts := newTestServer(t, testConfig(t), happyIdP())
+	clientID := registerClient(t, ts, "http://localhost:41234/callback")
+	mux := http.NewServeMux()
+	a.Routes(mux)
+	expired := prefixState + "expired-reason-state"
+	claims := sealBlob(a.sealer, stateBlob, stateClaims{
+		ClientID: "c", RedirectURI: "http://localhost/cb", CodeChallenge: "x", IssuedAt: time.Now().Unix(),
+	})
+	require.NoError(t, a.store.PutAuthorizationState(context.Background(), tokenHash(expired), authorizationStateRecord{
+		Claims: claims, Status: "active", ExpiresAt: time.Now().Add(-time.Second),
+	}))
+	confirm := func(blob string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, AuthorizeConfirmPath, strings.NewReader(url.Values{"request": {blob}}.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		return r
+	}
+	for _, tc := range []struct {
+		name   string
+		req    *http.Request
+		reason string
+	}{
+		{"unknown client", httptest.NewRequest(http.MethodGet, AuthorizePath, nil), "unknown_client"},
+		{"unregistered redirect", httptest.NewRequest(http.MethodGet, AuthorizePath+"?"+url.Values{
+			"client_id": {clientID}, "redirect_uri": {"http://localhost:1/other"},
+		}.Encode(), nil), "invalid_redirect_uri"},
+		{"forged confirm", confirm("forged"), "invalid_authorization_request"},
+		{"expired confirm", confirm(expired), "authorization_request_expired"},
+		{"forged callback state", httptest.NewRequest(http.MethodGet, CallbackPath+"?state=forged&code=x", nil), "invalid_callback_state"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec, reason := httpdiagtest.Serve(t, mux, tc.req)
+			assert.Equal(t, http.StatusBadRequest, rec.Code)
+			assert.Equal(t, tc.reason, reason)
+		})
+	}
 }
 
 // TestRefreshRotationPassthrough pins the handling of Google's occasional
