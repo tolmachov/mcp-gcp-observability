@@ -160,15 +160,16 @@ For a new environment with no prior revision, provision the initial v2 Cloud Run
 
 See [deploy/RUNBOOK.md](deploy/RUNBOOK.md) for setup, smoke, rollback, and key-rotation procedures.
 
-HTTP rejections emit `http_request_rejected` with the status, classified reason,
-MCP method, protocol version, client family, and presence of session/MCP headers.
-OAuth token errors also include `oauth_error` and the server-owned explanation.
-`X-Request-ID` in the response matches the event's `operation.id`; `trace_id` links
-the event to the Cloud Run request trace. No bearer/refresh tokens, session IDs,
-RPC arguments, raw error bodies, or URL query parameters are logged by this
-diagnostic. Unrecognized errors are marked `unclassified_http_error` rather than
-dumping potentially sensitive response content. Successful SSE responses stream
-unchanged without diagnostic buffering.
+HTTP rejections emit `http_request_rejected` with the status, reason, MCP method,
+protocol version, client family, and presence of session/MCP headers. OAuth token
+and registration errors also include their `oauth_error` code. `X-Request-ID` in the response matches the
+event's `operation.id`; `trace_id` links the event to the Cloud Run request trace.
+No bearer/refresh tokens, session IDs, RPC arguments, raw error bodies, or URL
+query parameters are logged by this diagnostic. The server's own rejections record
+a static reason class where they happen; MCP SDK rejections are classified from
+their static message. Unrecognized errors are marked `unclassified_http_error` rather
+than dumping potentially sensitive response content. Successful SSE responses
+stream unchanged without diagnostic buffering.
 
 ## Development and verification
 

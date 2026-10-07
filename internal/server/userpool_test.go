@@ -19,6 +19,7 @@ import (
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/authsrv"
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
+	"github.com/tolmachov/mcp-gcp-observability/internal/httpdiag/httpdiagtest"
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
 
@@ -30,6 +31,13 @@ func poolTestVerifier() auth.TokenVerifier {
 		return authsrv.NewTokenInfoForTesting(
 			token, token+"@example.com", "example.com", "ya29."+token, time.Now().Add(time.Hour)), nil
 	}
+}
+
+// poolBearer puts the SDK bearer middleware in front of a fake verifier with
+// the options authsrv.RequireBearerToken uses: its TokenInfo has no
+// Expiration, because the verifier alone decides expiry.
+func poolBearer(verifier auth.TokenVerifier) func(http.Handler) http.Handler {
+	return auth.RequireBearerToken(verifier, &auth.RequireBearerTokenOptions{AllowMissingExpiration: true})
 }
 
 // countingBuilder records builds and closes per user.
@@ -88,7 +96,7 @@ func (b *countingBuilder) closeCount(email string) int {
 // newPoolServer wires verifier → pool into an httptest server.
 func newPoolServer(t *testing.T, pool *userPool) *httptest.Server {
 	t.Helper()
-	handler := auth.RequireBearerToken(poolTestVerifier(), nil)(pool)
+	handler := poolBearer(poolTestVerifier())(pool)
 	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)
 	return ts
@@ -405,7 +413,7 @@ func TestUserPoolKeysOnlyByIdentity(t *testing.T) {
 		return authsrv.NewTokenInfoForTesting(
 			sub, sub+"@example.com", "example.com", "ya29."+token, time.Now().Add(time.Hour)), nil
 	}
-	handler := auth.RequireBearerToken(verifier, nil)(pool)
+	handler := poolBearer(verifier)(pool)
 	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)
 
@@ -442,4 +450,58 @@ func TestUserAssemblyCloserReleasesProfileCache(t *testing.T) {
 			require.NoError(t, closer.Close())
 		})
 	}
+}
+
+// TestUserPoolRejectionReasons pins the httpdiag reason of every rejection
+// the pool writes itself.
+func TestUserPoolRejectionReasons(t *testing.T) {
+	serve := func(t *testing.T, h http.Handler, r *http.Request) (int, string) {
+		t.Helper()
+		rec, reason := httpdiagtest.Serve(t, h, r)
+		return rec.Code, reason
+	}
+	request := func() *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Header.Set("Authorization", "Bearer alice")
+		return r
+	}
+	bearer := poolBearer(poolTestVerifier())
+
+	t.Run("no identity", func(t *testing.T) {
+		pool := newUserPool(context.Background(), newCountingBuilder().builder(), discardLogger())
+		status, reason := serve(t, pool, httptest.NewRequest(http.MethodGet, "/", nil))
+		assert.Equal(t, http.StatusUnauthorized, status)
+		assert.Equal(t, "unauthenticated", reason)
+	})
+	t.Run("at capacity", func(t *testing.T) {
+		pool := newUserPool(context.Background(), newCountingBuilder().builder(), discardLogger())
+		pool.maxUsers = 0
+		status, reason := serve(t, bearer(pool), request())
+		assert.Equal(t, http.StatusServiceUnavailable, status)
+		assert.Equal(t, "user_pool_at_capacity", reason)
+	})
+	t.Run("build failed", func(t *testing.T) {
+		b := newCountingBuilder()
+		b.fail = true
+		pool := newUserPool(context.Background(), b.builder(), discardLogger())
+		status, reason := serve(t, bearer(pool), request())
+		assert.Equal(t, http.StatusServiceUnavailable, status)
+		assert.Equal(t, "user_assembly_failed", reason)
+	})
+	t.Run("concurrency limit", func(t *testing.T) {
+		pool := newUserPool(context.Background(), newCountingBuilder().builder(), discardLogger())
+		t.Cleanup(func() { _ = pool.Close() })
+		rec := httptest.NewRecorder()
+		bearer(pool).ServeHTTP(rec, request())
+		require.Equal(t, http.StatusOK, rec.Code)
+		pool.mu.Lock()
+		entry := pool.entries["alice"]
+		pool.mu.Unlock()
+		for range maxConcurrentUserCalls {
+			entry.calls <- struct{}{}
+		}
+		status, reason := serve(t, bearer(pool), request())
+		assert.Equal(t, http.StatusTooManyRequests, status)
+		assert.Equal(t, "user_concurrency_limit", reason)
+	})
 }

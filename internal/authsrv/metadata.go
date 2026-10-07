@@ -1,7 +1,6 @@
 package authsrv
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
@@ -83,8 +82,10 @@ func (emptyJWKS) MarshalJSON() ([]byte, error) { return []byte(`{"keys":[]}`), n
 // OAuth metadata is public, and browser-based MCP clients fetch it
 // cross-origin. Routes mounts it for OPTIONS too, so it answers the CORS
 // preflight itself; MCP clients send MCP-Protocol-Version on discovery, which
-// makes the browser preflight the GET.
+// makes the browser preflight the GET. The document is marshaled once at
+// mount time.
 func jsonMetadataHandler(v any) http.Handler {
+	body := append(mustMarshal("OAuth metadata", v), '\n')
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
@@ -94,8 +95,6 @@ func jsonMetadataHandler(v any) http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(v); err != nil {
-			http.Error(w, "encoding error", http.StatusInternalServerError)
-		}
+		_, _ = w.Write(body)
 	})
 }

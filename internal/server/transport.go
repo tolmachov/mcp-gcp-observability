@@ -10,7 +10,6 @@ import (
 	"runtime/debug"
 	"time"
 
-	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/authsrv"
@@ -42,20 +41,26 @@ func (s *Server) runStdio(ctx context.Context, runner mcpRunner) error {
 }
 
 // withCrossOriginProtection wraps handler in the stdlib cross-origin
-// protection, exempting the given path patterns.
+// protection, exempting the given path patterns. A rejection gets the stdlib's
+// own 403 body and is marked for httpdiag.
 //
-// go-sdk v1.6.0 disabled built-in cross-origin protection by default
-// (previously on, now gated behind the enableoriginverification MCPGODEBUG
-// flag until v1.8.0). Restore it explicitly via the stdlib middleware so the
-// HTTP transport is not exposed to DNS-rebinding / cross-origin attacks.
-// Re-evaluate this when upgrading go-sdk past v1.8.0, where the built-in
-// protection returns and this middleware may become redundant.
+// go-sdk turned off its default cross-origin check in v1.6.0, and v1.8.0
+// removed the enableoriginverification flag that re-enabled it. A nil
+// StreamableHTTPOptions.CrossOriginProtection now means none, and the field is
+// deprecated in favor of wrapping middleware. This middleware is the
+// transport's only DNS-rebinding / cross-origin defense.
 func withCrossOriginProtection(handler http.Handler, bypass ...string) http.Handler {
 	protection := http.NewCrossOriginProtection()
 	for _, pattern := range bypass {
 		protection.AddInsecureBypassPattern(pattern)
 	}
-	return protection.Handler(handler)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := protection.Check(r); err != nil {
+			httpdiag.Error(w, "cross_origin_rejected", err.Error(), http.StatusForbidden)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
 }
 
 // serveHTTP runs an http.Server with graceful shutdown on ctx cancellation.
@@ -116,9 +121,12 @@ func (s *Server) serveHTTP(ctx context.Context, handler http.Handler, addr strin
 const maxMCPRequestBytes = 1 << 20
 
 func limitRequestBody(next http.Handler) http.Handler {
+	tooLarge := func(w http.ResponseWriter) {
+		httpdiag.Error(w, "request_body_too_large", "request body exceeds 1 MiB", http.StatusRequestEntityTooLarge)
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.ContentLength > maxMCPRequestBytes {
-			http.Error(w, "request body exceeds 1 MiB", http.StatusRequestEntityTooLarge)
+			tooLarge(w)
 			return
 		}
 		if r.Body == nil {
@@ -128,11 +136,11 @@ func limitRequestBody(next http.Handler) http.Handler {
 		body, err := io.ReadAll(io.LimitReader(r.Body, maxMCPRequestBytes+1))
 		_ = r.Body.Close()
 		if err != nil {
-			http.Error(w, "failed to read request body", http.StatusBadRequest)
+			httpdiag.Error(w, "request_body_read_failed", "failed to read request body", http.StatusBadRequest)
 			return
 		}
 		if len(body) > maxMCPRequestBytes {
-			http.Error(w, "request body exceeds 1 MiB", http.StatusRequestEntityTooLarge)
+			tooLarge(w)
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
@@ -165,19 +173,17 @@ var diagnosticRoutes = append([]string{"/", "/mcp", healthzPath, readyzPath, can
 // (unauthenticated by nature) plus the MCP handler behind RequireBearerToken.
 // Extracted from runHTTPWithAuth so tests can drive the exact production
 // wiring.
-func buildAuthMux(as *authsrv.AuthServer, issuerURL string, mcpHandler http.Handler) *http.ServeMux {
+func buildAuthMux(as *authsrv.AuthServer, mcpHandler http.Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 	as.Routes(mux)
 	mux.HandleFunc("GET "+healthzPath, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	requireBearer := as.RequireBearerToken(&auth.RequireBearerTokenOptions{
-		ResourceMetadataURL: issuerURL + authsrv.ProtectedResourceMetadataPath,
-	})
+	requireBearer := as.RequireBearerToken()
 	ready := requireBearer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := as.CheckStore(r.Context()); err != nil {
-			http.Error(w, "OAuth state store unavailable", http.StatusServiceUnavailable)
+			httpdiag.Error(w, "oauth_store_unavailable", "OAuth state store unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -225,6 +231,6 @@ func (s *Server) runHTTPWithAuth(ctx context.Context, reg *metrics.Registry, opt
 	go pool.janitor(ctx)
 
 	s.logger.Info("Starting with per-user authentication", "issuer", opts.Auth.IssuerURL)
-	mux := buildAuthMux(as, opts.Auth.IssuerURL, pool)
+	mux := buildAuthMux(as, pool)
 	return s.serveHTTP(ctx, mux, opts.HTTPAddr, authCORSBypassPaths...)
 }

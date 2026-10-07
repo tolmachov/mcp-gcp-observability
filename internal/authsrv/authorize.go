@@ -11,6 +11,8 @@ import (
 	"sync"
 
 	"golang.org/x/oauth2"
+
+	"github.com/tolmachov/mcp-gcp-observability/internal/httpdiag"
 )
 
 // handleAuthorize validates the client's authorization request and renders
@@ -23,13 +25,13 @@ func (a *AuthServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 
 	client, err := a.parseClientID(q.Get("client_id"))
 	if err != nil {
-		a.renderErrorPage(w, "Unknown client",
+		a.renderErrorPage(w, "unknown_client", "Unknown client",
 			"The client_id is missing or invalid. Re-register the client and try again.")
 		return
 	}
 	redirectURI := q.Get("redirect_uri")
 	if redirectURI == "" || !matchRegistered(client.RedirectURIs, redirectURI) || !a.policy.allowed(redirectURI) {
-		a.renderErrorPage(w, "Invalid redirect URI",
+		a.renderErrorPage(w, "invalid_redirect_uri", "Invalid redirect URI",
 			"The redirect_uri does not match the client's registration.")
 		return
 	}
@@ -50,7 +52,7 @@ func (a *AuthServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claims, err := sealBlob(a.sealer, stateBlob, stateClaims{
+	claims := sealBlob(a.sealer, stateBlob, stateClaims{
 		ClientID:      q.Get("client_id"),
 		RedirectURI:   redirectURI,
 		ClientState:   state,
@@ -58,17 +60,7 @@ func (a *AuthServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		Resource:      q.Get("resource"),
 		IssuedAt:      a.now().Unix(),
 	})
-	if err != nil {
-		a.logger.Error("sealing authorize state failed", "err", err)
-		redirectError(w, r, redirectURI, state, "server_error", "internal error")
-		return
-	}
-	stateSecret, err := randomOpaque(32)
-	if err != nil {
-		redirectError(w, r, redirectURI, state, "server_error", "internal error")
-		return
-	}
-	stateToken := prefixState + stateSecret
+	stateToken := prefixState + randomOpaque(32)
 	if err := a.store.PutAuthorizationState(r.Context(), tokenHash(stateToken), authorizationStateRecord{
 		Claims: claims, Status: "active", ExpiresAt: a.now().Add(stateTTL),
 	}); err != nil {
@@ -89,7 +81,7 @@ func (a *AuthServer) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 func (a *AuthServer) handleAuthorizeConfirm(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxFormBody)
 	if err := r.ParseForm(); err != nil {
-		a.renderErrorPage(w, "Malformed request",
+		a.renderErrorPage(w, "malformed_consent_form", "Malformed request",
 			"The request body could not be parsed. Start over from your MCP client.")
 		return
 	}
@@ -97,21 +89,20 @@ func (a *AuthServer) handleAuthorizeConfirm(w http.ResponseWriter, r *http.Reque
 	rec, err := a.loadAuthorizationState(r.Context(), stateToken, false)
 	switch {
 	case errors.Is(err, errBlobExpired):
-		a.renderErrorPage(w, "Request expired",
+		a.renderErrorPage(w, "authorization_request_expired", "Request expired",
 			"The authorization request expired. Start over from your MCP client.")
 		return
 	case err != nil && !errors.Is(err, errStateNotFound) && !errors.Is(err, errStateReplay):
 		a.logStoreFailure(r.Context(), "get_authorization_state", err)
-		a.renderErrorPageStatus(w, http.StatusServiceUnavailable, "Service unavailable",
-			"The authorization state store is unavailable. Try again later.")
+		a.renderStoreUnavailable(w)
 		return
 	case err != nil:
-		a.renderErrorPage(w, "Invalid request",
+		a.renderErrorPage(w, "invalid_authorization_request", "Invalid request",
 			"The authorization request is invalid or has been tampered with. Start over from your MCP client.")
 		return
 	}
 	if rec.Status != "active" {
-		a.renderErrorPage(w, "Invalid request", "The authorization request has already been used. Start over from your MCP client.")
+		a.renderErrorPage(w, "authorization_request_used", "Invalid request", "The authorization request has already been used. Start over from your MCP client.")
 		return
 	}
 	a.redirectToGoogle(w, r, stateToken)
@@ -207,12 +198,21 @@ func (a *AuthServer) renderConsent(w http.ResponseWriter, client *clientIDClaims
 }
 
 // renderErrorPage shows a terminal 400 error page (used when redirecting
-// back to the client would be unsafe).
-func (a *AuthServer) renderErrorPage(w http.ResponseWriter, title, detail string) {
-	a.renderErrorPageStatus(w, http.StatusBadRequest, title, detail)
+// back to the client would be unsafe). reason is the static class recorded by
+// the HTTP rejection diagnostic.
+func (a *AuthServer) renderErrorPage(w http.ResponseWriter, reason, title, detail string) {
+	a.renderErrorPageStatus(w, http.StatusBadRequest, reason, title, detail)
 }
 
-func (a *AuthServer) renderErrorPageStatus(w http.ResponseWriter, status int, title, detail string) {
+// renderStoreUnavailable shows the 503 page for an authorization state store
+// outage.
+func (a *AuthServer) renderStoreUnavailable(w http.ResponseWriter) {
+	a.renderErrorPageStatus(w, http.StatusServiceUnavailable, "oauth_store_unavailable", "Service unavailable",
+		"The authorization state store is unavailable. Try again later.")
+}
+
+func (a *AuthServer) renderErrorPageStatus(w http.ResponseWriter, status int, reason, title, detail string) {
+	httpdiag.Reject(w, reason)
 	setInterstitialHeaders(w)
 	w.WriteHeader(status)
 	_, _ = fmt.Fprintf(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>%s</title></head>

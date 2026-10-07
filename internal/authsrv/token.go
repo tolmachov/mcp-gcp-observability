@@ -12,8 +12,6 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
-
-	"github.com/tolmachov/mcp-gcp-observability/internal/httpdiag"
 )
 
 type tokenResponse struct {
@@ -35,7 +33,7 @@ func (a *AuthServer) handleToken(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	r.Body = http.MaxBytesReader(w, r.Body, maxFormBody)
 	if err := r.ParseForm(); err != nil {
-		a.tokenError(w, http.StatusBadRequest, "invalid_request", "malformed form body")
+		a.tokenError(w, http.StatusBadRequest, "invalid_request", "malformed_form_body", "malformed form body")
 		return
 	}
 	switch r.PostForm.Get("grant_type") {
@@ -44,7 +42,7 @@ func (a *AuthServer) handleToken(w http.ResponseWriter, r *http.Request) {
 	case "refresh_token":
 		a.tokenFromRefresh(w, r, r.PostForm)
 	default:
-		a.tokenError(w, http.StatusBadRequest, "unsupported_grant_type", "supported grant types: authorization_code, refresh_token")
+		a.tokenError(w, http.StatusBadRequest, "unsupported_grant_type", "unsupported_grant_type", "supported grant types: authorization_code, refresh_token")
 	}
 }
 
@@ -59,44 +57,36 @@ func (a *AuthServer) tokenFromCode(w http.ResponseWriter, r *http.Request, form 
 	if rec.Status != "active" {
 		_ = a.store.RedeemCode(r.Context(), key, now, grantRecord{})
 		a.logger.Warn("grant_replay", "kind", "authorization_code", "family_id", rec.FamilyID)
-		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "authorization code was already used")
+		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "authorization_code_reused", "authorization code was already used")
 		return
 	}
 	if !now.Before(rec.ExpiresAt) {
-		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "authorization code expired")
+		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "authorization_code_expired", "authorization code expired")
 		return
 	}
 	cc, err := openBlob(a.sealer, storedCodeBlob, rec.Claims, now)
 	if err != nil {
-		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "invalid authorization code")
+		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "invalid_authorization_code", "invalid authorization code")
 		return
 	}
 	if form.Get("client_id") != cc.ClientID || form.Get("redirect_uri") != cc.RedirectURI || !verifyPKCE(form.Get("code_verifier"), cc.CodeChallenge) {
-		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "authorization code binding failed")
+		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "authorization_code_binding_failed", "authorization code binding failed")
 		return
 	}
 	if res := form.Get("resource"); res != "" && strings.TrimRight(res, "/") != a.cfg.IssuerURL {
-		a.tokenError(w, http.StatusBadRequest, "invalid_target", "unknown resource")
+		a.tokenError(w, http.StatusBadRequest, "invalid_target", "unknown_resource", "unknown resource")
 		return
 	}
-	refreshToken, secretHash, err := makeRefreshToken(rec.FamilyID)
-	if err != nil {
-		a.tokenError(w, http.StatusInternalServerError, "server_error", "internal error")
-		return
-	}
-	grantClaims, err := sealBlob(a.sealer, storedGrantBlob, refreshClaims{
+	refreshToken, secretHash := makeRefreshToken(rec.FamilyID)
+	grantClaims := sealBlob(a.sealer, storedGrantBlob, refreshClaims{
 		Subject: cc.Subject, Email: cc.Email, Domain: cc.Domain, ClientID: cc.ClientID,
 		Resource: cc.Resource, Scopes: cc.Scopes, GoogleRefreshToken: cc.GoogleRefreshToken, IssuedAt: now.Unix(),
 	})
-	if err != nil {
-		a.tokenError(w, http.StatusInternalServerError, "server_error", "internal error")
-		return
-	}
 	grant := grantRecord{Claims: grantClaims, ActiveSecretHash: secretHash, Generation: 1, Status: "active", ExpiresAt: now.Add(a.cfg.refreshTokenTTL()), UpdatedAt: now}
 	if err := a.store.RedeemCode(r.Context(), key, now, grant); err != nil {
 		if errors.Is(err, errCodeReplay) {
 			a.logger.Warn("grant_replay", "kind", "authorization_code", "family_id", rec.FamilyID)
-			a.tokenError(w, http.StatusBadRequest, "invalid_grant", "authorization code was already used")
+			a.tokenError(w, http.StatusBadRequest, "invalid_grant", "authorization_code_reused", "authorization code was already used")
 			return
 		}
 		a.storeTokenError(r.Context(), w, "redeem_code", err)
@@ -109,7 +99,7 @@ func (a *AuthServer) tokenFromRefresh(w http.ResponseWriter, r *http.Request, fo
 	now := a.now()
 	familyID, secret, err := parseRefreshToken(form.Get("refresh_token"))
 	if err != nil {
-		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "invalid refresh token")
+		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "invalid_refresh_token", "invalid refresh token")
 		return
 	}
 	rec, err := a.store.GetGrant(r.Context(), familyID)
@@ -119,7 +109,7 @@ func (a *AuthServer) tokenFromRefresh(w http.ResponseWriter, r *http.Request, fo
 	}
 	presentedHash := tokenHash(secret)
 	if rec.Status != "active" || !now.Before(rec.ExpiresAt) {
-		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "refresh grant is inactive or expired")
+		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "grant_inactive", "refresh grant is inactive or expired")
 		return
 	}
 	if !secretMatches(secret, rec.ActiveSecretHash) {
@@ -129,41 +119,41 @@ func (a *AuthServer) tokenFromRefresh(w http.ResponseWriter, r *http.Request, fo
 			return
 		}
 		a.logger.Warn("grant_replay", "kind", "refresh_token", "family_id", familyID)
-		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "refresh token replay revoked this grant family")
+		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "refresh_token_replayed", "refresh token replay revoked this grant family")
 		return
 	}
 	rc, err := openBlob(a.sealer, storedGrantBlob, rec.Claims, now)
 	if err != nil || rc.GoogleRefreshToken == "" {
-		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "refresh grant is invalid")
+		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "invalid_grant_record", "refresh grant is invalid")
 		return
 	}
 	if cid := form.Get("client_id"); cid != "" && cid != rc.ClientID {
-		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "client_id mismatch")
+		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "client_id_mismatch", "client_id mismatch")
 		return
 	}
 	if len(a.cfg.AllowedDomains) > 0 && !a.cfg.domainAllowed(rc.Domain, rc.Email) {
-		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "account domain is not allowed")
+		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "domain_not_allowed", "account domain is not allowed")
 		return
 	}
 	tok, err := a.idp.Refresh(r.Context(), rc.GoogleRefreshToken)
 	if err != nil {
 		if _, ok := errors.AsType[*oauth2.RetrieveError](err); ok {
 			_ = a.store.RevokeGrant(r.Context(), familyID, now)
-			a.tokenError(w, http.StatusBadRequest, "invalid_grant", "upstream grant revoked, log in again")
+			a.tokenError(w, http.StatusBadRequest, "invalid_grant", "upstream_grant_revoked", "upstream grant revoked, log in again")
 			return
 		}
-		a.tokenError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "upstream token refresh failed")
+		a.tokenError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "upstream_refresh_failed", "upstream token refresh failed")
 		return
 	}
 	if a.cfg.PinnedProject != "" {
 		allowed, checkErr := a.checkProjectAccess(r.Context(), tok.AccessToken, a.cfg.PinnedProject)
 		if checkErr != nil {
-			a.tokenError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "access check failed")
+			a.tokenError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "project_access_check_failed", "access check failed")
 			return
 		}
 		if !allowed {
 			_ = a.store.RevokeGrant(r.Context(), familyID, now)
-			a.tokenError(w, http.StatusBadRequest, "invalid_grant", "account no longer has access to the pinned project")
+			a.tokenError(w, http.StatusBadRequest, "invalid_grant", "project_access_lost", "account no longer has access to the pinned project")
 			return
 		}
 	}
@@ -171,21 +161,13 @@ func (a *AuthServer) tokenFromRefresh(w http.ResponseWriter, r *http.Request, fo
 	if tok.RefreshToken != "" {
 		googleRefresh = tok.RefreshToken
 	}
-	nextToken, nextHash, err := makeRefreshToken(familyID)
-	if err != nil {
-		a.tokenError(w, http.StatusInternalServerError, "server_error", "internal error")
-		return
-	}
-	nextClaims, err := sealBlob(a.sealer, storedGrantBlob, refreshClaims{Subject: rc.Subject, Email: rc.Email, Domain: rc.Domain, ClientID: rc.ClientID, Resource: rc.Resource, Scopes: rc.Scopes, GoogleRefreshToken: googleRefresh, IssuedAt: rc.IssuedAt})
-	if err != nil {
-		a.tokenError(w, http.StatusInternalServerError, "server_error", "internal error")
-		return
-	}
+	nextToken, nextHash := makeRefreshToken(familyID)
+	nextClaims := sealBlob(a.sealer, storedGrantBlob, refreshClaims{Subject: rc.Subject, Email: rc.Email, Domain: rc.Domain, ClientID: rc.ClientID, Resource: rc.Resource, Scopes: rc.Scopes, GoogleRefreshToken: googleRefresh, IssuedAt: rc.IssuedAt})
 	next := grantRecord{Claims: nextClaims, ActiveSecretHash: nextHash, Generation: rec.Generation + 1, Status: "active", ExpiresAt: rec.ExpiresAt, UpdatedAt: now}
 	if err := a.store.RotateGrant(r.Context(), familyID, presentedHash, next, now); err != nil {
 		if errors.Is(err, errGrantReplay) || errors.Is(err, errGrantInactive) {
 			a.logger.Warn("grant_replay", "kind", "refresh_token", "family_id", familyID)
-			a.tokenError(w, http.StatusBadRequest, "invalid_grant", "refresh token replay revoked this grant family")
+			a.tokenError(w, http.StatusBadRequest, "invalid_grant", "refresh_token_replayed", "refresh token replay revoked this grant family")
 			return
 		}
 		a.storeTokenError(r.Context(), w, "rotate_grant", err)
@@ -201,25 +183,21 @@ func (a *AuthServer) writeMintedTokens(w http.ResponseWriter, subject, email, do
 		exp = upstream
 	}
 	if !exp.After(now) {
-		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "upstream token already expired")
+		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "upstream_token_expired", "upstream token already expired")
 		return
 	}
-	accessToken, err := sealBlob(a.sealer, accessBlob, accessClaims{Subject: subject, Email: email, Domain: domain, ClientID: clientID, Resource: resource, FamilyID: familyID, Scopes: scopes, GoogleAccessToken: googleAccess, GoogleExpiry: googleExpiry, IssuedAt: now.Unix(), ExpiresAt: exp.Unix()})
-	if err != nil {
-		a.tokenError(w, http.StatusInternalServerError, "server_error", "internal error")
-		return
-	}
+	accessToken := sealBlob(a.sealer, accessBlob, accessClaims{Subject: subject, Email: email, Domain: domain, ClientID: clientID, Resource: resource, FamilyID: familyID, Scopes: scopes, GoogleAccessToken: googleAccess, GoogleExpiry: googleExpiry, IssuedAt: now.Unix(), ExpiresAt: exp.Unix()})
 	a.writeJSON(w, http.StatusOK, &tokenResponse{AccessToken: accessToken, TokenType: "Bearer", ExpiresIn: int64(exp.Sub(now).Seconds()), RefreshToken: refresh, Scope: strings.Join(scopes, " ")})
 }
 
 func (a *AuthServer) storeTokenError(ctx context.Context, w http.ResponseWriter, operation string, err error) {
 	if errors.Is(err, errStateNotFound) {
-		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "invalid or expired OAuth grant")
+		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "oauth_state_not_found", "invalid or expired OAuth grant")
 		return
 	}
 	a.logStoreFailure(ctx, operation, err)
 	w.Header().Set("Retry-After", "5")
-	a.tokenError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "OAuth state store unavailable")
+	a.tokenError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "oauth_store_unavailable", "OAuth state store unavailable")
 }
 
 func verifyPKCE(verifier, challenge string) bool {
@@ -231,10 +209,11 @@ func verifyPKCE(verifier, challenge string) bool {
 	return subtle.ConstantTimeCompare([]byte(computed), []byte(challenge)) == 1
 }
 
-func (a *AuthServer) tokenError(w http.ResponseWriter, status int, code, description string) {
-	// These descriptions are application-owned constants, never submitted
-	// credentials or upstream error bodies.
-	httpdiag.Reject(w, code, description)
+// tokenError writes an RFC 6749 §5.2 error response. reason is the static
+// class the HTTP rejection diagnostic records; description is the
+// client-facing error_description. Both are application-owned constants,
+// never submitted credentials or upstream error bodies.
+func (a *AuthServer) tokenError(w http.ResponseWriter, status int, code, reason, description string) {
 	w.Header().Set("Cache-Control", "no-store")
-	a.writeJSON(w, status, &oauthErrorResponse{Error: code, ErrorDescription: description})
+	a.writeOAuthError(w, status, code, reason, &oauthErrorResponse{Error: code, ErrorDescription: description})
 }

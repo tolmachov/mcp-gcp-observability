@@ -107,7 +107,8 @@ Use the client's response `X-Request-ID` (`operation.id="<id>"`) or the event's 
 requests. `accept_requires_json_and_sse`, `request_missing_id`, and
 `unsupported_protocol_version` identify transport failures before tool dispatch.
 On `/token`, `oauth_error=invalid_grant` plus `reason` distinguishes malformed or
-legacy refresh tokens from expired, revoked, or replayed grants. A `200` MCP
+legacy refresh tokens (`invalid_refresh_token`) from inactive (`grant_inactive`)
+or replayed (`refresh_token_replayed`) grants. A `200` MCP
 response can still contain a JSON-RPC/tool error; HTTP rejection logs alone do
 not prove tool success.
 

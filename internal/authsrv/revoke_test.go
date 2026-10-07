@@ -20,10 +20,9 @@ func TestRevokeRequiresRefreshSecret(t *testing.T) {
 			a, err := NewWithProvider(testConfig(t), nil, idp)
 			require.NoError(t, err)
 			now := time.Now()
-			claims, err := sealBlob(a.sealer, storedGrantBlob, refreshClaims{
+			claims := sealBlob(a.sealer, storedGrantBlob, refreshClaims{
 				GoogleRefreshToken: "upstream-refresh", IssuedAt: now.Unix(),
 			})
-			require.NoError(t, err)
 			rec := testGrant(now, "current-secret")
 			rec.Claims = claims
 			store, ok := a.store.(*memoryStateStore)

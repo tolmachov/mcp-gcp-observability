@@ -10,6 +10,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"golang.org/x/oauth2"
+
+	"github.com/tolmachov/mcp-gcp-observability/internal/httpdiag"
 )
 
 // extraIdentityKey is the single TokenInfo.Extra key this package sets. All
@@ -30,13 +32,27 @@ type identityExtra struct {
 // store; RequireBearerToken answers it with 503 instead of 401.
 var errStoreUnavailable = errors.New("OAuth state store unavailable")
 
+// tokenRejection is a verifier rejection of the token itself: an
+// auth.ErrInvalidToken (so the SDK answers 401) that carries the static
+// reason class httpdiag records for it.
+type tokenRejection struct{ reason string }
+
+func (e *tokenRejection) Error() string { return auth.ErrInvalidToken.Error() + ": " + e.reason }
+func (e *tokenRejection) Unwrap() error { return auth.ErrInvalidToken }
+
 // RequireBearerToken guards next with the SDK bearer-token middleware backed
 // by this server's sealed access tokens. Each request's token is verified
 // once, before the SDK middleware runs, so an unavailable grant store is
 // answered with 503 and Retry-After (the SDK maps every non-token verifier
 // error to 500) while token rejections keep the SDK's 401 and
-// WWW-Authenticate handling.
-func (a *AuthServer) RequireBearerToken(opts *auth.RequireBearerTokenOptions) func(http.Handler) http.Handler {
+// WWW-Authenticate handling. The verifier is the only token check: the SDK
+// is configured with no scopes and no expiry enforcement of its own, so
+// every rejection is decided, and marked for httpdiag, here.
+func (a *AuthServer) RequireBearerToken() func(http.Handler) http.Handler {
+	opts := &auth.RequireBearerTokenOptions{
+		ResourceMetadataURL:    a.cfg.IssuerURL + ProtectedResourceMetadataPath,
+		AllowMissingExpiration: true,
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var info *auth.TokenInfo
@@ -44,12 +60,18 @@ func (a *AuthServer) RequireBearerToken(opts *auth.RequireBearerTokenOptions) fu
 			// Same header parsing as the SDK middleware, which rejects any
 			// other shape as "no bearer token" without calling the verifier.
 			fields := strings.Fields(r.Header.Get("Authorization"))
-			if len(fields) == 2 && strings.EqualFold(fields[0], "bearer") {
+			if len(fields) != 2 || !strings.EqualFold(fields[0], "bearer") {
+				httpdiag.Reject(w, "missing_bearer_token")
+			} else {
 				info, verifyErr = a.verifyAccessToken(r.Context(), fields[1])
-				if errors.Is(verifyErr, errStoreUnavailable) {
+				var rejected *tokenRejection
+				switch {
+				case errors.Is(verifyErr, errStoreUnavailable):
 					w.Header().Set("Retry-After", "5")
-					http.Error(w, errStoreUnavailable.Error(), http.StatusServiceUnavailable)
+					httpdiag.Error(w, "oauth_store_unavailable", errStoreUnavailable.Error(), http.StatusServiceUnavailable)
 					return
+				case errors.As(verifyErr, &rejected):
+					httpdiag.Reject(w, rejected.reason)
 				}
 			}
 			verified := func(context.Context, string, *http.Request) (*auth.TokenInfo, error) {
@@ -64,19 +86,21 @@ func (a *AuthServer) RequireBearerToken(opts *auth.RequireBearerTokenOptions) fu
 // identity plus the embedded Google access token via TokenInfo.Extra.
 // TokenInfo.UserID is the Google subject, which the streamable transport uses
 // to bind a reusable GCP client pool to one user. MCP transport requests
-// themselves remain stateless.
+// themselves remain stateless. A rejected token is a *tokenRejection carrying
+// its reason class for the HTTP rejection diagnostic.
 //
 // The grant is read before any other check, so a store outage is reported
 // as errStoreUnavailable for every well-formed token, expired or not.
-// Rejections are logged server-side (reason class only, never the token):
-// a mass 401 after a botched key rotation or an issuer change must be
-// diagnosable from the logs.
+// Every rejection reaches the logs through the httpdiag event (reason class
+// only, never the token), so a mass 401 after a botched key rotation or an
+// issuer change is diagnosable; undecryptable tokens and domain removals are
+// additionally logged here with their detail.
 func (a *AuthServer) verifyAccessToken(ctx context.Context, token string) (*auth.TokenInfo, error) {
 	now := a.now()
 	c, err := openBlob(a.sealer, accessBlob, token, now)
 	if err != nil {
 		a.logger.Warn("access token rejected", "reason", err)
-		return nil, fmt.Errorf("%w: not a valid access token", auth.ErrInvalidToken)
+		return nil, &tokenRejection{reason: "invalid_access_token"}
 	}
 	grant, grantErr := a.store.GetGrant(ctx, c.FamilyID)
 	if grantErr != nil && !errors.Is(grantErr, errStateNotFound) {
@@ -84,13 +108,13 @@ func (a *AuthServer) verifyAccessToken(ctx context.Context, token string) (*auth
 		return nil, fmt.Errorf("%w: %w", errStoreUnavailable, grantErr)
 	}
 	if !now.Before(time.Unix(c.ExpiresAt, 0)) {
-		return nil, fmt.Errorf("%w: token expired", auth.ErrInvalidToken)
+		return nil, &tokenRejection{reason: "access_token_expired"}
 	}
 	if grantErr != nil {
-		return nil, fmt.Errorf("%w: grant not found", auth.ErrInvalidToken)
+		return nil, &tokenRejection{reason: "grant_not_found"}
 	}
 	if grant.Status != "active" || !now.Before(grant.ExpiresAt) {
-		return nil, fmt.Errorf("%w: grant revoked or expired", auth.ErrInvalidToken)
+		return nil, &tokenRejection{reason: "grant_inactive"}
 	}
 	// Re-check the domain at use time: this is the enforcement point
 	// that cuts off already-issued tokens after a domain is removed
@@ -98,12 +122,13 @@ func (a *AuthServer) verifyAccessToken(ctx context.Context, token string) (*auth
 	// every delegated GCP RPC, with an extra pinned-project probe on refresh.
 	if len(a.cfg.AllowedDomains) > 0 && !a.cfg.domainAllowed(c.Domain, c.Email) {
 		a.logger.Warn("access token rejected: domain no longer allowed", "email", c.Email, "hd", c.Domain)
-		return nil, fmt.Errorf("%w: domain not allowed", auth.ErrInvalidToken)
+		return nil, &tokenRejection{reason: "domain_not_allowed"}
 	}
+	// Expiration stays unset: expiry was checked above, against a.now, and
+	// the SDK must not re-check it against a different clock.
 	return &auth.TokenInfo{
-		Scopes:     c.Scopes,
-		Expiration: time.Unix(c.ExpiresAt, 0),
-		UserID:     c.Subject,
+		Scopes: c.Scopes,
+		UserID: c.Subject,
 		Extra: map[string]any{
 			extraIdentityKey: identityExtra{
 				Email:             c.Email,
@@ -166,11 +191,11 @@ func GoogleTokenSource(ctx context.Context) (oauth2.TokenSource, bool) {
 // NewTokenInfoForTesting is test-only. It fabricates the TokenInfo
 // verifyAccessToken produces, so other packages can unit-test handlers that
 // sit behind RequireBearerToken (e.g. the per-user pool) without running the
-// OAuth flow.
+// OAuth flow. Like the real TokenInfo it carries no Expiration, so the SDK
+// middleware serving it needs AllowMissingExpiration.
 func NewTokenInfoForTesting(subject, email, domain, googleAccessToken string, expiry time.Time) *auth.TokenInfo {
 	return &auth.TokenInfo{
-		UserID:     subject,
-		Expiration: expiry,
+		UserID: subject,
 		Extra: map[string]any{
 			extraIdentityKey: identityExtra{
 				Email:             email,

@@ -14,6 +14,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/tolmachov/mcp-gcp-observability/internal/httpdiag/httpdiagtest"
 )
 
 // issuedTokens runs the full flow against a fresh server and returns it with
@@ -48,79 +50,117 @@ func captureLogs(t *testing.T, a *AuthServer) *bytes.Buffer {
 	return &buf
 }
 
+// rejectionReason returns the reason class of a verifier token rejection.
+func rejectionReason(t *testing.T, err error) string {
+	t.Helper()
+	var rejected *tokenRejection
+	require.ErrorAs(t, err, &rejected)
+	return rejected.reason
+}
+
 func TestRequireBearerToken(t *testing.T) {
 	a, _, tr, _ := issuedTokens(t)
-	opts := &auth.RequireBearerTokenOptions{ResourceMetadataURL: testIssuer + ProtectedResourceMetadataPath}
-	serve := func(t *testing.T, token string) (*httptest.ResponseRecorder, *auth.TokenInfo, bool) {
+	type served struct {
+		rec    *httptest.ResponseRecorder
+		info   *auth.TokenInfo // nil unless next was reached
+		reason string          // the httpdiag rejection reason, "" when not rejected
+	}
+	serve := func(t *testing.T, authorization string) served {
 		t.Helper()
-		var info *auth.TokenInfo
-		called := false
-		handler := a.RequireBearerToken(opts)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-			called = true
-			info = auth.TokenInfoFromContext(r.Context())
+		var out served
+		handler := a.RequireBearerToken()(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			out.info = auth.TokenInfoFromContext(r.Context())
 		}))
 		req := httptest.NewRequest(http.MethodPost, testIssuer, nil)
-		req.Header.Set("Authorization", "Bearer "+token)
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
-		return rec, info, called
+		if authorization != "" {
+			req.Header.Set("Authorization", authorization)
+		}
+		out.rec, out.reason = httpdiagtest.Serve(t, handler, req)
+		return out
 	}
+	bearer := func(token string) string { return "Bearer " + token }
 	expire := func(t *testing.T) {
 		a.now = func() time.Time { return time.Now().Add(2 * time.Hour) }
 		t.Cleanup(func() { a.now = time.Now })
 	}
-	assertUnauthorized := func(t *testing.T, rec *httptest.ResponseRecorder, called bool) {
+	assertUnauthorized := func(t *testing.T, got served, reason string) {
 		t.Helper()
-		assert.Equal(t, http.StatusUnauthorized, rec.Code)
-		assert.Contains(t, rec.Header().Get("WWW-Authenticate"), "resource_metadata=")
-		assert.False(t, called)
+		assert.Equal(t, http.StatusUnauthorized, got.rec.Code)
+		assert.Contains(t, got.rec.Header().Get("WWW-Authenticate"), "resource_metadata=")
+		assert.Nil(t, got.info)
+		assert.Equal(t, reason, got.reason)
 	}
-	assertUnavailable := func(t *testing.T, rec *httptest.ResponseRecorder, called bool) {
+	assertUnavailable := func(t *testing.T, got served) {
 		t.Helper()
-		assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
-		assert.Equal(t, "5", rec.Header().Get("Retry-After"))
-		assert.False(t, called)
+		assert.Equal(t, http.StatusServiceUnavailable, got.rec.Code)
+		assert.Equal(t, "5", got.rec.Header().Get("Retry-After"))
+		assert.Nil(t, got.info)
+		assert.Equal(t, "oauth_store_unavailable", got.reason)
 	}
 
 	t.Run("valid token reaches next with token info", func(t *testing.T) {
-		rec, info, called := serve(t, tr.AccessToken)
-		assert.Equal(t, http.StatusOK, rec.Code)
-		require.True(t, called)
-		require.NotNil(t, info)
-		assert.Equal(t, "sub-123", info.UserID)
-		extra, ok := info.Extra[extraIdentityKey].(identityExtra)
+		got := serve(t, bearer(tr.AccessToken))
+		assert.Equal(t, http.StatusOK, got.rec.Code)
+		require.NotNil(t, got.info)
+		assert.Equal(t, "sub-123", got.info.UserID)
+		extra, ok := got.info.Extra[extraIdentityKey].(identityExtra)
 		require.True(t, ok)
 		assert.Equal(t, "dev@example.com", extra.Email)
 		assert.Equal(t, "ya29.user-token", extra.GoogleAccessToken)
+		assert.Empty(t, got.reason)
+	})
+	t.Run("missing or non-bearer header is 401", func(t *testing.T) {
+		assertUnauthorized(t, serve(t, ""), "missing_bearer_token")
+		assertUnauthorized(t, serve(t, "Basic "+tr.AccessToken), "missing_bearer_token")
 	})
 	t.Run("garbage token is 401", func(t *testing.T) {
-		rec, _, called := serve(t, "mcp_at_garbage")
-		assertUnauthorized(t, rec, called)
+		assertUnauthorized(t, serve(t, bearer("mcp_at_garbage")), "invalid_access_token")
 	})
 	t.Run("expired token is 401", func(t *testing.T) {
 		expire(t)
-		rec, _, called := serve(t, tr.AccessToken)
-		assertUnauthorized(t, rec, called)
+		assertUnauthorized(t, serve(t, bearer(tr.AccessToken)), "access_token_expired")
 	})
 	t.Run("store outage is 503 with retry-after", func(t *testing.T) {
 		failStore(t, a, errors.New("firestore unavailable"))
-		rec, _, called := serve(t, tr.AccessToken)
-		assertUnavailable(t, rec, called)
+		assertUnavailable(t, serve(t, bearer(tr.AccessToken)))
 	})
 	t.Run("expired token during store outage is 503", func(t *testing.T) {
 		// The grant is read before the expiry check (verifyAccessToken).
 		expire(t)
 		failStore(t, a, errors.New("firestore unavailable"))
-		rec, _, called := serve(t, tr.AccessToken)
-		assertUnavailable(t, rec, called)
+		assertUnavailable(t, serve(t, bearer(tr.AccessToken)))
 	})
 	t.Run("corrupt grant is 401, not 503", func(t *testing.T) {
 		logs := captureLogs(t, a)
 		failStore(t, a, corruptGrantError(slog.New(slog.DiscardHandler), "f", errors.New("bad field")))
-		rec, _, called := serve(t, tr.AccessToken)
-		assertUnauthorized(t, rec, called)
+		assertUnauthorized(t, serve(t, bearer(tr.AccessToken)), "grant_not_found")
 		assert.NotContains(t, logs.String(), "oauth_store_failure")
 	})
+}
+
+// TestRequireBearerTokenExpiryIsTheVerifiers pins that the verifier's clock
+// alone decides expiry: the SDK middleware never re-checks a token the
+// verifier accepted against the wall clock.
+func TestRequireBearerTokenExpiryIsTheVerifiers(t *testing.T) {
+	a, ts := newTestServer(t, testConfig(t), happyIdP())
+	// Issue and verify on a clock that runs behind the wall clock, so the
+	// token is still valid for the verifier but expired by the wall clock.
+	a.now = func() time.Time { return time.Now().Add(-accessTokenTTL - time.Hour) }
+	const redirectURI = "http://localhost:41234/callback"
+	clientID := registerClient(t, ts, redirectURI)
+	verifier, challenge := pkcePair()
+	code, _ := authorizeThroughCallback(t, ts, clientID, redirectURI, challenge, "s")
+	tr, _, status := redeemCode(t, ts, clientID, redirectURI, code, verifier)
+	require.Equal(t, http.StatusOK, status)
+
+	called := false
+	handler := a.RequireBearerToken()(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
+	req := httptest.NewRequest(http.MethodPost, testIssuer, nil)
+	req.Header.Set("Authorization", "Bearer "+tr.AccessToken)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.True(t, called)
 }
 
 // TestCorruptGrantIsRejectedEverywhere pins that an undecodable grant record
