@@ -1,7 +1,6 @@
 package authsrv
 
 import (
-	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -25,45 +24,20 @@ func (a *AuthServer) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		a.tokenError(w, http.StatusBadRequest, "invalid_request", "malformed_form_body", "malformed form body")
 		return
 	}
-	token := r.PostFormValue("token")
-	now := a.now()
-
-	var familyID, googleToken, email string
-	if ac, err := openBlob(a.sealer, accessBlob, token, now); err == nil {
-		familyID, googleToken, email = ac.FamilyID, ac.GoogleAccessToken, ac.Email
-	} else if id, secret, err := parseRefreshToken(token); err == nil {
-		familyID = id
-		if rec, getErr := a.store.GetGrant(r.Context(), id); getErr == nil {
-			// A family identifier is not proof of possession. Keep the hash
-			// after revocation so a valid token can retry upstream failures.
-			if !secretMatches(secret, rec.ActiveSecretHash) {
-				w.WriteHeader(http.StatusOK)
-				return
-			}
-			if rc, openErr := openBlob(a.sealer, storedGrantBlob, rec.Claims, now); openErr == nil {
-				googleToken, email = rc.GoogleRefreshToken, rc.Email
-			}
-		} else if errors.Is(getErr, errStateNotFound) {
-			w.WriteHeader(http.StatusOK)
-			return
-		} else {
-			a.storeTokenError(r.Context(), w, "revoke_get_grant", getErr)
-			return
-		}
-	} else {
-		// RFC 7009 §2.2: invalid tokens still yield 200.
+	revoked, err := a.grants().RevokeToken(r.Context(), r.PostFormValue("token"))
+	if err != nil {
+		a.grantTokenError(r.Context(), w, err)
+		return
+	}
+	if revoked == nil {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	if err := a.store.RevokeGrant(r.Context(), familyID, now); err != nil {
-		a.storeTokenError(r.Context(), w, "revoke_grant", err)
-		return
-	}
-	a.logger.Info("grant_revoked", "family_id", familyID, "email", email)
+	a.logger.Info("grant_revoked", "family_id", revoked.FamilyID, "email", revoked.Email)
 
-	if googleToken != "" {
-		if err := a.idp.Revoke(r.Context(), googleToken); err != nil {
-			a.logger.Warn("upstream revocation failed, telling client to retry", "email", email, "err", err)
+	if revoked.GoogleToken != "" {
+		if err := a.idp.Revoke(r.Context(), revoked.GoogleToken); err != nil {
+			a.logger.Warn("upstream revocation failed, telling client to retry", "email", revoked.Email, "err", err)
 			w.Header().Set("Retry-After", "5")
 			a.tokenError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "upstream_revocation_failed", "upstream revocation failed, retry")
 			return

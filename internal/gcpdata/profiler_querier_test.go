@@ -76,11 +76,11 @@ func stockName(id string) string { return "projects/" + stockProject + "/profile
 func TestGetOrFetchProfile_CacheHitSkipsScan(t *testing.T) {
 	q, srv := newStockProfilerQuerier(t, stockProfile("cpu-a", 1, encodeProfile(t, buildTestProfile())))
 
-	_, meta, err := q.GetOrFetchProfile(context.Background(), stockProject, "cpu-a")
+	_, meta, err := q.getOrFetchProfile(context.Background(), stockProject, "cpu-a")
 	require.NoError(t, err)
 	assert.Equal(t, stockName("cpu-a"), meta.ProfileID)
 
-	p, cached, err := q.GetOrFetchProfile(context.Background(), stockProject, "cpu-a")
+	p, cached, err := q.getOrFetchProfile(context.Background(), stockProject, "cpu-a")
 	require.NoError(t, err)
 	assert.Len(t, p.Sample, 3)
 	assert.Equal(t, meta, cached)
@@ -93,10 +93,10 @@ func TestGetOrFetchProfile_RejectsEmptyAndOversizedBytes(t *testing.T) {
 		stockProfile("huge", 2, make([]byte, maxCompressedProfileBytes+1)),
 	)
 
-	_, _, err := q.GetOrFetchProfile(context.Background(), stockProject, "empty")
+	_, _, err := q.getOrFetchProfile(context.Background(), stockProject, "empty")
 	assert.ErrorContains(t, err, "has no profile bytes")
 
-	_, _, err = q.GetOrFetchProfile(context.Background(), stockProject, "huge")
+	_, _, err = q.getOrFetchProfile(context.Background(), stockProject, "huge")
 	assert.ErrorContains(t, err, `decoding profile "huge": compressed profile is`)
 
 	assert.Equal(t, 0, q.cache.Len(), "rejected profiles are not cached")
@@ -108,7 +108,7 @@ func TestGetOrFetchProfile_LogsRejectedCacheInsert(t *testing.T) {
 	q := newFakeProfilerQuerier(t, srv, slog.New(slog.NewTextHandler(&logs, nil)))
 	q.cache.maxBytes = 1
 
-	_, _, err := q.GetOrFetchProfile(context.Background(), stockProject, "cpu-a")
+	_, _, err := q.getOrFetchProfile(context.Background(), stockProject, "cpu-a")
 	require.NoError(t, err, "a profile the cache rejects is still returned")
 	assert.Contains(t, logs.String(), "profile_not_cached")
 	assert.Contains(t, logs.String(), "per-user cache limit")
@@ -120,17 +120,17 @@ func TestGetProfileOrDiff_WithBase(t *testing.T) {
 		stockProfile("base", 1, encodeProfile(t, halvedTestProfile())),
 	)
 
-	diff, meta, err := q.GetProfileOrDiff(context.Background(), stockProject, "cur", "base")
+	diff, meta, err := q.profileOrDiff(context.Background(), stockProject, "cur", "base")
 	require.NoError(t, err)
 	assert.True(t, meta.IsDiff)
 	assert.Equal(t, stockName("cur"), meta.ProfileID)
-	_, total, _, err := TopFunctions(diff, 0, 0, "cumulative", "")
+	_, total, _, err := topFunctions(diff, 0, 0, "cumulative", "")
 	require.NoError(t, err)
 	assert.Equal(t, int64(50), total, "current total 100 minus base total 50")
 
-	_, _, err = q.GetProfileOrDiff(context.Background(), stockProject, "cur", "missing")
+	_, _, err = q.profileOrDiff(context.Background(), stockProject, "cur", "missing")
 	assert.ErrorContains(t, err, "fetching base profile:")
-	_, _, err = q.GetProfileOrDiff(context.Background(), stockProject, "missing", "base")
+	_, _, err = q.profileOrDiff(context.Background(), stockProject, "missing", "base")
 	assert.ErrorContains(t, err, "fetching current profile:")
 }
 
@@ -275,7 +275,7 @@ func TestProfilerScanReportsBudgetCause(t *testing.T) {
 	_, err := q.ListProfiles(ctx, ListProfilesParams{Project: stockProject, PageSize: 10})
 	require.ErrorIs(t, err, ErrProfilerScanBudget)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
-	_, _, err = q.GetOrFetchProfile(ctx, stockProject, "a")
+	_, _, err = q.getOrFetchProfile(ctx, stockProject, "a")
 	require.ErrorIs(t, err, ErrProfilerScanBudget)
 
 	canceled, cancelNow := context.WithCancel(context.Background())

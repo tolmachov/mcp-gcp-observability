@@ -4,8 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/google/pprof/profile"
-
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
@@ -85,12 +83,14 @@ func (s stubBackends) ListProfiles(context.Context, gcpdata.ListProfilesParams) 
 	return nil, s.fail()
 }
 
-func (s stubBackends) GetOrFetchProfile(context.Context, string, string) (*profile.Profile, gcpdata.ProfileMeta, error) {
-	return nil, gcpdata.ProfileMeta{}, s.fail()
+func (s stubBackends) TopProfile(context.Context, gcpdata.TopProfileParams) (*gcpdata.ProfileTopResult, error) {
+	return nil, &gcpdata.ProfileFetchError{Err: s.fail()}
 }
-
-func (s stubBackends) GetProfileOrDiff(context.Context, string, string, string) (*profile.Profile, gcpdata.ProfileMeta, error) {
-	return nil, gcpdata.ProfileMeta{}, s.fail()
+func (s stubBackends) PeekProfile(context.Context, gcpdata.PeekProfileParams) (*gcpdata.ProfilePeekResult, error) {
+	return nil, &gcpdata.ProfileFetchError{Err: s.fail()}
+}
+func (s stubBackends) FlamegraphProfile(context.Context, gcpdata.FlamegraphProfileParams) (*gcpdata.ProfileFlamegraphResult, error) {
+	return nil, &gcpdata.ProfileFetchError{Err: s.fail()}
 }
 
 func (s stubBackends) CompareProfiles(context.Context, string, string, string, int, int) (*gcpdata.ProfileCompareResult, error) {

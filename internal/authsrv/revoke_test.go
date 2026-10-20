@@ -14,7 +14,7 @@ import (
 )
 
 func TestRevokeRequiresRefreshSecret(t *testing.T) {
-	for _, tokenKind := range []string{"wrong secret", "missing family", "rotated token", "current token", "upstream retry"} {
+	for _, tokenKind := range []string{"wrong secret", "missing family", "rotated token", "current token", "expired current token", "upstream retry"} {
 		t.Run(tokenKind, func(t *testing.T) {
 			idp := happyIdP()
 			a, err := NewWithProvider(testConfig(t), nil, idp)
@@ -39,6 +39,9 @@ func TestRevokeRequiresRefreshSecret(t *testing.T) {
 				next.ActiveSecretHash = tokenHash("next-secret")
 				next.Generation++
 				require.NoError(t, store.RotateGrant(context.Background(), "family", rec.ActiveSecretHash, next, now))
+			case "expired current token":
+				rec.ExpiresAt = now.Add(-time.Hour)
+				store.grants["family"] = rec
 			case "upstream retry":
 				idp.revokeErr = assert.AnError
 			}
@@ -61,7 +64,7 @@ func TestRevokeRequiresRefreshSecret(t *testing.T) {
 			require.Equal(t, http.StatusOK, w.Code)
 			grant, err := store.GetGrant(context.Background(), "family")
 			require.NoError(t, err)
-			if tokenKind == "current token" || tokenKind == "upstream retry" {
+			if tokenKind == "current token" || tokenKind == "expired current token" || tokenKind == "upstream retry" {
 				assert.Equal(t, "revoked", grant.Status)
 				assert.Equal(t, []string{"upstream-refresh"}, idp.revoked)
 			} else {

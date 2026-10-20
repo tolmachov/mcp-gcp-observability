@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"runtime/debug"
 	"time"
@@ -63,20 +64,25 @@ func withCrossOriginProtection(handler http.Handler, bypass ...string) http.Hand
 	})
 }
 
+// httpEntryHandler assembles the shared HTTP request policy. Diagnostics must
+// enclose origin and body rejections; only the OAuth write endpoints bypass
+// cross-origin protection.
+func httpEntryHandler(logger *slog.Logger, handler http.Handler) http.Handler {
+	return httpdiag.Handler(logger, diagnosticRoutes,
+		withCrossOriginProtection(limitRequestBody(handler), authCORSBypassPaths...))
+}
+
 // serveHTTP runs an http.Server with graceful shutdown on ctx cancellation.
-// Extracted to avoid duplication between the HTTP run modes. corsBypass
-// patterns are exempted from cross-origin protection (used for OAuth
-// endpoints that legitimately receive cross-origin form POSTs).
 //
 // The graceful drain is bounded at 5 seconds. MCP streamable clients hold
 // hanging SSE GETs that never finish on their own, so hitting the bound is
 // the NORMAL shutdown path with any connected client — it is logged and the
 // remaining connections are force-closed, not reported as an error.
-func (s *Server) serveHTTP(ctx context.Context, handler http.Handler, addr string, corsBypass ...string) error {
+func (s *Server) serveHTTP(ctx context.Context, handler http.Handler, addr string) error {
 	s.logger.Info("Starting streamable HTTP server", "addr", addr)
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: httpdiag.Handler(s.logger, diagnosticRoutes, withCrossOriginProtection(limitRequestBody(handler), corsBypass...)),
+		Handler: httpEntryHandler(s.logger, handler),
 		// Bound the header-read phase to blunt Slowloris-style slow-header attacks.
 		ReadHeaderTimeout: 10 * time.Second,
 		MaxHeaderBytes:    64 << 10,
@@ -232,5 +238,5 @@ func (s *Server) runHTTPWithAuth(ctx context.Context, reg *metrics.Registry, opt
 
 	s.logger.Info("Starting with per-user authentication", "issuer", opts.Auth.IssuerURL)
 	mux := buildAuthMux(as, pool)
-	return s.serveHTTP(ctx, mux, opts.HTTPAddr, authCORSBypassPaths...)
+	return s.serveHTTP(ctx, mux, opts.HTTPAddr)
 }

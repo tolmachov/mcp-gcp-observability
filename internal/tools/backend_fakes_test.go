@@ -4,8 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/google/pprof/profile"
-
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 	"github.com/tolmachov/mcp-gcp-observability/internal/metrics"
 )
@@ -123,8 +121,9 @@ func (f fakeTraces) ListTraces(ctx context.Context, project, filter, view, order
 
 type fakeProfiler struct {
 	listProfiles func(ctx context.Context, params gcpdata.ListProfilesParams) (*gcpdata.ProfileListResult, error)
-	getOrFetch   func(ctx context.Context, project, profileName string) (*profile.Profile, gcpdata.ProfileMeta, error)
-	getOrDiff    func(ctx context.Context, project, profileName, baseProfileName string) (*profile.Profile, gcpdata.ProfileMeta, error)
+	top          func(ctx context.Context, params gcpdata.TopProfileParams) (*gcpdata.ProfileTopResult, error)
+	peek         func(ctx context.Context, params gcpdata.PeekProfileParams) (*gcpdata.ProfilePeekResult, error)
+	flamegraph   func(ctx context.Context, params gcpdata.FlamegraphProfileParams) (*gcpdata.ProfileFlamegraphResult, error)
 	compare      func(ctx context.Context, project, currentID, baseID string, valueIndex, topN int) (*gcpdata.ProfileCompareResult, error)
 	computeTrend func(ctx context.Context, params gcpdata.ComputeTrendsParams, progressFn func(current, total int, msg string)) (*gcpdata.ProfileTrendsResult, error)
 }
@@ -136,18 +135,25 @@ func (f fakeProfiler) ListProfiles(ctx context.Context, params gcpdata.ListProfi
 	return f.listProfiles(ctx, params)
 }
 
-func (f fakeProfiler) GetOrFetchProfile(ctx context.Context, project, profileName string) (*profile.Profile, gcpdata.ProfileMeta, error) {
-	if f.getOrFetch == nil {
-		return nil, gcpdata.ProfileMeta{}, nil
+func (f fakeProfiler) TopProfile(ctx context.Context, params gcpdata.TopProfileParams) (*gcpdata.ProfileTopResult, error) {
+	if f.top == nil {
+		return nil, nil
 	}
-	return f.getOrFetch(ctx, project, profileName)
+	return f.top(ctx, params)
 }
 
-func (f fakeProfiler) GetProfileOrDiff(ctx context.Context, project, profileName, baseProfileName string) (*profile.Profile, gcpdata.ProfileMeta, error) {
-	if f.getOrDiff != nil {
-		return f.getOrDiff(ctx, project, profileName, baseProfileName)
+func (f fakeProfiler) PeekProfile(ctx context.Context, params gcpdata.PeekProfileParams) (*gcpdata.ProfilePeekResult, error) {
+	if f.peek == nil {
+		return nil, nil
 	}
-	return f.GetOrFetchProfile(ctx, project, profileName)
+	return f.peek(ctx, params)
+}
+
+func (f fakeProfiler) FlamegraphProfile(ctx context.Context, params gcpdata.FlamegraphProfileParams) (*gcpdata.ProfileFlamegraphResult, error) {
+	if f.flamegraph == nil {
+		return nil, nil
+	}
+	return f.flamegraph(ctx, params)
 }
 
 func (f fakeProfiler) CompareProfiles(ctx context.Context, project, currentID, baseID string, valueIndex, topN int) (*gcpdata.ProfileCompareResult, error) {

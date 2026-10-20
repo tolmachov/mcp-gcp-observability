@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -26,35 +25,20 @@ func RegisterProfilerPeek(s *mcp.Server, d Deps) {
 		),
 		OutputSchema: outputSchemaFor[gcpdata.ProfilePeekResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerPeekInput) (*mcp.CallToolResult, *gcpdata.ProfilePeekResult, error) {
-		limit := clampLimit(in.Limit, 10, 30)
-
-		p, meta, errRes := loadProfile(ctx, req, d, in.ProjectID, in.ProfileID, in.BaseProfileID)
-		if errRes != nil {
-			return errRes, nil, nil
-		}
-
-		sendProgress(ctx, req, 1, 2, "Analyzing function...")
-
-		funcInfo, callers, callees, err := gcpdata.PeekFunction(p, in.FunctionName, in.ValueIndex, limit)
+		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
-			return ErrorResult(fmt.Sprintf("Failed to peek function: %v", err)), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
-
-		callersTrunc := len(callers) >= limit
-		calleesTrunc := len(callees) >= limit
-		result := &gcpdata.ProfilePeekResult{
-			ProfileMeta:      meta,
-			ValueType:        gcpdata.ProfileValueTypes(p)[in.ValueIndex], // validated by PeekFunction
-			Function:         *funcInfo,
-			Callers:          callers,
-			Callees:          callees,
-			CallersTruncated: callersTrunc,
-			CalleesTruncated: calleesTrunc,
+		progress, stop := profileNavigationProgress(ctx, req)
+		defer stop()
+		result, err := d.Profiler.PeekProfile(ctx, gcpdata.PeekProfileParams{
+			Project: project, ProfileID: in.ProfileID, BaseProfileID: in.BaseProfileID,
+			FunctionName: in.FunctionName, ValueIndex: in.ValueIndex, Limit: in.Limit,
+			OnProgress: progress,
+		})
+		if err != nil {
+			return profileNavigationErrorResult(err, "Failed to peek function:"), nil, nil
 		}
-		if callersTrunc || calleesTrunc {
-			result.TruncationHint = fmt.Sprintf("Showing up to %d callers/callees. Increase limit (max 30) for more.", limit)
-		}
-
 		return nil, result, nil
 	})
 }

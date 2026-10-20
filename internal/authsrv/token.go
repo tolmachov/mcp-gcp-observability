@@ -47,98 +47,28 @@ func (a *AuthServer) handleToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *AuthServer) tokenFromCode(w http.ResponseWriter, r *http.Request, form url.Values) {
-	now := a.now()
-	key := tokenHash(form.Get("code"))
-	rec, err := a.store.GetCode(r.Context(), key)
-	if err != nil {
-		a.storeTokenError(r.Context(), w, "get_code", err)
-		return
-	}
-	if rec.Status != "active" {
-		_ = a.store.RedeemCode(r.Context(), key, now, grantRecord{})
-		a.logger.Warn("grant_replay", "kind", "authorization_code", "family_id", rec.FamilyID)
-		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "authorization_code_reused", "authorization code was already used")
-		return
-	}
-	if !now.Before(rec.ExpiresAt) {
-		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "authorization_code_expired", "authorization code expired")
-		return
-	}
-	cc, err := openBlob(a.sealer, storedCodeBlob, rec.Claims, now)
-	if err != nil {
-		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "invalid_authorization_code", "invalid authorization code")
-		return
-	}
-	if form.Get("client_id") != cc.ClientID || form.Get("redirect_uri") != cc.RedirectURI || !verifyPKCE(form.Get("code_verifier"), cc.CodeChallenge) {
-		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "authorization_code_binding_failed", "authorization code binding failed")
-		return
-	}
-	if res := form.Get("resource"); res != "" && strings.TrimRight(res, "/") != a.cfg.IssuerURL {
-		a.tokenError(w, http.StatusBadRequest, "invalid_target", "unknown_resource", "unknown resource")
-		return
-	}
-	refreshToken, secretHash := makeRefreshToken(rec.FamilyID)
-	grantClaims := sealBlob(a.sealer, storedGrantBlob, refreshClaims{
-		Subject: cc.Subject, Email: cc.Email, Domain: cc.Domain, ClientID: cc.ClientID,
-		Resource: cc.Resource, Scopes: cc.Scopes, GoogleRefreshToken: cc.GoogleRefreshToken, IssuedAt: now.Unix(),
+	tokens, err := a.grants().ExchangeCode(r.Context(), codeExchange{
+		Code: form.Get("code"), ClientID: form.Get("client_id"), RedirectURI: form.Get("redirect_uri"),
+		CodeVerifier: form.Get("code_verifier"), Resource: form.Get("resource"),
 	})
-	grant := grantRecord{Claims: grantClaims, ActiveSecretHash: secretHash, Generation: 1, Status: "active", ExpiresAt: now.Add(a.cfg.refreshTokenTTL()), UpdatedAt: now}
-	if err := a.store.RedeemCode(r.Context(), key, now, grant); err != nil {
-		if errors.Is(err, errCodeReplay) {
-			a.logger.Warn("grant_replay", "kind", "authorization_code", "family_id", rec.FamilyID)
-			a.tokenError(w, http.StatusBadRequest, "invalid_grant", "authorization_code_reused", "authorization code was already used")
-			return
-		}
-		a.storeTokenError(r.Context(), w, "redeem_code", err)
+	if err != nil {
+		a.grantTokenError(r.Context(), w, err)
 		return
 	}
-	a.writeMintedTokens(w, cc.Subject, cc.Email, cc.Domain, cc.ClientID, cc.Resource, rec.FamilyID, cc.Scopes, cc.GoogleAccessToken, cc.GoogleExpiry, refreshToken)
+	a.writeMintedTokens(w, tokens)
 }
 
 func (a *AuthServer) tokenFromRefresh(w http.ResponseWriter, r *http.Request, form url.Values) {
-	now := a.now()
-	familyID, secret, err := parseRefreshToken(form.Get("refresh_token"))
+	grants := a.grants()
+	prepared, err := grants.PrepareRefresh(r.Context(), form.Get("refresh_token"), form.Get("client_id"))
 	if err != nil {
-		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "invalid_refresh_token", "invalid refresh token")
+		a.grantTokenError(r.Context(), w, err)
 		return
 	}
-	rec, err := a.store.GetGrant(r.Context(), familyID)
-	if err != nil {
-		a.storeTokenError(r.Context(), w, "get_grant", err)
-		return
-	}
-	presentedHash := tokenHash(secret)
-	if rec.Status != "active" || !now.Before(rec.ExpiresAt) {
-		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "grant_inactive", "refresh grant is inactive or expired")
-		return
-	}
-	if !secretMatches(secret, rec.ActiveSecretHash) {
-		replayErr := a.store.RotateGrant(r.Context(), familyID, presentedHash, grantRecord{}, now)
-		if replayErr != nil && !errors.Is(replayErr, errGrantReplay) && !errors.Is(replayErr, errGrantInactive) {
-			a.storeTokenError(r.Context(), w, "revoke_replayed_grant", replayErr)
-			return
-		}
-		a.logger.Warn("grant_replay", "kind", "refresh_token", "family_id", familyID)
-		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "refresh_token_replayed", "refresh token replay revoked this grant family")
-		return
-	}
-	rc, err := openBlob(a.sealer, storedGrantBlob, rec.Claims, now)
-	if err != nil || rc.GoogleRefreshToken == "" {
-		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "invalid_grant_record", "refresh grant is invalid")
-		return
-	}
-	if cid := form.Get("client_id"); cid != "" && cid != rc.ClientID {
-		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "client_id_mismatch", "client_id mismatch")
-		return
-	}
-	if len(a.cfg.AllowedDomains) > 0 && !a.cfg.domainAllowed(rc.Domain, rc.Email) {
-		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "domain_not_allowed", "account domain is not allowed")
-		return
-	}
-	tok, err := a.idp.Refresh(r.Context(), rc.GoogleRefreshToken)
+	tok, err := a.idp.Refresh(r.Context(), prepared.GoogleRefreshToken())
 	if err != nil {
 		if _, ok := errors.AsType[*oauth2.RetrieveError](err); ok {
-			_ = a.store.RevokeGrant(r.Context(), familyID, now)
+			_ = grants.RevokeFamily(r.Context(), prepared)
 			a.tokenError(w, http.StatusBadRequest, "invalid_grant", "upstream_grant_revoked", "upstream grant revoked, log in again")
 			return
 		}
@@ -152,42 +82,46 @@ func (a *AuthServer) tokenFromRefresh(w http.ResponseWriter, r *http.Request, fo
 			return
 		}
 		if !allowed {
-			_ = a.store.RevokeGrant(r.Context(), familyID, now)
+			_ = grants.RevokeFamily(r.Context(), prepared)
 			a.tokenError(w, http.StatusBadRequest, "invalid_grant", "project_access_lost", "account no longer has access to the pinned project")
 			return
 		}
 	}
-	googleRefresh := rc.GoogleRefreshToken
-	if tok.RefreshToken != "" {
-		googleRefresh = tok.RefreshToken
-	}
-	nextToken, nextHash := makeRefreshToken(familyID)
-	nextClaims := sealBlob(a.sealer, storedGrantBlob, refreshClaims{Subject: rc.Subject, Email: rc.Email, Domain: rc.Domain, ClientID: rc.ClientID, Resource: rc.Resource, Scopes: rc.Scopes, GoogleRefreshToken: googleRefresh, IssuedAt: rc.IssuedAt})
-	next := grantRecord{Claims: nextClaims, ActiveSecretHash: nextHash, Generation: rec.Generation + 1, Status: "active", ExpiresAt: rec.ExpiresAt, UpdatedAt: now}
-	if err := a.store.RotateGrant(r.Context(), familyID, presentedHash, next, now); err != nil {
-		if errors.Is(err, errGrantReplay) || errors.Is(err, errGrantInactive) {
-			a.logger.Warn("grant_replay", "kind", "refresh_token", "family_id", familyID)
-			a.tokenError(w, http.StatusBadRequest, "invalid_grant", "refresh_token_replayed", "refresh token replay revoked this grant family")
-			return
-		}
-		a.storeTokenError(r.Context(), w, "rotate_grant", err)
+	tokens, err := grants.RotateRefresh(r.Context(), prepared, tok.RefreshToken)
+	if err != nil {
+		a.grantTokenError(r.Context(), w, err)
 		return
 	}
-	a.writeMintedTokens(w, rc.Subject, rc.Email, rc.Domain, rc.ClientID, rc.Resource, familyID, rc.Scopes, tok.AccessToken, tok.Expiry.Unix(), nextToken)
+	tokens.GoogleAccessToken, tokens.GoogleExpiry = tok.AccessToken, tok.Expiry.Unix()
+	a.writeMintedTokens(w, tokens)
 }
 
-func (a *AuthServer) writeMintedTokens(w http.ResponseWriter, subject, email, domain, clientID, resource, familyID string, scopes []string, googleAccess string, googleExpiry int64, refresh string) {
+// grantTokenError keeps OAuth wire formatting and store diagnostics at the
+// HTTP boundary; lifecycle operations return only classified domain failures.
+func (a *AuthServer) grantTokenError(ctx context.Context, w http.ResponseWriter, err error) {
+	if failure, ok := errors.AsType[*grantStoreError](err); ok {
+		a.storeTokenError(ctx, w, failure.operation, failure.cause)
+		return
+	}
+	if rejected, ok := errors.AsType[*grantRejection](err); ok {
+		a.tokenError(w, http.StatusBadRequest, rejected.code, rejected.reason, rejected.description)
+		return
+	}
+	a.tokenError(w, http.StatusInternalServerError, "server_error", "unexpected_grant_failure", "unexpected grant failure")
+}
+
+func (a *AuthServer) writeMintedTokens(w http.ResponseWriter, tokens grantTokens) {
 	now := a.now()
 	exp := now.Add(accessTokenTTL)
-	if upstream := time.Unix(googleExpiry, 0); upstream.Before(exp) {
+	if upstream := time.Unix(tokens.GoogleExpiry, 0); upstream.Before(exp) {
 		exp = upstream
 	}
 	if !exp.After(now) {
 		a.tokenError(w, http.StatusBadRequest, "invalid_grant", "upstream_token_expired", "upstream token already expired")
 		return
 	}
-	accessToken := sealBlob(a.sealer, accessBlob, accessClaims{Subject: subject, Email: email, Domain: domain, ClientID: clientID, Resource: resource, FamilyID: familyID, Scopes: scopes, GoogleAccessToken: googleAccess, GoogleExpiry: googleExpiry, IssuedAt: now.Unix(), ExpiresAt: exp.Unix()})
-	a.writeJSON(w, http.StatusOK, &tokenResponse{AccessToken: accessToken, TokenType: "Bearer", ExpiresIn: int64(exp.Sub(now).Seconds()), RefreshToken: refresh, Scope: strings.Join(scopes, " ")})
+	accessToken := sealBlob(a.sealer, accessBlob, accessClaims{Subject: tokens.Subject, Email: tokens.Email, Domain: tokens.Domain, ClientID: tokens.ClientID, Resource: tokens.Resource, FamilyID: tokens.FamilyID, Scopes: tokens.Scopes, GoogleAccessToken: tokens.GoogleAccessToken, GoogleExpiry: tokens.GoogleExpiry, IssuedAt: now.Unix(), ExpiresAt: exp.Unix()})
+	a.writeJSON(w, http.StatusOK, &tokenResponse{AccessToken: accessToken, TokenType: "Bearer", ExpiresIn: int64(exp.Sub(now).Seconds()), RefreshToken: tokens.RefreshToken, Scope: strings.Join(tokens.Scopes, " ")})
 }
 
 func (a *AuthServer) storeTokenError(ctx context.Context, w http.ResponseWriter, operation string, err error) {

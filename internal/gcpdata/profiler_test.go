@@ -78,7 +78,7 @@ func buildTestProfile() *profile.Profile {
 
 func TestTopFunctions_Cumulative(t *testing.T) {
 	p := buildTestProfile()
-	result, total, truncated, err := TopFunctions(p, 0, 10, "cumulative", "")
+	result, total, truncated, err := topFunctions(p, 0, 10, "cumulative", "")
 	require.NoError(t, err)
 	assert.False(t, truncated)
 	assert.Equal(t, int64(100), total)
@@ -97,7 +97,7 @@ func TestTopFunctions_Cumulative(t *testing.T) {
 
 func TestTopFunctions_Self(t *testing.T) {
 	p := buildTestProfile()
-	result, _, _, err := TopFunctions(p, 0, 10, "self", "")
+	result, _, _, err := topFunctions(p, 0, 10, "self", "")
 	require.NoError(t, err)
 
 	// db.Query has highest self cost (50).
@@ -107,7 +107,7 @@ func TestTopFunctions_Self(t *testing.T) {
 
 func TestTopFunctions_Filter(t *testing.T) {
 	p := buildTestProfile()
-	result, _, _, err := TopFunctions(p, 0, 10, "cumulative", "myapp")
+	result, _, _, err := topFunctions(p, 0, 10, "cumulative", "myapp")
 	require.NoError(t, err)
 	assert.Len(t, result, 2) // handler and logger
 	for _, f := range result {
@@ -117,7 +117,7 @@ func TestTopFunctions_Filter(t *testing.T) {
 
 func TestTopFunctions_Limit(t *testing.T) {
 	p := buildTestProfile()
-	result, _, truncated, err := TopFunctions(p, 0, 2, "cumulative", "")
+	result, _, truncated, err := topFunctions(p, 0, 2, "cumulative", "")
 	require.NoError(t, err)
 	assert.True(t, truncated)
 	assert.Len(t, result, 2)
@@ -125,7 +125,7 @@ func TestTopFunctions_Limit(t *testing.T) {
 
 func TestTopFunctions_InvalidValueIndex(t *testing.T) {
 	p := buildTestProfile()
-	_, _, _, err := TopFunctions(p, 5, 10, "cumulative", "")
+	_, _, _, err := topFunctions(p, 5, 10, "cumulative", "")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "value_index 5 out of range")
 }
@@ -133,14 +133,14 @@ func TestTopFunctions_InvalidValueIndex(t *testing.T) {
 func TestTopFunctions_InvalidSortBy(t *testing.T) {
 	p := buildTestProfile()
 	for _, sortBy := range []string{"", "total"} {
-		_, _, _, err := TopFunctions(p, 0, 10, sortBy, "")
+		_, _, _, err := topFunctions(p, 0, 10, sortBy, "")
 		assert.ErrorContains(t, err, "invalid sort_by", sortBy)
 	}
 }
 
 func TestPeekFunction(t *testing.T) {
 	p := buildTestProfile()
-	funcInfo, callers, callees, err := PeekFunction(p, "myapp/handler.Handle", 0, 10)
+	funcInfo, callers, callees, err := peekFunction(p, "myapp/handler.Handle", 0, 10)
 	require.NoError(t, err)
 
 	assert.Equal(t, "myapp/handler.Handle", funcInfo.Name)
@@ -163,7 +163,7 @@ func TestPeekFunction(t *testing.T) {
 
 func TestPeekFunction_NotFound(t *testing.T) {
 	p := buildTestProfile()
-	_, _, _, err := PeekFunction(p, "nonexistent.Function", 0, 10)
+	_, _, _, err := peekFunction(p, "nonexistent.Function", 0, 10)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no function matching")
 }
@@ -171,14 +171,14 @@ func TestPeekFunction_NotFound(t *testing.T) {
 func TestPeekFunction_Ambiguous(t *testing.T) {
 	p := buildTestProfile()
 	// "myapp/" matches both handler.Handle and logger.Log.
-	_, _, _, err := PeekFunction(p, "myapp/", 0, 10)
+	_, _, _, err := peekFunction(p, "myapp/", 0, 10)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "ambiguous")
 }
 
 func TestFlamegraph_FullTree(t *testing.T) {
 	p := buildTestProfile()
-	root, total, pruned, err := Flamegraph(p, "", 0, 10, 1000, 0)
+	root, total, pruned, err := flamegraph(p, "", 0, 10, 1000, 0)
 	require.NoError(t, err)
 	assert.Equal(t, int64(100), total)
 	assert.Equal(t, 0, pruned)
@@ -196,7 +196,7 @@ func TestFlamegraph_FullTree(t *testing.T) {
 
 func TestFlamegraph_DepthLimit(t *testing.T) {
 	p := buildTestProfile()
-	root, _, pruned, err := Flamegraph(p, "", 0, 1, 1000, 0)
+	root, _, pruned, err := flamegraph(p, "", 0, 1, 1000, 0)
 	require.NoError(t, err)
 
 	// Depth 1 means root has children but children don't.
@@ -208,7 +208,7 @@ func TestFlamegraph_DepthLimit(t *testing.T) {
 
 func TestFlamegraph_MinPct(t *testing.T) {
 	p := buildTestProfile()
-	root, _, pruned, err := Flamegraph(p, "", 0, 10, 1000, 25)
+	root, _, pruned, err := flamegraph(p, "", 0, 10, 1000, 25)
 	require.NoError(t, err)
 
 	// logger (20%) should be pruned. handler (80%) should remain.
@@ -220,11 +220,11 @@ func TestFlamegraph_MinPct(t *testing.T) {
 
 func TestFlamegraph_NodeBudget(t *testing.T) {
 	p := buildTestProfile()
-	full, _, _, err := Flamegraph(p, "", 0, 10, 1000, 0)
+	full, _, _, err := flamegraph(p, "", 0, 10, 1000, 0)
 	require.NoError(t, err)
 	require.Greater(t, flamegraphNodeCount(full), 3)
 
-	root, _, pruned, err := Flamegraph(p, "", 0, 10, 3, 0)
+	root, _, pruned, err := flamegraph(p, "", 0, 10, 3, 0)
 	require.NoError(t, err)
 	assert.Equal(t, 3, flamegraphNodeCount(root))
 	// (root) → main.main → handler (the costlier child), depth-first.
@@ -246,7 +246,7 @@ func flamegraphNodeCount(node *FlamegraphNode) int {
 
 func TestFlamegraph_Subtree(t *testing.T) {
 	p := buildTestProfile()
-	root, _, _, err := Flamegraph(p, "handler.Handle", 0, 10, 1000, 0)
+	root, _, _, err := flamegraph(p, "handler.Handle", 0, 10, 1000, 0)
 	require.NoError(t, err)
 
 	assert.Equal(t, "myapp/handler.Handle", root.Name)
@@ -256,7 +256,7 @@ func TestFlamegraph_Subtree(t *testing.T) {
 
 func TestFlamegraph_SubtreeNotFound(t *testing.T) {
 	p := buildTestProfile()
-	_, _, _, err := Flamegraph(p, "nonexistent", 0, 10, 1000, 0)
+	_, _, _, err := flamegraph(p, "nonexistent", 0, 10, 1000, 0)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not found in profile call tree")
 }
@@ -291,7 +291,7 @@ func TestProfileValueTypes(t *testing.T) {
 			{Type: "alloc_objects", Unit: "count"},
 		},
 	}
-	types := ProfileValueTypes(p)
+	types := profileValueTypes(p)
 	require.Len(t, types, 2)
 	assert.Equal(t, "alloc_space", types[0].Type)
 	assert.Equal(t, "bytes", types[0].Unit)
@@ -392,7 +392,7 @@ func TestBuildDiffProfile(t *testing.T) {
 	require.NotNil(t, diff)
 
 	// The diff should show the delta (100 - 60 = 40).
-	topFuncs, total, _, err := TopFunctions(diff, 0, 10, "cumulative", "")
+	topFuncs, total, _, err := topFunctions(diff, 0, 10, "cumulative", "")
 	require.NoError(t, err)
 	assert.Equal(t, int64(40), total)
 	require.Len(t, topFuncs, 1)
@@ -414,7 +414,7 @@ func TestTopFunctions_EmptyProfile(t *testing.T) {
 	p := &profile.Profile{
 		SampleType: []*profile.ValueType{{Type: "cpu", Unit: "nanoseconds"}},
 	}
-	result, total, truncated, err := TopFunctions(p, 0, 10, "cumulative", "")
+	result, total, truncated, err := topFunctions(p, 0, 10, "cumulative", "")
 	require.NoError(t, err)
 	assert.Empty(t, result)
 	assert.Equal(t, int64(0), total)
@@ -437,7 +437,7 @@ func TestTopFunctions_NegativeValues(t *testing.T) {
 		Function: []*profile.Function{fn1, fn2},
 	}
 
-	result, total, _, err := TopFunctions(p, 0, 10, "cumulative", "")
+	result, total, _, err := topFunctions(p, 0, 10, "cumulative", "")
 	require.NoError(t, err)
 	assert.Equal(t, int64(20), total) // -30 + 50 = 20
 
@@ -464,7 +464,7 @@ func TestPeekFunction_NegativeValues(t *testing.T) {
 		Function: []*profile.Function{fn1, fn2},
 	}
 
-	info, callers, _, err := PeekFunction(p, "target", 0, 10)
+	info, callers, _, err := peekFunction(p, "target", 0, 10)
 	require.NoError(t, err)
 	assert.Equal(t, int64(-40), info.Cumulative)
 	assert.Equal(t, int64(-40), info.Self)
@@ -492,7 +492,7 @@ func TestPeekFunction_ManyAmbiguous(t *testing.T) {
 		Function:   funcs,
 	}
 
-	_, _, _, err := PeekFunction(p, "func", 0, 10)
+	_, _, _, err := peekFunction(p, "func", 0, 10)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "matches 15 functions")
 	assert.Contains(t, err.Error(), "first 10")
@@ -500,7 +500,7 @@ func TestPeekFunction_ManyAmbiguous(t *testing.T) {
 
 func TestFlamegraph_SelfCosts(t *testing.T) {
 	p := buildTestProfile()
-	root, _, _, err := Flamegraph(p, "", 0, 10, 1000, 0)
+	root, _, _, err := flamegraph(p, "", 0, 10, 1000, 0)
 	require.NoError(t, err)
 
 	mainNode := root.Children[0]
@@ -539,7 +539,7 @@ func TestFlamegraph_NegativeValues(t *testing.T) {
 		Function: []*profile.Function{fn1, fn2},
 	}
 
-	root, total, _, err := Flamegraph(p, "", 0, 10, 1000, 0)
+	root, total, _, err := flamegraph(p, "", 0, 10, 1000, 0)
 	require.NoError(t, err)
 	assert.Equal(t, int64(-20), total)
 	require.Len(t, root.Children, 1)
@@ -613,9 +613,9 @@ func TestCompareProfiles_DeltaComputation(t *testing.T) {
 	baseProfile := makeProfile(map[string]int64{"funcA": 80, "funcC": 30})
 
 	// Exercise the same delta semantics independently of the transport/API.
-	currentTop, currentTotal, _, err := TopFunctions(currentProfile, 0, 0, "cumulative", "")
+	currentTop, currentTotal, _, err := topFunctions(currentProfile, 0, 0, "cumulative", "")
 	require.NoError(t, err)
-	baseTop, baseTotal, _, err := TopFunctions(baseProfile, 0, 0, "cumulative", "")
+	baseTop, baseTotal, _, err := topFunctions(baseProfile, 0, 0, "cumulative", "")
 	require.NoError(t, err)
 
 	assert.Equal(t, int64(150), currentTotal)
@@ -681,7 +681,7 @@ func TestFlamegraph_SubtreeAmbiguous(t *testing.T) {
 		Function: []*profile.Function{fn1, fn2, fn3},
 	}
 
-	_, _, _, err := Flamegraph(p, "Marshal", 0, 10, 1000, 0)
+	_, _, _, err := flamegraph(p, "Marshal", 0, 10, 1000, 0)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "matches 2 nodes")
 	assert.Contains(t, err.Error(), "json.Marshal")
@@ -704,7 +704,7 @@ func TestFlamegraph_ZeroTotalValue(t *testing.T) {
 		Function: []*profile.Function{fn1, fn2},
 	}
 
-	root, total, _, err := Flamegraph(p, "", 0, 10, 1000, 0)
+	root, total, _, err := flamegraph(p, "", 0, 10, 1000, 0)
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), total)
 	// Root should exist even with zero total.

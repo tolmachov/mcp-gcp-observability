@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -26,34 +25,20 @@ func RegisterProfilerTop(s *mcp.Server, d Deps) {
 		),
 		OutputSchema: outputSchemaFor[gcpdata.ProfileTopResult](),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerTopInput) (*mcp.CallToolResult, *gcpdata.ProfileTopResult, error) {
-		limit := clampLimit(in.Limit, 20, 50)
-
-		p, meta, errRes := loadProfile(ctx, req, d, in.ProjectID, in.ProfileID, in.BaseProfileID)
-		if errRes != nil {
-			return errRes, nil, nil
-		}
-
-		sendProgress(ctx, req, 1, 2, "Analyzing profile...")
-
-		topFuncs, total, truncated, err := gcpdata.TopFunctions(p, in.ValueIndex, limit, in.SortBy, in.Filter)
+		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
-			return ErrorResult(fmt.Sprintf("Failed to analyze profile: %v", err)), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
-		// TopFunctions validated in.ValueIndex against the profile's value types.
-		vt := gcpdata.ProfileValueTypes(p)
-
-		result := &gcpdata.ProfileTopResult{
-			ProfileMeta:     meta,
-			ValueType:       vt[in.ValueIndex],
-			AvailableValues: vt,
-			TotalValue:      total,
-			TopFunctions:    topFuncs,
-			Truncated:       truncated,
+		progress, stop := profileNavigationProgress(ctx, req)
+		defer stop()
+		result, err := d.Profiler.TopProfile(ctx, gcpdata.TopProfileParams{
+			Project: project, ProfileID: in.ProfileID, BaseProfileID: in.BaseProfileID,
+			ValueIndex: in.ValueIndex, Limit: in.Limit, SortBy: in.SortBy, Filter: in.Filter,
+			OnProgress: progress,
+		})
+		if err != nil {
+			return profileNavigationErrorResult(err, "Failed to analyze profile:"), nil, nil
 		}
-		if truncated {
-			result.TruncationHint = fmt.Sprintf("Showing top %d functions. Use filter to narrow results or increase limit (max 50).", limit)
-		}
-
 		return nil, result, nil
 	})
 }

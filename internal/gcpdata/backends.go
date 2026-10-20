@@ -9,7 +9,6 @@ import (
 	errorreporting "cloud.google.com/go/errorreporting/apiv1beta1"
 	logging "cloud.google.com/go/logging/apiv2"
 	cloudtrace "cloud.google.com/go/trace/apiv1"
-	"github.com/google/pprof/profile"
 )
 
 // This file defines one interface per GCP backend (logging, error reporting,
@@ -51,8 +50,9 @@ type TraceQuerier interface {
 // when the querier's client set is torn down.
 type ProfilerQuerier interface {
 	ListProfiles(ctx context.Context, params ListProfilesParams) (*ProfileListResult, error)
-	GetOrFetchProfile(ctx context.Context, project, profileName string) (*profile.Profile, ProfileMeta, error)
-	GetProfileOrDiff(ctx context.Context, project, profileName, baseProfileName string) (*profile.Profile, ProfileMeta, error)
+	TopProfile(ctx context.Context, params TopProfileParams) (*ProfileTopResult, error)
+	PeekProfile(ctx context.Context, params PeekProfileParams) (*ProfilePeekResult, error)
+	FlamegraphProfile(ctx context.Context, params FlamegraphProfileParams) (*ProfileFlamegraphResult, error)
 	CompareProfiles(ctx context.Context, project, currentID, baseID string, valueIndex, topN int) (*ProfileCompareResult, error)
 	ComputeTrends(ctx context.Context, params ComputeTrendsParams, progressFn func(current, total int, msg string)) (*ProfileTrendsResult, error)
 	Close() error
