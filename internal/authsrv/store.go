@@ -59,6 +59,7 @@ type oauthStateStore interface {
 	GetGrant(context.Context, string) (grantRecord, error)
 	RotateGrant(context.Context, string, string, grantRecord, time.Time) error
 	RevokeGrant(context.Context, string, time.Time) error
+	RevokeGrantIfSecret(context.Context, string, string, time.Time) (bool, error)
 	Close() error
 }
 
@@ -201,15 +202,17 @@ func (s *memoryStateStore) RedeemCode(_ context.Context, key string, now time.Ti
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rec, ok := s.codes[key]
-	if !ok || !now.Before(rec.ExpiresAt) {
+	if !ok {
 		return errStateNotFound
 	}
-	if rec.Status != "active" {
+	decision := codeRedemptionDecision(rec, now)
+	if errors.Is(decision, errCodeReplay) {
 		if g, ok := s.grants[rec.FamilyID]; ok {
-			g.Status, g.UpdatedAt = "revoked", now
-			s.grants[rec.FamilyID] = g
+			s.grants[rec.FamilyID] = revokeGrantRecord(g, now)
 		}
-		return errCodeReplay
+	}
+	if decision != nil {
+		return decision
 	}
 	rec.Status, rec.UsedAt = "used", now
 	s.codes[key] = rec
@@ -231,13 +234,15 @@ func (s *memoryStateStore) RotateGrant(_ context.Context, id, expected string, n
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rec, ok := s.grants[id]
-	if !ok || rec.Status != "active" || !now.Before(rec.ExpiresAt) {
+	if !ok {
 		return errGrantInactive
 	}
-	if rec.ActiveSecretHash != expected {
-		rec.Status, rec.UpdatedAt = "revoked", now
-		s.grants[id] = rec
-		return errGrantReplay
+	decision := grantRotationDecision(rec, expected, now)
+	if errors.Is(decision, errGrantReplay) {
+		s.grants[id] = revokeGrantRecord(rec, now)
+	}
+	if decision != nil {
+		return decision
 	}
 	s.grants[id] = next
 	return nil
@@ -250,9 +255,19 @@ func (s *memoryStateStore) RevokeGrant(_ context.Context, id string, now time.Ti
 	if !ok {
 		return nil
 	}
-	rec.Status, rec.UpdatedAt = "revoked", now
-	s.grants[id] = rec
+	s.grants[id] = revokeGrantRecord(rec, now)
 	return nil
+}
+
+func (s *memoryStateStore) RevokeGrantIfSecret(_ context.Context, id, expected string, now time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.grants[id]
+	if !ok || !grantRevokePossessed(rec, expected) {
+		return false, nil
+	}
+	s.grants[id] = revokeGrantRecord(rec, now)
+	return true, nil
 }
 
 func (s *memoryStateStore) Close() error { return nil }

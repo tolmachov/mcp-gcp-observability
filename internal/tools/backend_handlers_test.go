@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/pprof/profile"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -320,9 +319,8 @@ func TestProfilerCompareHandler(t *testing.T) {
 
 // TestProfilerNavigationHandlersValidateBeforeFetch pins that the diff-navigation
 // handlers reject bad input before spending a profile fetch. The internal
-// max_depth/limit clamps are exercised indirectly (they need a real parsed
-// profile), but the required-field and non-negative guards are the meaningful
-// user-facing contract.
+// max_depth/limit clamps belong to the navigation backend; the required-field
+// and non-negative guards here prevent invalid requests from reaching it.
 func TestProfilerNavigationHandlersValidateBeforeFetch(t *testing.T) {
 	ctx := context.Background()
 	cases := []struct {
@@ -344,10 +342,20 @@ func TestProfilerNavigationHandlersValidateBeforeFetch(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fetched := false
 			deps := Deps{
-				Profiler: fakeProfiler{getOrFetch: func(context.Context, string, string) (*profile.Profile, gcpdata.ProfileMeta, error) {
-					fetched = true
-					return nil, gcpdata.ProfileMeta{}, nil
-				}},
+				Profiler: fakeProfiler{
+					top: func(context.Context, gcpdata.TopProfileParams) (*gcpdata.ProfileTopResult, error) {
+						fetched = true
+						return nil, nil
+					},
+					peek: func(context.Context, gcpdata.PeekProfileParams) (*gcpdata.ProfilePeekResult, error) {
+						fetched = true
+						return nil, nil
+					},
+					flamegraph: func(context.Context, gcpdata.FlamegraphProfileParams) (*gcpdata.ProfileFlamegraphResult, error) {
+						fetched = true
+						return nil, nil
+					},
+				},
 				Project: MustProjectPolicy("test-project"),
 			}
 			ts := newTestToolServer(t)

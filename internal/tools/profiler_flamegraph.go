@@ -2,16 +2,12 @@ package tools
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
 )
-
-// flamegraphMaxNodes bounds the nodes profiler_flamegraph returns, root included.
-const flamegraphMaxNodes = 1000
 
 // flamegraphSchema is a hand-written JSON schema for ProfileFlamegraphResult.
 // FlamegraphNode is recursive (children[] contains FlamegraphNode), so we use
@@ -63,38 +59,20 @@ func RegisterProfilerFlamegraph(s *mcp.Server, d Deps) {
 		),
 		OutputSchema: flamegraphSchema,
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in ProfilerFlamegraphInput) (*mcp.CallToolResult, *gcpdata.ProfileFlamegraphResult, error) {
-		maxDepth := clampLimit(in.MaxDepth, 3, 6)
-
-		minPct := in.MinPct
-		if minPct <= 0 {
-			minPct = 1.0
-		}
-
-		p, meta, errRes := loadProfile(ctx, req, d, in.ProjectID, in.ProfileID, in.BaseProfileID)
-		if errRes != nil {
-			return errRes, nil, nil
-		}
-
-		sendProgress(ctx, req, 1, 2, "Building flamegraph...")
-
-		root, total, pruned, err := gcpdata.Flamegraph(p, in.RootFunction, in.ValueIndex, maxDepth, flamegraphMaxNodes, minPct)
+		project, err := d.Project.Resolve(in.ProjectID)
 		if err != nil {
-			return ErrorResult(fmt.Sprintf("Failed to build flamegraph: %v", err)), nil, nil
+			return ErrorResult(err.Error()), nil, nil
 		}
-
-		result := &gcpdata.ProfileFlamegraphResult{
-			ProfileMeta: meta,
-			ValueType:   gcpdata.ProfileValueTypes(p)[in.ValueIndex], // validated by Flamegraph
-			TotalValue:  total,
-			Root:        *root,
-			MaxDepth:    maxDepth,
-			MinPct:      minPct,
-			PrunedNodes: pruned,
+		progress, stop := profileNavigationProgress(ctx, req)
+		defer stop()
+		result, err := d.Profiler.FlamegraphProfile(ctx, gcpdata.FlamegraphProfileParams{
+			Project: project, ProfileID: in.ProfileID, BaseProfileID: in.BaseProfileID,
+			RootFunction: in.RootFunction, ValueIndex: in.ValueIndex, MaxDepth: in.MaxDepth, MinPct: in.MinPct,
+			OnProgress: progress,
+		})
+		if err != nil {
+			return profileNavigationErrorResult(err, "Failed to build flamegraph:"), nil, nil
 		}
-		if total == 0 {
-			result.Warning = "Total profile value is zero (positive and negative values cancel out in diff profiles). All percentage values will be 0%."
-		}
-
 		return nil, result, nil
 	})
 }

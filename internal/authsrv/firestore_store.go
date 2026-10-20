@@ -148,15 +148,16 @@ func (s *firestoreStateStore) RedeemCode(ctx context.Context, key string, now ti
 		if err := doc.DataTo(&rec); err != nil {
 			return fmt.Errorf("decoding OAuth authorization code in transaction: %w", err)
 		}
-		if !now.Before(rec.ExpiresAt) {
-			return errStateNotFound
-		}
-		if rec.Status != "active" {
+		decision := codeRedemptionDecision(rec, now)
+		if errors.Is(decision, errCodeReplay) {
 			replayed = true
 			if err := tx.Set(s.grant(rec.FamilyID), map[string]any{"status": "revoked", "updated_at": now}, firestore.MergeAll); err != nil {
 				return fmt.Errorf("revoking replayed OAuth grant: %w", err)
 			}
 			return nil
+		}
+		if decision != nil {
+			return decision
 		}
 		if err := tx.Update(ref, []firestore.Update{{Path: "status", Value: "used"}, {Path: "used_at", Value: now}}); err != nil {
 			return fmt.Errorf("marking OAuth authorization code used: %w", err)
@@ -206,15 +207,16 @@ func (s *firestoreStateStore) RotateGrant(ctx context.Context, id, expected stri
 		if err := doc.DataTo(&current); err != nil {
 			return fmt.Errorf("decoding OAuth grant in transaction: %w", err)
 		}
-		if current.Status != "active" || !now.Before(current.ExpiresAt) {
-			return errGrantInactive
-		}
-		if current.ActiveSecretHash != expected {
+		decision := grantRotationDecision(current, expected, now)
+		if errors.Is(decision, errGrantReplay) {
 			replayed = true
 			if err := tx.Update(ref, []firestore.Update{{Path: "status", Value: "revoked"}, {Path: "updated_at", Value: now}}); err != nil {
 				return fmt.Errorf("revoking replayed OAuth grant: %w", err)
 			}
 			return nil
+		}
+		if decision != nil {
+			return decision
 		}
 		if err := tx.Set(ref, next); err != nil {
 			return fmt.Errorf("rotating OAuth grant: %w", err)
@@ -247,6 +249,37 @@ func (s *firestoreStateStore) RevokeGrant(ctx context.Context, id string, now ti
 		return fmt.Errorf("running OAuth grant revocation transaction: %w", err)
 	}
 	return nil
+}
+
+func (s *firestoreStateStore) RevokeGrantIfSecret(ctx context.Context, id, expected string, now time.Time) (bool, error) {
+	revoked := false
+	err := s.client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		revoked = false
+		ref := s.grant(id)
+		doc, err := tx.Get(ref)
+		if status.Code(err) == codes.NotFound {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("reading OAuth grant for conditional revocation: %w", err)
+		}
+		var current grantRecord
+		if err := doc.DataTo(&current); err != nil {
+			return fmt.Errorf("decoding OAuth grant for conditional revocation: %w", err)
+		}
+		if !grantRevokePossessed(current, expected) {
+			return nil
+		}
+		if err := tx.Update(ref, []firestore.Update{{Path: "status", Value: "revoked"}, {Path: "updated_at", Value: now}}); err != nil {
+			return fmt.Errorf("revoking possessed OAuth grant: %w", err)
+		}
+		revoked = true
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("running conditional OAuth grant revocation transaction: %w", err)
+	}
+	return revoked, nil
 }
 
 func (s *firestoreStateStore) Close() error {

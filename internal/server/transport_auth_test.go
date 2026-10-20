@@ -22,7 +22,6 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/authsrv"
-	"github.com/tolmachov/mcp-gcp-observability/internal/httpdiag"
 	"github.com/tolmachov/mcp-gcp-observability/internal/httpdiag/httpdiagtest"
 )
 
@@ -91,8 +90,7 @@ func newWiringServerWithLogger(t *testing.T, logger *slog.Logger) (*httptest.Ser
 	pool := newUserPool(context.Background(), b.builder(), discardLogger())
 	t.Cleanup(func() { _ = pool.Close() })
 
-	handler := httpdiag.Handler(logger, diagnosticRoutes, withCrossOriginProtection(limitRequestBody(buildAuthMux(as, pool)), authCORSBypassPaths...))
-	ts.Config.Handler = handler
+	ts.Config.Handler = httpEntryHandler(logger, buildAuthMux(as, pool))
 	return ts, b
 }
 

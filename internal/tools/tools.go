@@ -12,7 +12,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/pprof/profile"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/tolmachov/mcp-gcp-observability/internal/gcpdata"
@@ -371,24 +370,24 @@ func requireProfiler(q gcpdata.ProfilerQuerier) {
 	}
 }
 
-// loadProfile resolves the project and fetches the profile (or the
-// request-local current-minus-base diff when baseProfileID is set) for
-// profiler_top, profiler_peek and profiler_flamegraph. On failure it returns
-// the tool error result to send back.
-func loadProfile(ctx context.Context, req *mcp.CallToolRequest, d Deps, projectID, profileID, baseProfileID string) (*profile.Profile, gcpdata.ProfileMeta, *mcp.CallToolResult) {
-	project, err := d.Project.Resolve(projectID)
-	if err != nil {
-		return nil, gcpdata.ProfileMeta{}, ErrorResult(err.Error())
+// profileNavigationProgress keeps long Export scans alive and switches to the
+// analysis notification when the navigation backend has fetched its sources.
+func profileNavigationProgress(ctx context.Context, req *mcp.CallToolRequest) (progress func(int, int, string), stop func()) {
+	stop = sync.OnceFunc(startProgressHeartbeat(ctx, req, "Downloading profile…"))
+	return func(current, total int, message string) {
+		stop()
+		sendProgress(ctx, req, float64(current), float64(total), message)
+	}, stop
+}
+
+// profileNavigationErrorResult preserves the distinct guidance for fetch/diff
+// failures and input-dependent analysis failures without exposing parsed graphs.
+func profileNavigationErrorResult(err error, analysisMessage string) *mcp.CallToolResult {
+	var fetchErr *gcpdata.ProfileFetchError
+	if errors.As(err, &fetchErr) {
+		return gcpErrorResult(fmt.Sprintf("Failed to fetch profile: %v", err), err, "")
 	}
-	// Fetching an uncached profile scans the Export API and can run long on
-	// large projects; heartbeat progress keeps the client request alive.
-	stopHeartbeat := startProgressHeartbeat(ctx, req, "Downloading profile…")
-	p, meta, err := d.Profiler.GetProfileOrDiff(ctx, project, profileID, baseProfileID)
-	stopHeartbeat()
-	if err != nil {
-		return nil, gcpdata.ProfileMeta{}, gcpErrorResult(fmt.Sprintf("Failed to fetch profile: %v", err), err, "")
-	}
-	return p, meta, nil
+	return ErrorResult(fmt.Sprintf("%s %v", analysisMessage, err))
 }
 
 // requireQuerier/requireRegistry guard the two dependencies every metrics tool

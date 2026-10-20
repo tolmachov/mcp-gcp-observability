@@ -294,19 +294,19 @@ func (f profileFilter) match(meta ProfileMeta) (match, parseErr bool) {
 	return true, false
 }
 
-// GetOrFetchProfile retrieves a parsed profile from cache or downloads it.
+// getOrFetchProfile retrieves a parsed profile from cache or downloads it.
 // Cloud Profiler API v2 has no direct GET endpoint; profiles are found by
 // scanning list results. Prefetched bytes are parsed on first use here and
 // dropped from the cache when they fail; downloaded bytes are cached only
 // after they parse.
-func (q *CloudProfilerQuerier) GetOrFetchProfile(
+func (q *CloudProfilerQuerier) getOrFetchProfile(
 	ctx context.Context,
 	project, profileName string,
 ) (*profile.Profile, ProfileMeta, error) {
 	return q.loadProfile(ctx, project, profileName, true)
 }
 
-// loadProfile is GetOrFetchProfile; cacheFetched says whether a downloaded
+// loadProfile is getOrFetchProfile; cacheFetched says whether a downloaded
 // profile is cached. ComputeTrends passes false so that its downloads cannot
 // evict prefetched profiles it has yet to analyze.
 func (q *CloudProfilerQuerier) loadProfile(
@@ -416,10 +416,10 @@ func parseSourceProfile(data []byte) (*profile.Profile, error) {
 	return p, nil
 }
 
-// TopFunctions computes a flat ranking of functions by self or cumulative cost.
+// topFunctions computes a flat ranking of functions by self or cumulative cost.
 // filter is a substring matched against the function name or file.
 // Returns the ranked functions, the total value, whether results were truncated, and any error.
-func TopFunctions(p *profile.Profile, valueIndex, limit int, sortBy, filter string) ([]TopFunction, int64, bool, error) {
+func topFunctions(p *profile.Profile, valueIndex, limit int, sortBy, filter string) ([]TopFunction, int64, bool, error) {
 	var rank func(TopFunction) int64
 	switch sortBy {
 	case "cumulative":
@@ -461,8 +461,8 @@ func TopFunctions(p *profile.Profile, valueIndex, limit int, sortBy, filter stri
 	return result, total, truncated, nil
 }
 
-// PeekFunction finds callers and callees of a named function.
-func PeekFunction(p *profile.Profile, functionName string, valueIndex, limit int) (*PeekFunctionInfo, []PeekEntry, []PeekEntry, error) {
+// peekFunction finds callers and callees of a named function.
+func peekFunction(p *profile.Profile, functionName string, valueIndex, limit int) (*PeekFunctionInfo, []PeekEntry, []PeekEntry, error) {
 	if err := validateValueIndex(p, valueIndex); err != nil {
 		return nil, nil, nil, err
 	}
@@ -577,11 +577,11 @@ type trieNode struct {
 	children   map[string]*trieNode
 }
 
-// Flamegraph builds a bounded call tree rooted at a function (or the profile root),
+// flamegraph builds a bounded call tree rooted at a function (or the profile root),
 // pruned by maxDepth, minPct and a budget of maxNodes returned nodes (the root
 // included; children are kept depth-first in descending cost order). Returns the
 // tree, total profile value, count of pruned children, and any error.
-func Flamegraph(p *profile.Profile, rootFunction string, valueIndex, maxDepth, maxNodes int, minPct float64) (*FlamegraphNode, int64, int, error) {
+func flamegraph(p *profile.Profile, rootFunction string, valueIndex, maxDepth, maxNodes int, minPct float64) (*FlamegraphNode, int64, int, error) {
 	if err := validateValueIndex(p, valueIndex); err != nil {
 		return nil, 0, 0, err
 	}
@@ -754,7 +754,7 @@ func (q *CloudProfilerQuerier) CompareProfiles(
 	result := &ProfileCompareResult{
 		CurrentMeta: currentMeta,
 		BaseMeta:    baseMeta,
-		ValueType:   ProfileValueTypes(currentProfile)[valueIndex],
+		ValueType:   profileValueTypes(currentProfile)[valueIndex],
 		Summary: CompareSummary{
 			TotalCurrent:       currentTotal,
 			TotalBase:          baseTotal,
@@ -773,23 +773,6 @@ func (q *CloudProfilerQuerier) CompareProfiles(
 	return result, nil
 }
 
-// GetProfileOrDiff computes a request-local diff when baseID is present.
-func (q *CloudProfilerQuerier) GetProfileOrDiff(ctx context.Context, project, profileID, baseID string) (*profile.Profile, ProfileMeta, error) {
-	if baseID == "" {
-		return q.GetOrFetchProfile(ctx, project, profileID)
-	}
-	current, base, meta, _, err := q.fetchProfilePair(ctx, project, profileID, baseID)
-	if err != nil {
-		return nil, ProfileMeta{}, err
-	}
-	diff, err := buildDiffProfile(current, base)
-	if err != nil {
-		return nil, ProfileMeta{}, fmt.Errorf("building diff profile: %w", err)
-	}
-	meta.IsDiff = true
-	return diff, meta, nil
-}
-
 // fetchProfilePair fetches the current profile, then the base profile. The
 // fetches stay sequential because each uncached one is a paginated Export API
 // scan, and the server's profiler concurrency limit counts one scan per call.
@@ -797,11 +780,11 @@ func (q *CloudProfilerQuerier) fetchProfilePair(
 	ctx context.Context,
 	project, currentID, baseID string,
 ) (current, base *profile.Profile, currentMeta, baseMeta ProfileMeta, err error) {
-	current, currentMeta, err = q.GetOrFetchProfile(ctx, project, currentID)
+	current, currentMeta, err = q.getOrFetchProfile(ctx, project, currentID)
 	if err != nil {
 		return nil, nil, ProfileMeta{}, ProfileMeta{}, fmt.Errorf("fetching current profile: %w", err)
 	}
-	base, baseMeta, err = q.GetOrFetchProfile(ctx, project, baseID)
+	base, baseMeta, err = q.getOrFetchProfile(ctx, project, baseID)
 	if err != nil {
 		return nil, nil, ProfileMeta{}, ProfileMeta{}, fmt.Errorf("fetching base profile: %w", err)
 	}
@@ -834,7 +817,7 @@ type prefetchResult struct {
 // included in the response, caching the compressed bytes of each profile in the
 // wanted set. This avoids O(n) individual List scans when ComputeTrends needs many
 // profiles that were already discovered via a metadata-only ListProfiles call.
-// Profiles are not parsed here; GetOrFetchProfile parses them on first use and
+// Profiles are not parsed here; getOrFetchProfile parses them on first use and
 // drops undecodable ones from the cache. Inserts never evict a wanted profile,
 // and the prefetch stops once the cache can take no more of them, since those
 // would then have to be fetched individually after all.
@@ -866,7 +849,7 @@ func (q *CloudProfilerQuerier) prefetchProfiles(
 		}
 		// Key on the ID surfaced by profiler_list (p.Name when non-empty,
 		// otherwise the synthetic ID) so the cache entry matches what
-		// GetOrFetchProfile later looks up. Keying on the raw p.Name would
+		// getOrFetchProfile later looks up. Keying on the raw p.Name would
 		// collide every empty-named profile onto a single entry.
 		meta := profileFromAPI(p)
 		if !wanted[meta.ProfileID] {
@@ -909,8 +892,8 @@ func (r prefetchResult) warning(total int) string {
 	return fmt.Sprintf("Bulk prefetch cached %d/%d profiles (%s); the rest were fetched individually.", r.Cached, total, strings.Join(causes, "; "))
 }
 
-// ProfileValueTypes returns available value types for a profile.
-func ProfileValueTypes(p *profile.Profile) []ValueTypeInfo {
+// profileValueTypes returns available value types for a profile.
+func profileValueTypes(p *profile.Profile) []ValueTypeInfo {
 	var types []ValueTypeInfo
 	for i, vt := range p.SampleType {
 		types = append(types, ValueTypeInfo{Index: i, Type: vt.Type, Unit: vt.Unit})
@@ -965,7 +948,7 @@ func (q *CloudProfilerQuerier) ComputeTrends(
 	})
 
 	// Pre-fetch all profiles in a single paginated scan to avoid O(n) individual
-	// List API calls. This is best-effort; individual GetOrFetchProfile calls
+	// List API calls. This is best-effort; individual getOrFetchProfile calls
 	// below will retry on cache misses.
 	wanted := make(map[string]bool, len(profiles.Profiles))
 	for _, meta := range profiles.Profiles {
@@ -1005,14 +988,14 @@ func (q *CloudProfilerQuerier) ComputeTrends(
 		}
 
 		if resolvedValueType == nil {
-			vts := ProfileValueTypes(p)
+			vts := profileValueTypes(p)
 			if valueIndex < len(vts) {
 				resolvedValueType = &vts[valueIndex]
 			}
 		}
 
 		if discover && len(targetFunctions) == 0 {
-			topFuncs, _, _, err := TopFunctions(p, valueIndex, maxFunctions, "cumulative", "")
+			topFuncs, _, _, err := topFunctions(p, valueIndex, maxFunctions, "cumulative", "")
 			if err != nil {
 				// Analysis errors (e.g. invalid valueIndex) are deterministic —
 				// retrying with another profile won't help.

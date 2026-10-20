@@ -3,7 +3,6 @@ package authsrv
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -96,33 +95,9 @@ func (a *AuthServer) RequireBearerToken() func(http.Handler) http.Handler {
 // issuer change is diagnosable; undecryptable tokens and domain removals are
 // additionally logged here with their detail.
 func (a *AuthServer) verifyAccessToken(ctx context.Context, token string) (*auth.TokenInfo, error) {
-	now := a.now()
-	c, err := openBlob(a.sealer, accessBlob, token, now)
+	c, err := a.grants().VerifyAccess(ctx, token)
 	if err != nil {
-		a.logger.Warn("access token rejected", "reason", err)
-		return nil, &tokenRejection{reason: "invalid_access_token"}
-	}
-	grant, grantErr := a.store.GetGrant(ctx, c.FamilyID)
-	if grantErr != nil && !errors.Is(grantErr, errStateNotFound) {
-		a.logStoreFailure(ctx, "verify_grant", grantErr)
-		return nil, fmt.Errorf("%w: %w", errStoreUnavailable, grantErr)
-	}
-	if !now.Before(time.Unix(c.ExpiresAt, 0)) {
-		return nil, &tokenRejection{reason: "access_token_expired"}
-	}
-	if grantErr != nil {
-		return nil, &tokenRejection{reason: "grant_not_found"}
-	}
-	if grant.Status != "active" || !now.Before(grant.ExpiresAt) {
-		return nil, &tokenRejection{reason: "grant_inactive"}
-	}
-	// Re-check the domain at use time: this is the enforcement point
-	// that cuts off already-issued tokens after a domain is removed
-	// from the allowlist (and redeployed). Project IAM remains enforced by
-	// every delegated GCP RPC, with an extra pinned-project probe on refresh.
-	if len(a.cfg.AllowedDomains) > 0 && !a.cfg.domainAllowed(c.Domain, c.Email) {
-		a.logger.Warn("access token rejected: domain no longer allowed", "email", c.Email, "hd", c.Domain)
-		return nil, &tokenRejection{reason: "domain_not_allowed"}
+		return nil, err
 	}
 	// Expiration stays unset: expiry was checked above, against a.now, and
 	// the SDK must not re-check it against a different clock.
